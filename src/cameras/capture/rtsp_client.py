@@ -128,10 +128,22 @@ class RTSPClient:
         try:
             logger.info(f"[{self.camera_id}] Connecting via CPU: {self.rtsp_url}")
 
+            # Suppress noisy FFmpeg swscaler warnings
+            import os
+            os.environ.setdefault("OPENCV_FFMPEG_LOGLEVEL", "-8")
+
             cap = cv2.VideoCapture(self.rtsp_url, cv2.CAP_FFMPEG)
 
             # Optimize buffer to reduce latency
             cap.set(cv2.CAP_PROP_BUFFERSIZE, 1)
+
+            # Force even dimensions to avoid swscaler "Slice parameters" warnings
+            w = int(cap.get(cv2.CAP_PROP_FRAME_WIDTH))
+            h = int(cap.get(cv2.CAP_PROP_FRAME_HEIGHT))
+            if w % 2 != 0 or h % 2 != 0:
+                cap.set(cv2.CAP_PROP_FRAME_WIDTH, w - (w % 2))
+                cap.set(cv2.CAP_PROP_FRAME_HEIGHT, h - (h % 2))
+                logger.info(f"[{self.camera_id}] Adjusted dimensions: {w}x{h} -> {w - (w % 2)}x{h - (h % 2)}")
 
             if not cap.isOpened():
                 self.stats.error = "Failed to open stream"
