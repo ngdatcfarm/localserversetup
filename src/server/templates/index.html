@@ -9,6 +9,16 @@
     <style>
         .camera-card { transition: all 0.2s; }
         .camera-card:hover { transform: translateY(-2px); }
+        .ptz-panel { display: grid; grid-template-columns: repeat(3, 1fr); gap: 4px; width: 120px; margin: 0 auto; }
+        .ptz-btn {
+            width: 36px; height: 36px; border-radius: 50%; border: none; cursor: pointer;
+            display: flex; align-items: center; justify-content: center;
+            background: #374151; color: #d1d5db; transition: all 0.15s;
+        }
+        .ptz-btn:hover { background: #3b82f6; color: white; }
+        .ptz-btn:active { background: #2563eb; transform: scale(0.9); }
+        .ptz-btn.center { background: transparent; cursor: default; }
+        .ptz-btn.center:hover { background: transparent; }
     </style>
 </head>
 <body class="bg-gray-900 text-gray-100 min-h-screen">
@@ -188,6 +198,30 @@
                     <div class="p-4">
                         <h3 class="font-bold text-lg mb-1">${cam.name}</h3>
                         <p class="text-gray-400 text-sm mb-3">${cam.ip}:${cam.port}${cam.rtsp_path}</p>
+
+                        <!-- PTZ Controls -->
+                        <div class="mb-3 flex justify-center">
+                            <div class="ptz-panel">
+                                <div></div>
+                                <button class="ptz-btn" onmousedown="ptzMove('${cam.id}','up')" onmouseup="ptzStop('${cam.id}','up')" onmouseleave="ptzStop('${cam.id}','up')" title="Lên">
+                                    <i class="fas fa-chevron-up"></i>
+                                </button>
+                                <div></div>
+                                <button class="ptz-btn" onmousedown="ptzMove('${cam.id}','left')" onmouseup="ptzStop('${cam.id}','left')" onmouseleave="ptzStop('${cam.id}','left')" title="Trái">
+                                    <i class="fas fa-chevron-left"></i>
+                                </button>
+                                <div class="ptz-btn center"><i class="fas fa-circle text-xs text-gray-600"></i></div>
+                                <button class="ptz-btn" onmousedown="ptzMove('${cam.id}','right')" onmouseup="ptzStop('${cam.id}','right')" onmouseleave="ptzStop('${cam.id}','right')" title="Phải">
+                                    <i class="fas fa-chevron-right"></i>
+                                </button>
+                                <div></div>
+                                <button class="ptz-btn" onmousedown="ptzMove('${cam.id}','down')" onmouseup="ptzStop('${cam.id}','down')" onmouseleave="ptzStop('${cam.id}','down')" title="Xuống">
+                                    <i class="fas fa-chevron-down"></i>
+                                </button>
+                                <div></div>
+                            </div>
+                        </div>
+
                         <div class="flex justify-between">
                             <a href="/stream/${cam.id}" target="_blank" class="text-green-400 hover:text-green-300 text-sm">
                                 <i class="fas fa-play mr-1"></i>Xem
@@ -316,6 +350,31 @@
             toast.classList.remove('hidden');
 
             setTimeout(() => toast.classList.add('hidden'), 3000);
+        }
+
+        // PTZ Controls
+        async function ptzMove(cameraId, direction) {
+            try {
+                await fetch(`/api/cameras/${cameraId}/ptz/move`, {
+                    method: 'POST',
+                    headers: { 'Content-Type': 'application/json' },
+                    body: JSON.stringify({ direction, speed: 6 })
+                });
+            } catch (e) {
+                console.error('PTZ move error:', e);
+            }
+        }
+
+        async function ptzStop(cameraId, direction) {
+            try {
+                await fetch(`/api/cameras/${cameraId}/ptz/stop`, {
+                    method: 'POST',
+                    headers: { 'Content-Type': 'application/json' },
+                    body: JSON.stringify({ direction, speed: 6 })
+                });
+            } catch (e) {
+                console.error('PTZ stop error:', e);
+            }
         }
 
         // Update FPS every 2 seconds

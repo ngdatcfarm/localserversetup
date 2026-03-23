@@ -6,7 +6,7 @@ from fastapi.staticfiles import StaticFiles
 from fastapi.responses import HTMLResponse
 from fastapi.templating import Jinja2Templates
 
-from src.server.routes import cameras_router
+from src.server.routes import cameras_router, ptz_router
 from src.cameras.stream.mjpeg_stream import router as stream_router, setup_mjpeg
 from src.services.storage.config_service import ConfigService
 from src.cameras.capture.camera_manager import camera_manager
@@ -55,6 +55,7 @@ if static_dir.exists():
 
 # Include routers
 app.include_router(cameras_router)
+app.include_router(ptz_router)
 app.include_router(stream_router)
 
 
