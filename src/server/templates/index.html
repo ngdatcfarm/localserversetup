@@ -1,0 +1,338 @@
+<!DOCTYPE html>
+<html lang="vi">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <title>Camera Server</title>
+    <script src="https://cdn.tailwindcss.com"></script>
+    <link rel="stylesheet" href="https://cdnjs.cloudflare.com/ajax/libs/font-awesome/6.5.1/css/all.min.css">
+    <style>
+        .camera-card { transition: all 0.2s; }
+        .camera-card:hover { transform: translateY(-2px); }
+    </style>
+</head>
+<body class="bg-gray-900 text-gray-100 min-h-screen">
+    <!-- Header -->
+    <nav class="bg-gray-800 border-b border-gray-700">
+        <div class="max-w-7xl mx-auto px-4 sm:px-6 lg:px-8">
+            <div class="flex items-center justify-between h-16">
+                <div class="flex items-center">
+                    <i class="fas fa-video text-blue-500 text-xl mr-3"></i>
+                    <span class="font-bold text-xl">Camera Server</span>
+                </div>
+                <div class="flex items-center space-x-4">
+                    <span id="cameraCount" class="text-gray-400">0 cameras</span>
+                    <button onclick="openAddModal()" class="bg-blue-600 hover:bg-blue-700 px-4 py-2 rounded-lg">
+                        <i class="fas fa-plus mr-2"></i>Thêm Camera
+                    </button>
+                </div>
+            </div>
+        </div>
+    </nav>
+
+    <!-- Main Content -->
+    <main class="max-w-7xl mx-auto px-4 sm:px-6 lg:px-8 py-8">
+        <!-- Stats -->
+        <div class="grid grid-cols-1 md:grid-cols-4 gap-4 mb-8">
+            <div class="bg-gray-800 rounded-lg p-4 border border-gray-700">
+                <div class="text-gray-400 text-sm">Tổng Camera</div>
+                <div class="text-2xl font-bold" id="totalCameras">0</div>
+            </div>
+            <div class="bg-gray-800 rounded-lg p-4 border border-gray-700">
+                <div class="text-gray-400 text-sm">Đang Hoạt Động</div>
+                <div class="text-2xl font-bold text-green-500" id="onlineCameras">0</div>
+            </div>
+            <div class="bg-gray-800 rounded-lg p-4 border border-gray-700">
+                <div class="text-gray-400 text-sm">Offline</div>
+                <div class="text-2xl font-bold text-red-500" id="offlineCameras">0</div>
+            </div>
+            <div class="bg-gray-800 rounded-lg p-4 border border-gray-700">
+                <div class="text-gray-400 text-sm">Bộ Nhớ</div>
+                <div class="text-2xl font-bold" id="storageInfo">--</div>
+            </div>
+        </div>
+
+        <!-- Camera Grid -->
+        <div id="cameraGrid" class="grid grid-cols-1 md:grid-cols-2 lg:grid-cols-3 gap-4">
+            <!-- Camera cards will be inserted here -->
+        </div>
+
+        <!-- Empty State -->
+        <div id="emptyState" class="text-center py-16 hidden">
+            <i class="fas fa-camera text-gray-600 text-6xl mb-4"></i>
+            <h3 class="text-xl text-gray-400 mb-2">Chưa có camera nào</h3>
+            <p class="text-gray-500 mb-4">Thêm camera đầu tiên để bắt đầu</p>
+            <button onclick="openAddModal()" class="bg-blue-600 hover:bg-blue-700 px-6 py-3 rounded-lg">
+                <i class="fas fa-plus mr-2"></i>Thêm Camera
+            </button>
+        </div>
+    </main>
+
+    <!-- Add/Edit Modal -->
+    <div id="cameraModal" class="fixed inset-0 bg-black bg-opacity-50 hidden items-center justify-center z-50">
+        <div class="bg-gray-800 rounded-lg p-6 w-full max-w-lg mx-4">
+            <div class="flex justify-between items-center mb-4">
+                <h3 id="modalTitle" class="text-xl font-bold">Thêm Camera</h3>
+                <button onclick="closeModal()" class="text-gray-400 hover:text-white">
+                    <i class="fas fa-times text-xl"></i>
+                </button>
+            </div>
+
+            <form id="cameraForm" class="space-y-4">
+                <input type="hidden" id="cameraId">
+
+                <div>
+                    <label class="block text-sm text-gray-400 mb-1">ID Camera</label>
+                    <input type="text" id="cameraIdInput" class="w-full bg-gray-700 border border-gray-600 rounded px-3 py-2" placeholder="cam_001">
+                </div>
+
+                <div>
+                    <label class="block text-sm text-gray-400 mb-1">Tên Camera</label>
+                    <input type="text" id="cameraName" class="w-full bg-gray-700 border border-gray-600 rounded px-3 py-2" placeholder="Camera cổng">
+                </div>
+
+                <div class="grid grid-cols-2 gap-4">
+                    <div>
+                        <label class="block text-sm text-gray-400 mb-1">IP Address</label>
+                        <input type="text" id="cameraIp" class="w-full bg-gray-700 border border-gray-600 rounded px-3 py-2" placeholder="192.168.1.27">
+                    </div>
+                    <div>
+                        <label class="block text-sm text-gray-400 mb-1">Port</label>
+                        <input type="number" id="cameraPort" class="w-full bg-gray-700 border border-gray-600 rounded px-3 py-2" value="554">
+                    </div>
+                </div>
+
+                <div class="grid grid-cols-2 gap-4">
+                    <div>
+                        <label class="block text-sm text-gray-400 mb-1">Username</label>
+                        <input type="text" id="cameraUsername" class="w-full bg-gray-700 border border-gray-600 rounded px-3 py-2" placeholder="admin">
+                    </div>
+                    <div>
+                        <label class="block text-sm text-gray-400 mb-1">Password</label>
+                        <input type="password" id="cameraPassword" class="w-full bg-gray-700 border border-gray-600 rounded px-3 py-2">
+                    </div>
+                </div>
+
+                <div>
+                    <label class="block text-sm text-gray-400 mb-1">RTSP Path</label>
+                    <input type="text" id="cameraRtspPath" class="w-full bg-gray-700 border border-gray-600 rounded px-3 py-2" placeholder="/unicast/c1/s0/live">
+                </div>
+
+                <div class="flex items-center">
+                    <input type="checkbox" id="cameraEnabled" class="w-4 h-4 bg-gray-700 border-gray-600 rounded" checked>
+                    <label for="cameraEnabled" class="ml-2 text-sm text-gray-400">Kích hoạt</label>
+                </div>
+
+                <div class="flex justify-end space-x-3 pt-4">
+                    <button type="button" onclick="closeModal()" class="px-4 py-2 bg-gray-700 hover:bg-gray-600 rounded">Hủy</button>
+                    <button type="submit" class="px-4 py-2 bg-blue-600 hover:bg-blue-700 rounded">Lưu</button>
+                </div>
+            </form>
+        </div>
+    </div>
+
+    <!-- Toast Notification -->
+    <div id="toast" class="fixed bottom-4 right-4 bg-green-600 text-white px-6 py-3 rounded-lg shadow-lg hidden">
+        <span id="toastMessage"></span>
+    </div>
+
+    <script>
+        let cameras = [];
+
+        // Load cameras on page load
+        document.addEventListener('DOMContentLoaded', loadCameras);
+
+        async function loadCameras() {
+            try {
+                const response = await fetch('/api/cameras');
+                cameras = await response.json();
+                renderCameras();
+            } catch (error) {
+                console.error('Error loading cameras:', error);
+                showToast('Lỗi tải danh sách camera', 'error');
+            }
+        }
+
+        function renderCameras() {
+            const grid = document.getElementById('cameraGrid');
+            const empty = document.getElementById('emptyState');
+
+            document.getElementById('cameraCount').textContent = `${cameras.length} cameras`;
+            document.getElementById('totalCameras').textContent = cameras.length;
+
+            if (cameras.length === 0) {
+                grid.classList.add('hidden');
+                empty.classList.remove('hidden');
+                return;
+            }
+
+            grid.classList.remove('hidden');
+            empty.classList.add('hidden');
+
+            grid.innerHTML = cameras.map(cam => `
+                <div class="camera-card bg-gray-800 rounded-lg border border-gray-700 overflow-hidden">
+                    <div class="aspect-video bg-gray-900 relative">
+                        <img src="/stream/${cam.id}/snapshot" class="w-full h-full object-cover" onerror="this.style.display='none';this.nextElementSibling.style.display='flex'">
+                        <div class="absolute inset-0 flex items-center justify-center hidden">
+                            <i class="fas fa-video-slash text-gray-600 text-4xl"></i>
+                        </div>
+                        <div class="absolute top-2 right-2">
+                            <span class="px-2 py-1 rounded text-xs ${cam.enabled ? 'bg-green-600' : 'bg-gray-600'}">
+                                ${cam.enabled ? 'LIVE' : 'OFF'}
+                            </span>
+                        </div>
+                        <div class="absolute bottom-2 left-2">
+                            <span id="fps-${cam.id}" class="px-2 py-1 rounded text-xs bg-black bg-opacity-50">-- fps</span>
+                        </div>
+                    </div>
+                    <div class="p-4">
+                        <h3 class="font-bold text-lg mb-1">${cam.name}</h3>
+                        <p class="text-gray-400 text-sm mb-3">${cam.ip}:${cam.port}${cam.rtsp_path}</p>
+                        <div class="flex justify-between">
+                            <a href="/stream/${cam.id}" target="_blank" class="text-green-400 hover:text-green-300 text-sm">
+                                <i class="fas fa-play mr-1"></i>Xem
+                            </a>
+                            <div class="space-x-2">
+                                <button onclick="editCamera('${cam.id}')" class="text-gray-400 hover:text-white">
+                                    <i class="fas fa-edit"></i>
+                                </button>
+                                <button onclick="deleteCamera('${cam.id}')" class="text-red-400 hover:text-red-300">
+                                    <i class="fas fa-trash"></i>
+                                </button>
+                            </div>
+                        </div>
+                    </div>
+                </div>
+            `).join('');
+        }
+
+        function openAddModal() {
+            document.getElementById('modalTitle').textContent = 'Thêm Camera';
+            document.getElementById('cameraForm').reset();
+            document.getElementById('cameraId').value = '';
+            document.getElementById('cameraPort').value = '554';
+            document.getElementById('cameraEnabled').checked = true;
+            document.getElementById('cameraModal').classList.remove('hidden');
+            document.getElementById('cameraModal').classList.add('flex');
+        }
+
+        function closeModal() {
+            document.getElementById('cameraModal').classList.add('hidden');
+            document.getElementById('cameraModal').classList.remove('flex');
+        }
+
+        function editCamera(id) {
+            const cam = cameras.find(c => c.id === id);
+            if (!cam) return;
+
+            document.getElementById('modalTitle').textContent = 'Sửa Camera';
+            document.getElementById('cameraId').value = cam.id;
+            document.getElementById('cameraIdInput').value = cam.id;
+            document.getElementById('cameraIdInput').disabled = true;
+            document.getElementById('cameraName').value = cam.name;
+            document.getElementById('cameraIp').value = cam.ip;
+            document.getElementById('cameraPort').value = cam.port;
+            document.getElementById('cameraUsername').value = cam.username;
+            document.getElementById('cameraPassword').value = cam.password;
+            document.getElementById('cameraRtspPath').value = cam.rtsp_path;
+            document.getElementById('cameraEnabled').checked = cam.enabled;
+
+            document.getElementById('cameraModal').classList.remove('hidden');
+            document.getElementById('cameraModal').classList.add('flex');
+        }
+
+        document.getElementById('cameraForm').addEventListener('submit', async (e) => {
+            e.preventDefault();
+
+            const id = document.getElementById('cameraId').value;
+            const cameraData = {
+                id: document.getElementById('cameraIdInput').value,
+                name: document.getElementById('cameraName').value,
+                ip: document.getElementById('cameraIp').value,
+                port: parseInt(document.getElementById('cameraPort').value),
+                username: document.getElementById('cameraUsername').value,
+                password: document.getElementById('cameraPassword').value,
+                rtsp_path: document.getElementById('cameraRtspPath').value,
+                enabled: document.getElementById('cameraEnabled').checked,
+                stream_type: "main"
+            };
+
+            try {
+                const url = id ? `/api/cameras/${id}` : '/api/cameras';
+                const method = id ? 'PUT' : 'POST';
+
+                const response = await fetch(url, {
+                    method: method,
+                    headers: { 'Content-Type': 'application/json' },
+                    body: JSON.stringify(cameraData)
+                });
+
+                if (!response.ok) {
+                    const error = await response.json();
+                    throw new Error(error.detail || 'Error saving camera');
+                }
+
+                closeModal();
+                loadCameras();
+                showToast(id ? 'Camera đã được cập nhật' : 'Camera đã được thêm');
+            } catch (error) {
+                showToast(error.message, 'error');
+            }
+        });
+
+        async function deleteCamera(id) {
+            if (!confirm('Bạn có chắc muốn xóa camera này?')) return;
+
+            try {
+                const response = await fetch(`/api/cameras/${id}`, { method: 'DELETE' });
+                if (!response.ok) throw new Error('Error deleting camera');
+                loadCameras();
+                showToast('Camera đã được xóa');
+            } catch (error) {
+                showToast(error.message, 'error');
+            }
+        }
+
+        async function testCamera(id) {
+            try {
+                showToast('Đang kiểm tra kết nối...', 'info');
+                const response = await fetch(`/api/cameras/${id}/test`);
+                const result = await response.json();
+                showToast(result.message || 'Kết nối thành công', 'info');
+            } catch (error) {
+                showToast('Lỗi kết nối camera', 'error');
+            }
+        }
+
+        function showToast(message, type = 'success') {
+            const toast = document.getElementById('toast');
+            const toastMessage = document.getElementById('toastMessage');
+
+            toast.className = `fixed bottom-4 right-4 px-6 py-3 rounded-lg shadow-lg ${
+                type === 'error' ? 'bg-red-600' : type === 'info' ? 'bg-blue-600' : 'bg-green-600'
+            } text-white`;
+
+            toastMessage.textContent = message;
+            toast.classList.remove('hidden');
+
+            setTimeout(() => toast.classList.add('hidden'), 3000);
+        }
+
+        // Update FPS every 2 seconds
+        setInterval(async () => {
+            try {
+                const response = await fetch('/api/cameras/status/all');
+                const statuses = await response.json();
+                statuses.forEach(status => {
+                    if (status && status.id) {
+                        const fpsEl = document.getElementById(`fps-${status.id}`);
+                        if (fpsEl) {
+                            fpsEl.textContent = `${status.fps || 0} fps`;
+                        }
+                    }
+                });
+            } catch (e) {}
+        }, 2000);
+    </script>
+</body>
+</html>

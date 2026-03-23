@@ -1,0 +1,20 @@
+server:
+  host: 0.0.0.0
+  port: 8000
+cameras:
+- id: cam_001
+  name: Camera c?ng
+  ip: 192.168.1.27
+  port: 554
+  username: admin
+  password: Abc@@1234
+  rtsp_path: /unicast/c1/s0/live
+  enabled: true
+  stream_type: main
+storage:
+  snapshot_dir: data/snapshots
+  recording_dir: data/recordings
+  export_dir: data/exports
+stream:
+  hls_dir: data/hls
+  segment_duration: 2
