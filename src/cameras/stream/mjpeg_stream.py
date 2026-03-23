@@ -5,12 +5,17 @@ import cv2
 import io
 import logging
 import threading
+from pathlib import Path
 from typing import Dict
 from fastapi import APIRouter, HTTPException
-from fastapi.responses import StreamingResponse
+from fastapi.responses import StreamingResponse, HTMLResponse
+from fastapi.templating import Jinja2Templates
 
 from src.cameras.capture.camera_manager import camera_manager
 from src.services.storage.config_service import ConfigService
+
+_templates_dir = Path(__file__).resolve().parent.parent.parent / "server" / "templates"
+_templates = Jinja2Templates(directory=str(_templates_dir))
 
 logger = logging.getLogger(__name__)
 
@@ -106,8 +111,8 @@ async def get_snapshot(camera_id: str):
 
 
 @router.get("/stream/{camera_id}")
-async def get_stream(camera_id: str):
-    """Get MJPEG stream for a camera."""
+async def get_stream_page(camera_id: str):
+    """Stream viewer page with PTZ controls."""
     config_service = ConfigService()
     camera = config_service.get_camera(camera_id)
     if not camera:
@@ -117,7 +122,28 @@ async def get_stream(camera_id: str):
     camera_info = camera_manager.get_camera(camera_id)
     if camera_info is None or camera_info.client is None:
         camera_manager.add_camera(camera)
-        await asyncio.sleep(2)  # Wait for connection
+        await asyncio.sleep(2)
+
+    return _templates.TemplateResponse("stream_view.html", {
+        "request": {},
+        "camera_id": camera_id,
+        "camera_name": camera.name,
+        "camera_ip": camera.ip,
+    })
+
+
+@router.get("/stream/{camera_id}/mjpeg")
+async def get_stream_mjpeg(camera_id: str):
+    """Get raw MJPEG stream for a camera."""
+    config_service = ConfigService()
+    camera = config_service.get_camera(camera_id)
+    if not camera:
+        raise HTTPException(status_code=404, detail="Camera not found")
+
+    camera_info = camera_manager.get_camera(camera_id)
+    if camera_info is None or camera_info.client is None:
+        camera_manager.add_camera(camera)
+        await asyncio.sleep(2)
 
     return StreamingResponse(
         generate_mjpeg(camera_id),
