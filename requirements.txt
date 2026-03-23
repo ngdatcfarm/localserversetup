@@ -5,6 +5,9 @@ python-multipart==0.0.6
 jinja2==3.1.3
 
 # Camera
+# For GPU acceleration (NVDEC/NVENC), install opencv-contrib-python with CUDA support:
+#   pip install opencv-contrib-python  (pre-built, may include CUDA)
+#   Or build from source with -D WITH_CUDA=ON for full GPU support
 opencv-python==4.9.0.80
 
 # Storage

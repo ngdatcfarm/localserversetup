@@ -31,17 +31,37 @@ camera-server/
 - [x] Tạo cấu trúc thư mục
 - [x] Tạo cấu trúc dashboard + camera config ✅ (2026-03-22)
 - [x] Triển khai camera capture service ✅ (2026-03-22)
-- [ ] Triển khai streaming service (HLS/MJPEG)
-- [ ] Triển khai storage service (snapshot/recording)
+- [x] GPU acceleration (NVDEC/CUDA) ✅ (2026-03-23)
+- [x] Fix callback architecture ✅ (2026-03-23)
+- [x] Fix async MJPEG streaming ✅ (2026-03-23)
+- [x] Fix bugs & code cleanup ✅ (2026-03-23)
 - [x] Triển khai API endpoints ✅ (2026-03-22)
 - [x] Triển khai web UI ✅ (2026-03-22)
+- [ ] Triển khai HLS streaming
+- [ ] Triển khai storage service (snapshot/recording)
+- [ ] ONVIF camera discovery
 
 ## Công nghệ đã chọn
 - **Backend**: Python FastAPI
 - **Frontend**: HTML + TailwindCSS + Vanilla JS
 - **Storage**: YAML config file
-- **Streaming**: HLS, MJPEG (sẽ implement sau)
+- **Streaming**: MJPEG (done), HLS (planned)
 - **Protocol**: RTSP cho camera IP
+- **GPU**: NVDEC decode, CUDA resize (auto-fallback to CPU)
+
+## GPU Acceleration (v0.2.0)
+- **NVDEC**: Hardware decode RTSP H.264/H.265 qua `cv2.cudacodec.VideoReader`
+- **CUDA resize**: `cv2.cuda.resize` cho frame processing
+- **Auto-fallback**: Tự động dùng CPU nếu GPU không khả dụng
+- **Yêu cầu**: `opencv-contrib-python` build với CUDA, hoặc build OpenCV from source với `-D WITH_CUDA=ON`
+- **GTX 1650**: Hỗ trợ NVDEC (decode) + NVENC (encode)
+
+## Changes in v0.2.0 (2026-03-23)
+1. **rtsp_client.py**: NVDEC hardware decode, CUDA resize, auto-fallback CPU, latest frame cache
+2. **camera_manager.py**: Clean callback architecture với `add_frame_callback()`, expose `decode_method` + `resolution` in status
+3. **mjpeg_stream.py**: Async generator dùng `asyncio.Event` thay vì `time.sleep`, centralized frame callback
+4. **main.py**: Fix duplicate import, đúng startup order (register callback → start cameras)
+5. **routes/cameras.py**: Fix wrong camera existence check, remove unused imports, proper error responses
 
 ## Files đã tạo
 ```
@@ -53,9 +73,11 @@ camera-server/
     ├── models/
     │   └── camera.py        # CameraConfig model
     ├── cameras/
-    │   └── capture/
-    │       ├── rtsp_client.py    # RTSP client (OpenCV)
-    │       └── camera_manager.py  # Camera manager
+    │   ├── capture/
+    │   │   ├── rtsp_client.py    # RTSP client (NVDEC + CPU fallback)
+    │   │   └── camera_manager.py  # Camera manager
+    │   └── stream/
+    │       └── mjpeg_stream.py   # MJPEG streaming (async)
     ├── services/storage/
     │   └── config_service.py # Config CRUD service
     └── server/
@@ -66,12 +88,19 @@ camera-server/
             └── index.html   # Dashboard UI
 ```
 
-## API Endpoints (Camera Capture)
+## API Endpoints
+- `GET /api/cameras` - List all cameras
+- `POST /api/cameras` - Add camera
+- `GET /api/cameras/{id}` - Get camera
+- `PUT /api/cameras/{id}` - Update camera
+- `DELETE /api/cameras/{id}` - Delete camera
 - `POST /api/cameras/{id}/start` - Start camera stream
 - `POST /api/cameras/{id}/stop` - Stop camera stream
-- `GET /api/cameras/{id}/test` - Test connection
-- `GET /api/cameras/{id}/status` - Get camera status
+- `GET /api/cameras/{id}/test` - Test connection (reports decode method)
+- `GET /api/cameras/{id}/status` - Get camera status (includes decode_method, resolution)
 - `GET /api/cameras/status/all` - Get all cameras status
+- `GET /stream/{id}` - MJPEG live stream
+- `GET /stream/{id}/snapshot` - Single JPEG snapshot
 
 ## Cách chạy
 ```bash

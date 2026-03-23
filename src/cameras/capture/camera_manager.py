@@ -1,8 +1,8 @@
 """Camera Manager - Quản lý nhiều camera."""
 
 import logging
-from typing import Dict, Optional
-from dataclasses import dataclass
+from typing import Dict, Optional, Callable, List
+from dataclasses import dataclass, field
 
 from .rtsp_client import RTSPClient, StreamStats, test_connection
 from src.models.camera import CameraConfig
@@ -24,6 +24,11 @@ class CameraManager:
 
     def __init__(self):
         self._cameras: Dict[str, CameraInfo] = {}
+        self._frame_callbacks: List[Callable] = []
+
+    def add_frame_callback(self, callback: Callable):
+        """Register a frame callback. Signature: callback(camera_id, frame, stats)."""
+        self._frame_callbacks.append(callback)
 
     def add_camera(self, config: CameraConfig) -> bool:
         """Thêm camera và bắt đầu stream."""
@@ -74,20 +79,21 @@ class CameraManager:
         camera_info = self._cameras[camera_id]
         config = camera_info.config
 
-        # Create RTSP client
+        # Create RTSP client with GPU support
+        def on_frame(frame, stats, cid=camera_id):
+            self._dispatch_frame(cid, frame, stats)
+
         client = RTSPClient(
             camera_id=camera_id,
             rtsp_url=config.rtsp_url,
-            on_frame=lambda frame, stats: self._on_frame(camera_id, frame, stats)
+            on_frame=on_frame,
         )
 
-        # Connect
         if not client.connect():
             logger.error(f"Failed to connect to camera {camera_id}")
             camera_info.stats = client.stats
             return False
 
-        # Start reading
         client.start()
         camera_info.client = client
         camera_info.stats = client.stats
@@ -102,7 +108,6 @@ class CameraManager:
             return False
 
         camera_info = self._cameras[camera_id]
-
         if camera_info.client is not None:
             camera_info.client.disconnect()
             camera_info.client = None
@@ -111,22 +116,13 @@ class CameraManager:
         logger.info(f"Stopped camera: {camera_id}")
         return True
 
-    def _on_frame(self, camera_id: str, frame, stats: StreamStats):
-        """Callback khi có frame mới."""
-        # Store frame for MJPEG streaming if callback is registered
-        if hasattr(self, '_external_callback') and self._external_callback:
+    def _dispatch_frame(self, camera_id: str, frame, stats: StreamStats):
+        """Dispatch frame to all registered callbacks."""
+        for callback in self._frame_callbacks:
             try:
-                self._external_callback(camera_id, frame, stats)
-            except:
-                pass
-
-    def set_frame_callback(self, callback):
-        """Set callback for frame processing."""
-        self._external_callback = callback
-
-    def register_frame_callback(self, callback):
-        """Register external frame callback."""
-        self._external_callback = callback
+                callback(camera_id, frame, stats)
+            except Exception as e:
+                logger.error(f"Frame callback error for {camera_id}: {e}")
 
     def test_connection(self, camera_id: str) -> dict:
         """Test kết nối camera."""
@@ -159,6 +155,8 @@ class CameraManager:
             "enabled": camera_info.enabled,
             "fps": round(stats.fps, 2),
             "frame_count": stats.frame_count,
+            "decode_method": stats.decode_method,
+            "resolution": f"{stats.width}x{stats.height}",
             "error": stats.error
         }
 
@@ -166,7 +164,7 @@ class CameraManager:
         """Lấy trạng thái tất cả camera."""
         return [
             self.get_status(camera_id)
-            for camera_id in self._cameras.keys()
+            for camera_id in self._cameras
         ]
 
 

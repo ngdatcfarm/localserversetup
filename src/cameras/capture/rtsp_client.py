@@ -1,4 +1,4 @@
-"""RTSP Client - Kết nối và đọc stream từ camera IP."""
+"""RTSP Client - Kết nối và đọc stream từ camera IP với GPU acceleration."""
 
 import cv2
 import threading
@@ -9,6 +9,27 @@ from dataclasses import dataclass, field
 
 logger = logging.getLogger(__name__)
 
+# Detect CUDA/NVDEC availability
+_cuda_available = False
+try:
+    if cv2.cuda.getCudaEnabledDeviceCount() > 0:
+        _cuda_available = True
+        logger.info(f"CUDA available: {cv2.cuda.getCudaEnabledDeviceCount()} device(s)")
+except AttributeError:
+    pass
+
+_cudacodec_available = False
+if _cuda_available:
+    try:
+        # Check if cudacodec module exists (requires opencv-contrib with CUDA)
+        _cudacodec_available = hasattr(cv2, 'cudacodec')
+        if _cudacodec_available:
+            logger.info("NVDEC hardware decoding available via cudacodec")
+    except Exception:
+        pass
+
+logger.info(f"GPU status: CUDA={_cuda_available}, NVDEC={_cudacodec_available}")
+
 
 @dataclass
 class StreamStats:
@@ -18,10 +39,13 @@ class StreamStats:
     bytes_read: int = 0
     connected: bool = False
     error: Optional[str] = None
+    decode_method: str = "cpu"  # "cpu" or "nvdec"
+    width: int = 0
+    height: int = 0
 
 
 class RTSPClient:
-    """RTSP Client sử dụng OpenCV."""
+    """RTSP Client sử dụng OpenCV với GPU acceleration (NVDEC)."""
 
     def __init__(
         self,
@@ -29,74 +53,136 @@ class RTSPClient:
         rtsp_url: str,
         on_frame: Optional[Callable] = None,
         reconnect: bool = True,
-        reconnect_interval: int = 5
+        reconnect_interval: int = 5,
+        use_gpu: bool = True,
+        resize_width: int = 0,
+        resize_height: int = 0,
     ):
         self.camera_id = camera_id
         self.rtsp_url = rtsp_url
         self.on_frame = on_frame
         self.reconnect = reconnect
         self.reconnect_interval = reconnect_interval
+        self.use_gpu = use_gpu and _cuda_available
+        self.resize_width = resize_width
+        self.resize_height = resize_height
 
-        self._cap: Optional[cv2.VideoCapture] = None
+        self._cap = None  # cv2.VideoCapture or cv2.cudacodec.VideoReader
         self._thread: Optional[threading.Thread] = None
         self._running = False
         self._lock = threading.Lock()
+        self._using_nvdec = False
 
         self.stats = StreamStats()
         self._last_frame_time = time.time()
-        self._frame_times = []
+        self._frame_times: list[float] = []
+
+        # Latest frame cache for snapshot/streaming
+        self._latest_frame = None
+        self._frame_lock = threading.Lock()
 
     def connect(self) -> bool:
-        """Kết nối đến camera."""
+        """Kết nối đến camera. Ưu tiên NVDEC, fallback CPU."""
         with self._lock:
-            try:
-                # Close existing connection
-                if self._cap is not None:
-                    self._cap.release()
-                    self._cap = None
+            self._release_capture()
 
-                logger.info(f"Connecting to {self.rtsp_url}")
+            # Try NVDEC first
+            if self.use_gpu and _cudacodec_available:
+                if self._connect_nvdec():
+                    return True
+                logger.warning(f"NVDEC failed for {self.camera_id}, falling back to CPU")
 
-                # Open RTSP stream
-                self._cap = cv2.VideoCapture(self.rtsp_url)
+            # Fallback: CPU decode with optimized settings
+            return self._connect_cpu()
 
-                if not self._cap.isOpened():
-                    self.stats.error = "Failed to open stream"
-                    self.stats.connected = False
-                    logger.error(f"Failed to connect to {self.rtsp_url}")
-                    return False
+    def _connect_nvdec(self) -> bool:
+        """Kết nối bằng NVDEC hardware decoder."""
+        try:
+            logger.info(f"[{self.camera_id}] Connecting via NVDEC: {self.rtsp_url}")
+            self._cap = cv2.cudacodec.createVideoReader(self.rtsp_url)
 
-                # Get stream info
-                width = int(self._cap.get(cv2.CAP_PROP_FRAME_WIDTH))
-                height = int(self._cap.get(cv2.CAP_PROP_FRAME_HEIGHT))
-                fps = self._cap.get(cv2.CAP_PROP_FPS)
-
-                logger.info(f"Connected to {self.camera_id}: {width}x{fps}fps")
-                self.stats.connected = True
-                self.stats.error = None
-                return True
-
-            except Exception as e:
-                self.stats.error = str(e)
-                self.stats.connected = False
-                logger.error(f"Error connecting to {self.rtsp_url}: {e}")
+            # Test read
+            ret, gpu_frame = self._cap.nextFrame()
+            if not ret:
+                self._cap = None
                 return False
+
+            h, w = gpu_frame.size()[:2] if hasattr(gpu_frame, 'size') else (0, 0)
+            logger.info(f"[{self.camera_id}] NVDEC connected: {w}x{h}")
+
+            self._using_nvdec = True
+            self.stats.connected = True
+            self.stats.error = None
+            self.stats.decode_method = "nvdec"
+            self.stats.width = w
+            self.stats.height = h
+            return True
+
+        except Exception as e:
+            logger.warning(f"[{self.camera_id}] NVDEC connect error: {e}")
+            self._cap = None
+            return False
+
+    def _connect_cpu(self) -> bool:
+        """Kết nối bằng CPU decode (FFmpeg backend)."""
+        try:
+            logger.info(f"[{self.camera_id}] Connecting via CPU: {self.rtsp_url}")
+
+            cap = cv2.VideoCapture(self.rtsp_url, cv2.CAP_FFMPEG)
+
+            # Optimize buffer to reduce latency
+            cap.set(cv2.CAP_PROP_BUFFERSIZE, 1)
+
+            if not cap.isOpened():
+                self.stats.error = "Failed to open stream"
+                self.stats.connected = False
+                return False
+
+            self._cap = cap
+            w = int(cap.get(cv2.CAP_PROP_FRAME_WIDTH))
+            h = int(cap.get(cv2.CAP_PROP_FRAME_HEIGHT))
+            fps = cap.get(cv2.CAP_PROP_FPS)
+
+            logger.info(f"[{self.camera_id}] CPU connected: {w}x{h} @ {fps}fps")
+
+            self._using_nvdec = False
+            self.stats.connected = True
+            self.stats.error = None
+            self.stats.decode_method = "cpu"
+            self.stats.width = w
+            self.stats.height = h
+            return True
+
+        except Exception as e:
+            self.stats.error = str(e)
+            self.stats.connected = False
+            logger.error(f"[{self.camera_id}] CPU connect error: {e}")
+            return False
+
+    def _release_capture(self):
+        """Release current capture safely."""
+        if self._cap is not None:
+            try:
+                if not self._using_nvdec:
+                    self._cap.release()
+            except Exception:
+                pass
+            self._cap = None
+            self._using_nvdec = False
 
     def disconnect(self):
         """Ngắt kết nối."""
         self._running = False
 
-        with self._lock:
-            if self._thread is not None:
-                self._thread.join(timeout=2)
-                self._thread = None
+        if self._thread is not None:
+            self._thread.join(timeout=3)
+            self._thread = None
 
-            if self._cap is not None:
-                self._cap.release()
-                self._cap = None
+        with self._lock:
+            self._release_capture()
 
         self.stats.connected = False
-        logger.info(f"Disconnected from {self.camera_id}")
+        logger.info(f"[{self.camera_id}] Disconnected")
 
     def start(self):
         """Bắt đầu đọc stream."""
@@ -106,12 +192,12 @@ class RTSPClient:
         self._running = True
         self._thread = threading.Thread(target=self._read_loop, daemon=True)
         self._thread.start()
-        logger.info(f"Started reading stream from {self.camera_id}")
+        logger.info(f"[{self.camera_id}] Stream reader started")
 
     def _read_loop(self):
         """Loop đọc frames từ stream."""
         consecutive_failures = 0
-        max_failures = 30  # About 30 seconds of failures before reconnect
+        max_failures = 30
 
         while self._running:
             with self._lock:
@@ -122,88 +208,134 @@ class RTSPClient:
                 continue
 
             try:
-                ret, frame = cap.read()
+                frame = self._read_frame(cap)
 
-                if not ret:
+                if frame is None:
                     consecutive_failures += 1
-                    logger.warning(f"Failed to read frame from {self.camera_id} ({consecutive_failures}/{max_failures})")
-
                     if consecutive_failures >= max_failures and self.reconnect:
-                        logger.info(f"Reconnecting to {self.camera_id}...")
+                        logger.info(f"[{self.camera_id}] Reconnecting after {consecutive_failures} failures...")
                         self.connect()
                         consecutive_failures = 0
-
                     time.sleep(0.1)
                     continue
 
                 consecutive_failures = 0
                 self.stats.frame_count += 1
 
-                # Calculate FPS
-                current_time = time.time()
-                self._frame_times.append(current_time)
+                # Resize if configured (reduces CPU load for JPEG encode later)
+                if self.resize_width > 0 and self.resize_height > 0:
+                    frame = self._resize_frame(frame)
 
-                # Keep only last 30 frame times for FPS calculation
-                self._frame_times = [t for t in self._frame_times if current_time - t < 1.0]
+                # Update FPS
+                self._update_fps()
 
-                if len(self._frame_times) > 1:
-                    self.stats.fps = len(self._frame_times) / (current_time - self._frame_times[0])
+                # Cache latest frame
+                with self._frame_lock:
+                    self._latest_frame = frame
 
-                self._last_frame_time = current_time
-
-                # Call frame callback
+                # Fire callback
                 if self.on_frame is not None:
                     self.on_frame(frame, self.stats)
 
             except Exception as e:
-                logger.error(f"Error reading frame from {self.camera_id}: {e}")
+                logger.error(f"[{self.camera_id}] Read error: {e}")
                 time.sleep(0.1)
 
-    def get_frame(self) -> Optional[tuple]:
-        """Lấy một frame (blocking)."""
+    def _read_frame(self, cap):
+        """Read a frame - handles both NVDEC and CPU capture."""
+        if self._using_nvdec:
+            ret, gpu_frame = cap.nextFrame()
+            if not ret:
+                return None
+            # Download from GPU to CPU (numpy array)
+            return gpu_frame.download()
+        else:
+            ret, frame = cap.read()
+            return frame if ret else None
+
+    def _resize_frame(self, frame):
+        """Resize frame, using CUDA if available."""
+        if _cuda_available and self.use_gpu:
+            try:
+                gpu_frame = cv2.cuda_GpuMat()
+                gpu_frame.upload(frame)
+                gpu_resized = cv2.cuda.resize(gpu_frame, (self.resize_width, self.resize_height))
+                return gpu_resized.download()
+            except Exception:
+                pass
+        return cv2.resize(frame, (self.resize_width, self.resize_height))
+
+    def _update_fps(self):
+        """Update FPS calculation."""
+        current_time = time.time()
+        self._frame_times.append(current_time)
+        # Keep only last 1 second of frame times
+        cutoff = current_time - 1.0
+        self._frame_times = [t for t in self._frame_times if t > cutoff]
+        if len(self._frame_times) > 1:
+            self.stats.fps = len(self._frame_times) / (current_time - self._frame_times[0])
+        self._last_frame_time = current_time
+
+    def get_latest_frame(self):
+        """Get the latest cached frame (non-blocking)."""
+        with self._frame_lock:
+            return self._latest_frame
+
+    def get_frame(self) -> Optional[any]:
+        """Lấy một frame (blocking read)."""
         with self._lock:
             cap = self._cap
-
-        if cap is None or not cap.isOpened():
+        if cap is None:
             return None
-
-        ret, frame = cap.read()
-        if ret:
-            return frame
-        return None
+        return self._read_frame(cap)
 
     def is_connected(self) -> bool:
         """Kiểm tra trạng thái kết nối."""
         with self._lock:
-            cap = self._cap
-
-        if cap is None:
-            return False
-
-        return cap.isOpened() and self.stats.connected
+            if self._cap is None:
+                return False
+            if self._using_nvdec:
+                return self.stats.connected
+            return self._cap.isOpened() and self.stats.connected
 
 
 def test_connection(rtsp_url: str, timeout: int = 5) -> dict:
-    """Test kết nối RTSP."""
+    """Test kết nối RTSP (ưu tiên NVDEC)."""
     result = {
         "success": False,
         "message": "",
         "width": 0,
         "height": 0,
-        "fps": 0.0
+        "fps": 0.0,
+        "decode_method": "cpu"
     }
 
-    try:
-        cap = cv2.VideoCapture(rtsp_url)
+    # Try NVDEC
+    if _cudacodec_available:
+        try:
+            reader = cv2.cudacodec.createVideoReader(rtsp_url)
+            ret, gpu_frame = reader.nextFrame()
+            if ret:
+                frame = gpu_frame.download()
+                h, w = frame.shape[:2]
+                result["success"] = True
+                result["message"] = "Connected via NVDEC (GPU)"
+                result["width"] = w
+                result["height"] = h
+                result["decode_method"] = "nvdec"
+                return result
+        except Exception:
+            pass
 
+    # Fallback CPU
+    try:
+        cap = cv2.VideoCapture(rtsp_url, cv2.CAP_FFMPEG)
         if not cap.isOpened():
             result["message"] = "Cannot open stream"
             return result
 
-        # Wait for first frame
         start_time = time.time()
         frame = None
-
         while time.time() - start_time < timeout:
             ret, frame = cap.read()
             if ret and frame is not None:
@@ -215,18 +347,17 @@ def test_connection(rtsp_url: str, timeout: int = 5) -> dict:
             cap.release()
             return result
 
-        # Get stream info
-        width = int(cap.get(cv2.CAP_PROP_FRAME_WIDTH))
-        height = int(cap.get(cv2.CAP_PROP_FRAME_HEIGHT))
+        w = int(cap.get(cv2.CAP_PROP_FRAME_WIDTH))
+        h = int(cap.get(cv2.CAP_PROP_FRAME_HEIGHT))
         fps = cap.get(cv2.CAP_PROP_FPS)
-
         cap.release()
 
         result["success"] = True
-        result["message"] = "Connected successfully"
-        result["width"] = width
-        result["height"] = height
+        result["message"] = "Connected via CPU (FFmpeg)"
+        result["width"] = w
+        result["height"] = h
         result["fps"] = fps
+        result["decode_method"] = "cpu"
         return result
 
     except Exception as e:

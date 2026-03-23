@@ -2,9 +2,9 @@
 
 from typing import List
 from fastapi import APIRouter, HTTPException, status
-from src.models.camera import CameraConfig, CameraStatus
+from src.models.camera import CameraConfig
 from src.services.storage.config_service import ConfigService
-from src.cameras.capture import camera_manager
+from src.cameras.capture.camera_manager import camera_manager
 
 
 router = APIRouter(prefix="/api/cameras", tags=["cameras"])
@@ -15,6 +15,12 @@ config_service = ConfigService()
 async def get_cameras():
     """Get all cameras."""
     return config_service.get_cameras()
+
+
+@router.get("/status/all")
+async def get_all_cameras_status():
+    """Get status of all cameras."""
+    return camera_manager.get_all_status()
 
 
 @router.get("/{camera_id}", response_model=CameraConfig)
@@ -33,13 +39,9 @@ async def get_camera(camera_id: str):
 async def add_camera(camera: CameraConfig):
     """Add new camera."""
     try:
-        # Add to config
         config_service.add_camera(camera)
-
-        # Add to camera manager if enabled
         if camera.enabled:
             camera_manager.add_camera(camera)
-
         return camera
     except ValueError as e:
         raise HTTPException(
@@ -58,12 +60,11 @@ async def update_camera(camera_id: str, camera: CameraConfig):
         )
 
     try:
-        # Update in config
         config_service.update_camera(camera)
 
-        # Update in camera manager
-        if camera.id in [c.id for c in camera_manager.get_all_cameras().values()]:
-            camera_manager.remove_camera(camera.id)
+        # Restart camera with new config
+        if camera_id in camera_manager.get_all_cameras():
+            camera_manager.remove_camera(camera_id)
 
         if camera.enabled:
             camera_manager.add_camera(camera)
@@ -79,11 +80,9 @@ async def update_camera(camera_id: str, camera: CameraConfig):
 @router.delete("/{camera_id}", status_code=status.HTTP_204_NO_CONTENT)
 async def delete_camera(camera_id: str):
     """Delete camera."""
-    # Remove from camera manager
-    if camera_id in [c.id for c in camera_manager.get_all_cameras().values()]:
+    if camera_id in camera_manager.get_all_cameras():
         camera_manager.remove_camera(camera_id)
 
-    # Delete from config
     if not config_service.delete_camera(camera_id):
         raise HTTPException(
             status_code=status.HTTP_404_NOT_FOUND,
@@ -124,19 +123,24 @@ async def start_camera(camera_id: str):
             detail=f"Camera {camera_id} not found"
         )
 
-    success = camera_manager.start_camera(camera_id)
-    if success:
-        return {"message": f"Camera {camera_id} started"}
-    return {"message": f"Failed to start camera {camera_id}"}, 500
+    # Add camera if not in manager yet
+    if camera_id not in camera_manager.get_all_cameras():
+        camera_manager.add_camera(camera)
+    else:
+        camera_manager.start_camera(camera_id)
+
+    return {"message": f"Camera {camera_id} started"}
 
 
 @router.post("/{camera_id}/stop")
 async def stop_camera(camera_id: str):
     """Stop camera stream."""
-    success = camera_manager.stop_camera(camera_id)
-    if success:
+    if camera_manager.stop_camera(camera_id):
         return {"message": f"Camera {camera_id} stopped"}
-    return {"message": f"Camera {camera_id} not running"}
+    raise HTTPException(
+        status_code=status.HTTP_404_NOT_FOUND,
+        detail=f"Camera {camera_id} not running"
+    )
 
 
 @router.get("/{camera_id}/test")
@@ -149,17 +153,5 @@ async def test_camera_connection(camera_id: str):
             detail=f"Camera {camera_id} not found"
         )
 
-    # Test connection
     result = camera_manager.test_connection(camera_id)
-
-    return {
-        "camera_id": camera_id,
-        "rtsp_url": camera.rtsp_url,
-        **result
-    }
-
-
-@router.get("/status/all")
-async def get_all_cameras_status():
-    """Get status of all cameras."""
-    return camera_manager.get_all_status()
+    return {"camera_id": camera_id, **result}
