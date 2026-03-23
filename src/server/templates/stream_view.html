@@ -2,171 +2,314 @@
 <html lang="vi">
 <head>
     <meta charset="UTF-8">
-    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0, viewport-fit=cover, user-scalable=no">
+    <meta name="apple-mobile-web-app-capable" content="yes">
+    <meta name="apple-mobile-web-app-status-bar-style" content="black-translucent">
+    <meta name="theme-color" content="#000000">
     <title>{{ camera_name }} - Stream</title>
     <script src="https://cdn.tailwindcss.com"></script>
     <link rel="stylesheet" href="https://cdnjs.cloudflare.com/ajax/libs/font-awesome/6.5.1/css/all.min.css">
     <style>
-        body { margin: 0; background: #000; overflow: hidden; }
-        .stream-container {
-            width: 100vw; height: 100vh;
+        * { -webkit-tap-highlight-color: transparent; margin: 0; padding: 0; box-sizing: border-box; }
+        html, body { background: #000; overflow: hidden; height: 100%; width: 100%; touch-action: none; }
+
+        /* Stream fills viewport */
+        .stream-wrap {
+            position: fixed; inset: 0;
             display: flex; align-items: center; justify-content: center;
-            position: relative;
         }
-        .stream-container img {
-            max-width: 100%; max-height: 100%; object-fit: contain;
+        .stream-wrap img {
+            width: 100%; height: 100%; object-fit: contain;
         }
-        /* PTZ D-pad */
-        .ptz-overlay {
-            position: fixed; bottom: 24px; right: 24px; z-index: 50;
-            background: rgba(31,41,55,0.85); border-radius: 16px; padding: 16px;
-            backdrop-filter: blur(8px); border: 1px solid rgba(255,255,255,0.1);
-        }
-        .ptz-panel {
-            display: grid; grid-template-columns: repeat(3, 1fr);
-            gap: 6px; width: 144px;
-        }
-        .ptz-btn {
-            width: 42px; height: 42px; border-radius: 50%; border: none; cursor: pointer;
-            display: flex; align-items: center; justify-content: center;
-            background: #374151; color: #d1d5db; transition: all 0.15s;
-            font-size: 16px; user-select: none;
-        }
-        .ptz-btn:hover { background: #3b82f6; color: white; }
-        .ptz-btn:active { background: #2563eb; transform: scale(0.9); }
-        .ptz-btn.center { background: transparent; cursor: default; font-size: 10px; }
-        .ptz-btn.center:hover { background: transparent; color: #4b5563; }
-        /* Top bar */
+
+        /* Auto-hide UI */
+        .ui-layer { transition: opacity 0.3s; }
+        .ui-hidden .ui-layer { opacity: 0; pointer-events: none; }
+
+        /* Top bar gradient */
         .top-bar {
-            position: fixed; top: 0; left: 0; right: 0; z-index: 50;
-            background: linear-gradient(to bottom, rgba(0,0,0,0.7), transparent);
-            padding: 12px 20px; display: flex; align-items: center; justify-content: space-between;
+            position: fixed; top: 0; left: 0; right: 0; z-index: 40;
+            background: linear-gradient(to bottom, rgba(0,0,0,0.75) 0%, transparent 100%);
+            padding: env(safe-area-inset-top, 0) 0 0 0;
         }
-        .top-bar a { color: #9ca3af; text-decoration: none; }
-        .top-bar a:hover { color: white; }
+        .top-bar-inner {
+            display: flex; align-items: center; justify-content: space-between;
+            padding: 12px 16px; gap: 12px;
+        }
+
+        /* Bottom controls tray */
+        .bottom-tray {
+            position: fixed; bottom: 0; left: 0; right: 0; z-index: 40;
+            background: linear-gradient(to top, rgba(0,0,0,0.8) 0%, transparent 100%);
+            padding: 0 0 env(safe-area-inset-bottom, 0) 0;
+        }
+        .bottom-inner { padding: 20px 16px 16px; }
+
+        /* PTZ Joystick */
+        .ptz-ring {
+            width: 140px; height: 140px; position: relative;
+            border-radius: 50%;
+            background: radial-gradient(circle, rgba(55,65,81,0.6) 30%, rgba(55,65,81,0.3) 70%);
+            border: 2px solid rgba(255,255,255,0.08);
+            backdrop-filter: blur(12px);
+        }
+        .ptz-dir {
+            position: absolute; width: 44px; height: 44px;
+            border-radius: 50%; border: none; cursor: pointer;
+            display: flex; align-items: center; justify-content: center;
+            background: rgba(255,255,255,0.08); color: #d1d5db;
+            font-size: 15px; user-select: none;
+            transition: background 0.1s, transform 0.1s;
+        }
+        .ptz-dir:active, .ptz-dir.active { background: #3b82f6; color: white; transform: scale(0.9); }
+        .ptz-dir.up    { top: 2px;  left: 50%; transform: translateX(-50%); }
+        .ptz-dir.down  { bottom: 2px; left: 50%; transform: translateX(-50%); }
+        .ptz-dir.left  { left: 2px; top: 50%; transform: translateY(-50%); }
+        .ptz-dir.right { right: 2px; top: 50%; transform: translateY(-50%); }
+        .ptz-dir.up:active    { transform: translateX(-50%) scale(0.9); }
+        .ptz-dir.down:active  { transform: translateX(-50%) scale(0.9); }
+        .ptz-dir.left:active  { transform: translateY(-50%) scale(0.9); }
+        .ptz-dir.right:active { transform: translateY(-50%) scale(0.9); }
+        .ptz-center {
+            position: absolute; top: 50%; left: 50%; transform: translate(-50%,-50%);
+            width: 28px; height: 28px; border-radius: 50%;
+            background: rgba(255,255,255,0.05); border: 1px solid rgba(255,255,255,0.1);
+        }
+
         /* Speed slider */
-        .speed-control {
-            display: flex; align-items: center; gap: 8px;
-            margin-top: 12px; padding-top: 10px; border-top: 1px solid rgba(255,255,255,0.1);
+        .speed-track {
+            -webkit-appearance: none; appearance: none;
+            width: 100%; height: 4px; border-radius: 2px;
+            background: rgba(255,255,255,0.1); outline: none;
         }
-        .speed-control input[type="range"] {
-            width: 100%; accent-color: #3b82f6; height: 4px;
+        .speed-track::-webkit-slider-thumb {
+            -webkit-appearance: none; width: 20px; height: 20px;
+            border-radius: 50%; background: #3b82f6; border: 2px solid #1e3a5f;
+            cursor: pointer;
         }
+
+        /* Action buttons */
+        .action-btn {
+            width: 44px; height: 44px; border-radius: 50%; border: none;
+            background: rgba(255,255,255,0.08); color: #d1d5db;
+            display: flex; align-items: center; justify-content: center;
+            cursor: pointer; transition: background 0.15s;
+            backdrop-filter: blur(8px);
+        }
+        .action-btn:active { background: rgba(255,255,255,0.2); }
+        .action-btn.active { background: #3b82f6; color: white; }
+
+        /* Landscape optimization */
+        @media (orientation: landscape) and (max-height: 500px) {
+            .top-bar-inner { padding: 6px 16px; }
+            .bottom-inner { padding: 8px 16px; }
+            .ptz-ring { width: 110px; height: 110px; }
+            .ptz-dir { width: 36px; height: 36px; font-size: 13px; }
+            .bottom-layout { flex-direction: row; align-items: center; }
+            .speed-row { max-width: 160px; }
+        }
+
+        /* Offline state */
+        .offline-state {
+            position: fixed; inset: 0; z-index: 10;
+            display: none; flex-direction: column;
+            align-items: center; justify-content: center;
+            background: #000; color: #6b7280; gap: 12px;
+        }
+        .offline-state.show { display: flex; }
     </style>
 </head>
 <body>
-    <!-- Top bar -->
-    <div class="top-bar">
-        <div class="flex items-center gap-3">
-            <a href="/" title="Quay lại"><i class="fas fa-arrow-left text-lg"></i></a>
-            <span class="text-white font-semibold">{{ camera_name }}</span>
-        </div>
-        <span class="text-gray-400 text-sm">{{ camera_ip }}</span>
-    </div>
-
-    <!-- Stream -->
-    <div class="stream-container">
+    <!-- Tap zone to toggle UI -->
+    <div class="stream-wrap" id="streamWrap" onclick="toggleUI()">
         <img src="/stream/{{ camera_id }}/mjpeg" alt="Stream" id="streamImg">
-        <div id="offlineMsg" class="absolute text-gray-500 text-center hidden">
-            <i class="fas fa-video-slash text-5xl mb-3"></i>
-            <p>Camera offline</p>
+    </div>
+
+    <!-- Offline -->
+    <div class="offline-state" id="offlineState">
+        <i class="fas fa-video-slash text-4xl"></i>
+        <p class="text-sm">Camera offline</p>
+        <button onclick="location.reload()" class="mt-2 px-4 py-2 bg-gray-800 rounded-xl text-sm text-gray-300">
+            <i class="fas fa-rotate-right mr-1.5"></i>Thử lại
+        </button>
+    </div>
+
+    <!-- Top Bar -->
+    <div class="top-bar ui-layer" id="topBar">
+        <div class="top-bar-inner">
+            <div class="flex items-center gap-3 min-w-0">
+                <a href="/" class="action-btn flex-shrink-0" style="width:36px;height:36px">
+                    <i class="fas fa-chevron-left text-sm"></i>
+                </a>
+                <div class="min-w-0">
+                    <div class="text-white font-semibold text-sm truncate">{{ camera_name }}</div>
+                    <div class="text-gray-500 text-[11px]">{{ camera_ip }}</div>
+                </div>
+            </div>
+            <div class="flex items-center gap-2">
+                <button class="action-btn" id="fullscreenBtn" onclick="toggleFullscreen()" title="Toàn màn hình">
+                    <i class="fas fa-expand text-sm"></i>
+                </button>
+            </div>
         </div>
     </div>
 
-    <!-- PTZ Controls -->
-    <div class="ptz-overlay" id="ptzPanel">
-        <div class="ptz-panel">
-            <div></div>
-            <button class="ptz-btn" onmousedown="ptzMove('up')" onmouseup="ptzStop('up')" onmouseleave="ptzStop('up')"
-                    ontouchstart="ptzMove('up')" ontouchend="ptzStop('up')" title="Lên">
-                <i class="fas fa-chevron-up"></i>
-            </button>
-            <div></div>
-            <button class="ptz-btn" onmousedown="ptzMove('left')" onmouseup="ptzStop('left')" onmouseleave="ptzStop('left')"
-                    ontouchstart="ptzMove('left')" ontouchend="ptzStop('left')" title="Trái">
-                <i class="fas fa-chevron-left"></i>
-            </button>
-            <div class="ptz-btn center"><i class="fas fa-circle text-gray-600"></i></div>
-            <button class="ptz-btn" onmousedown="ptzMove('right')" onmouseup="ptzStop('right')" onmouseleave="ptzStop('right')"
-                    ontouchstart="ptzMove('right')" ontouchend="ptzStop('right')" title="Phải">
-                <i class="fas fa-chevron-right"></i>
-            </button>
-            <div></div>
-            <button class="ptz-btn" onmousedown="ptzMove('down')" onmouseup="ptzStop('down')" onmouseleave="ptzStop('down')"
-                    ontouchstart="ptzMove('down')" ontouchend="ptzStop('down')" title="Xuống">
-                <i class="fas fa-chevron-down"></i>
-            </button>
-            <div></div>
-        </div>
-        <!-- Speed -->
-        <div class="speed-control">
-            <i class="fas fa-gauge text-gray-400 text-xs"></i>
-            <input type="range" id="speedSlider" min="1" max="10" value="6" title="Tốc độ">
-            <span class="text-gray-400 text-xs w-4" id="speedValue">6</span>
+    <!-- Bottom Controls -->
+    <div class="bottom-tray ui-layer" id="bottomTray">
+        <div class="bottom-inner">
+            <div class="bottom-layout flex flex-col items-center gap-4">
+                <!-- PTZ Ring -->
+                <div class="ptz-ring" id="ptzRing">
+                    <button class="ptz-dir up" data-dir="up"><i class="fas fa-chevron-up"></i></button>
+                    <button class="ptz-dir down" data-dir="down"><i class="fas fa-chevron-down"></i></button>
+                    <button class="ptz-dir left" data-dir="left"><i class="fas fa-chevron-left"></i></button>
+                    <button class="ptz-dir right" data-dir="right"><i class="fas fa-chevron-right"></i></button>
+                    <div class="ptz-center"></div>
+                </div>
+
+                <!-- Speed -->
+                <div class="speed-row flex items-center gap-3 w-full max-w-[200px]">
+                    <i class="fas fa-gauge-low text-gray-500 text-xs"></i>
+                    <input type="range" id="speedSlider" class="speed-track flex-1" min="1" max="10" value="5">
+                    <span class="text-gray-400 text-xs font-mono w-4 text-center" id="speedVal">5</span>
+                    <i class="fas fa-gauge-high text-gray-500 text-xs"></i>
+                </div>
+            </div>
         </div>
     </div>
 
     <script>
         const CAMERA_ID = '{{ camera_id }}';
+        let uiVisible = true;
+        let hideTimer = null;
 
-        function getSpeed() {
-            return parseInt(document.getElementById('speedSlider').value);
+        /* UI auto-hide */
+        function toggleUI() {
+            uiVisible = !uiVisible;
+            document.body.classList.toggle('ui-hidden', !uiVisible);
+            resetHideTimer();
         }
 
-        document.getElementById('speedSlider').addEventListener('input', function() {
-            document.getElementById('speedValue').textContent = this.value;
+        function resetHideTimer() {
+            clearTimeout(hideTimer);
+            if (uiVisible) {
+                hideTimer = setTimeout(() => {
+                    uiVisible = false;
+                    document.body.classList.add('ui-hidden');
+                }, 5000);
+            }
+        }
+
+        // Keep UI visible when interacting with controls
+        document.getElementById('bottomTray').addEventListener('click', e => e.stopPropagation());
+        document.getElementById('topBar').addEventListener('click', e => e.stopPropagation());
+        ['touchstart','mousedown'].forEach(evt => {
+            document.getElementById('bottomTray').addEventListener(evt, () => {
+                clearTimeout(hideTimer);
+            });
+        });
+        ['touchend','mouseup'].forEach(evt => {
+            document.getElementById('bottomTray').addEventListener(evt, () => {
+                resetHideTimer();
+            });
         });
 
-        async function ptzMove(direction) {
+        resetHideTimer();
+
+        /* Speed */
+        const speedSlider = document.getElementById('speedSlider');
+        const speedVal = document.getElementById('speedVal');
+        speedSlider.addEventListener('input', () => { speedVal.textContent = speedSlider.value; });
+
+        function getSpeed() { return parseInt(speedSlider.value); }
+
+        /* PTZ Controls */
+        async function ptzMove(dir) {
             try {
                 await fetch(`/api/cameras/${CAMERA_ID}/ptz/move`, {
                     method: 'POST',
                     headers: { 'Content-Type': 'application/json' },
-                    body: JSON.stringify({ direction, speed: getSpeed() })
+                    body: JSON.stringify({ direction: dir, speed: getSpeed() })
                 });
-            } catch (e) {
-                console.error('PTZ move error:', e);
-            }
+            } catch (e) { console.error('PTZ:', e); }
         }
 
-        async function ptzStop(direction) {
+        async function ptzStop(dir) {
             try {
                 await fetch(`/api/cameras/${CAMERA_ID}/ptz/stop`, {
                     method: 'POST',
                     headers: { 'Content-Type': 'application/json' },
-                    body: JSON.stringify({ direction, speed: getSpeed() })
+                    body: JSON.stringify({ direction: dir, speed: getSpeed() })
                 });
-            } catch (e) {
-                console.error('PTZ stop error:', e);
-            }
+            } catch (e) { console.error('PTZ:', e); }
         }
 
-        // Keyboard controls
-        const keyMap = { ArrowUp: 'up', ArrowDown: 'down', ArrowLeft: 'left', ArrowRight: 'right' };
+        // Bind PTZ buttons (mouse + touch)
+        document.querySelectorAll('.ptz-dir').forEach(btn => {
+            const dir = btn.dataset.dir;
+
+            btn.addEventListener('mousedown', e => { e.preventDefault(); ptzMove(dir); btn.classList.add('active'); });
+            btn.addEventListener('mouseup', () => { ptzStop(dir); btn.classList.remove('active'); });
+            btn.addEventListener('mouseleave', () => { ptzStop(dir); btn.classList.remove('active'); });
+
+            btn.addEventListener('touchstart', e => { e.preventDefault(); ptzMove(dir); btn.classList.add('active'); }, { passive: false });
+            btn.addEventListener('touchend', e => { e.preventDefault(); ptzStop(dir); btn.classList.remove('active'); });
+            btn.addEventListener('touchcancel', () => { ptzStop(dir); btn.classList.remove('active'); });
+
+            // Prevent click from toggling UI
+            btn.addEventListener('click', e => e.stopPropagation());
+        });
+
+        /* Keyboard controls */
+        const keyMap = { ArrowUp:'up', ArrowDown:'down', ArrowLeft:'left', ArrowRight:'right' };
         const activeKeys = new Set();
 
-        document.addEventListener('keydown', (e) => {
+        document.addEventListener('keydown', e => {
             const dir = keyMap[e.key];
             if (dir && !activeKeys.has(dir)) {
                 activeKeys.add(dir);
                 ptzMove(dir);
+                const btn = document.querySelector(`.ptz-dir.${dir}`);
+                if (btn) btn.classList.add('active');
                 e.preventDefault();
             }
         });
 
-        document.addEventListener('keyup', (e) => {
+        document.addEventListener('keyup', e => {
             const dir = keyMap[e.key];
             if (dir) {
                 activeKeys.delete(dir);
                 ptzStop(dir);
+                const btn = document.querySelector(`.ptz-dir.${dir}`);
+                if (btn) btn.classList.remove('active');
                 e.preventDefault();
             }
         });
 
-        // Stream error handling
-        document.getElementById('streamImg').addEventListener('error', function() {
-            this.classList.add('hidden');
-            document.getElementById('offlineMsg').classList.remove('hidden');
+        /* Fullscreen */
+        function toggleFullscreen() {
+            if (!document.fullscreenElement) {
+                document.documentElement.requestFullscreen().catch(() => {});
+            } else {
+                document.exitFullscreen();
+            }
+        }
+
+        document.addEventListener('fullscreenchange', () => {
+            const btn = document.getElementById('fullscreenBtn');
+            const icon = btn.querySelector('i');
+            if (document.fullscreenElement) {
+                icon.className = 'fas fa-compress text-sm';
+                btn.classList.add('active');
+            } else {
+                icon.className = 'fas fa-expand text-sm';
+                btn.classList.remove('active');
+            }
+        });
+
+        /* Stream error */
+        document.getElementById('streamImg').addEventListener('error', () => {
+            document.getElementById('offlineState').classList.add('show');
         });
     </script>
 </body>
