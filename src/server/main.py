@@ -6,9 +6,10 @@ from fastapi.staticfiles import StaticFiles
 from fastapi.responses import HTMLResponse
 from fastapi.templating import Jinja2Templates
 
-from src.server.routes import cameras_router, ptz_router
+from src.server.routes import cameras_router, ptz_router, recording_router
 from src.cameras.stream.mjpeg_stream import router as stream_router, setup_mjpeg
 from src.services.storage.config_service import ConfigService
+from src.services.storage.recording_service import recording_service
 from src.cameras.capture.camera_manager import camera_manager
 
 # Initialize
@@ -25,8 +26,16 @@ app = FastAPI(
 @app.on_event("startup")
 async def startup_event():
     """Startup: register callbacks then start cameras."""
-    # 1. Register MJPEG frame callback BEFORE starting cameras
+    # 1. Register frame callbacks BEFORE starting cameras
     setup_mjpeg()
+
+    # 1b. Setup recording service from config
+    rec_config = config_service.get_recording_config()
+    recording_service.update_settings(
+        recording_dir=rec_config.get("recording_dir", "F:\\Camera"),
+        segment_duration=rec_config.get("segment_duration", 600),
+    )
+    camera_manager.add_frame_callback(recording_service.on_frame)
 
     # 2. Start all enabled cameras
     cameras = config_service.get_cameras()
@@ -41,6 +50,7 @@ async def startup_event():
 @app.on_event("shutdown")
 async def shutdown_event():
     """Shutdown: stop all cameras."""
+    recording_service.stop_all()
     for camera_id in list(camera_manager.get_all_cameras().keys()):
         camera_manager.stop_camera(camera_id)
 
@@ -57,12 +67,19 @@ if static_dir.exists():
 app.include_router(cameras_router)
 app.include_router(ptz_router)
 app.include_router(stream_router)
+app.include_router(recording_router)
 
 
 @app.get("/", response_class=HTMLResponse)
 async def root():
     """Serve dashboard."""
     return templates.TemplateResponse("index.html", {"request": {}})
+
+
+@app.get("/recordings", response_class=HTMLResponse)
+async def recordings_page():
+    """Serve recordings browser page."""
+    return templates.TemplateResponse("recordings.html", {"request": {}})
 
 
 @app.get("/health")

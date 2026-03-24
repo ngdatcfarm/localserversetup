@@ -66,9 +66,12 @@
                 </div>
                 <div class="flex items-center gap-3">
                     <span id="cameraCount" class="text-gray-500 text-sm hidden sm:inline">0 cameras</span>
+                    <a href="/recordings" class="flex items-center gap-2 bg-gray-700 hover:bg-gray-600 active:bg-gray-800 px-3 py-2 rounded-xl text-sm font-medium transition-colors">
+                        <i class="fas fa-circle-dot text-red-400 text-xs"></i> <span class="hidden sm:inline">Ban ghi</span>
+                    </a>
                     <!-- Desktop add button -->
                     <button onclick="openAddModal()" class="hidden sm:flex items-center gap-2 bg-blue-600 hover:bg-blue-500 active:bg-blue-700 px-4 py-2 rounded-xl text-sm font-medium transition-colors">
-                        <i class="fas fa-plus text-xs"></i> Thêm Camera
+                        <i class="fas fa-plus text-xs"></i> Them Camera
                     </button>
                 </div>
             </div>
@@ -268,14 +271,19 @@
                                 <p class="text-gray-500 text-xs mt-0.5 truncate">${cam.ip}:${cam.port}</p>
                             </div>
                             <div class="flex items-center gap-1 ml-2 flex-shrink-0">
+                                <button onclick="event.stopPropagation();toggleRecording('${cam.id}')" id="rec-btn-${cam.id}"
+                                        class="w-8 h-8 rounded-lg flex items-center justify-center text-gray-500 hover:text-red-400 hover:bg-red-400/10 transition-colors"
+                                        title="Ghi hinh">
+                                    <i class="fas fa-circle text-xs"></i>
+                                </button>
                                 <button onclick="event.stopPropagation();editCamera('${cam.id}')"
                                         class="w-8 h-8 rounded-lg flex items-center justify-center text-gray-500 hover:text-white hover:bg-gray-700 transition-colors"
-                                        title="Chỉnh sửa">
+                                        title="Chinh sua">
                                     <i class="fas fa-pen text-xs"></i>
                                 </button>
                                 <button onclick="event.stopPropagation();deleteCamera('${cam.id}')"
                                         class="w-8 h-8 rounded-lg flex items-center justify-center text-gray-500 hover:text-red-400 hover:bg-red-400/10 transition-colors"
-                                        title="Xóa">
+                                        title="Xoa">
                                     <i class="fas fa-trash-can text-xs"></i>
                                 </button>
                             </div>
@@ -397,6 +405,46 @@
             toast._timer = setTimeout(() => toast.classList.add('hidden'), 3000);
         }
 
+        /* Recording toggle */
+        let recStatus = {};
+
+        async function toggleRecording(cameraId) {
+            const isRec = recStatus[cameraId];
+            const action = isRec ? 'stop' : 'start';
+            try {
+                await fetch(`/api/recording/${action}/${cameraId}`, { method: 'POST' });
+                showToast(isRec ? 'Da dung ghi' : 'Bat dau ghi hinh');
+                setTimeout(pollRecStatus, 300);
+            } catch (e) {
+                showToast('Loi ghi hinh', 'error');
+            }
+        }
+
+        async function pollRecStatus() {
+            try {
+                const res = await fetch('/api/recording/status');
+                const data = await res.json();
+                recStatus = {};
+                for (const [cid, st] of Object.entries(data)) {
+                    recStatus[cid] = st.recording;
+                    const btn = document.getElementById(`rec-btn-${cid}`);
+                    if (btn) {
+                        if (st.recording) {
+                            btn.classList.remove('text-gray-500');
+                            btn.classList.add('text-red-500');
+                            btn.innerHTML = '<i class="fas fa-circle text-xs animate-pulse"></i>';
+                            btn.title = 'Dung ghi';
+                        } else {
+                            btn.classList.remove('text-red-500');
+                            btn.classList.add('text-gray-500');
+                            btn.innerHTML = '<i class="fas fa-circle text-xs"></i>';
+                            btn.title = 'Ghi hinh';
+                        }
+                    }
+                }
+            } catch (e) {}
+        }
+
         /* Poll status */
         setInterval(async () => {
             try {
@@ -412,7 +460,11 @@
                 document.getElementById('onlineCameras').textContent = online;
                 document.getElementById('offlineCameras').textContent = cameras.length - online;
             } catch (e) {}
+            pollRecStatus();
         }, 3000);
+
+        // Initial recording status
+        setTimeout(pollRecStatus, 1000);
     </script>
 </body>
 </html>

@@ -121,6 +121,27 @@ class ConfigService:
         config = self.load_config()
         return config.get('stream', {})
 
+    # ── Recording Configuration ─────────────────────────────
+
+    def get_recording_config(self) -> dict:
+        """Get recording configuration."""
+        config = self.load_config()
+        return config.get('recording', {
+            "enabled": False,
+            "recording_dir": "F:\\Camera",
+            "segment_duration": 600,
+            "auto_record_cameras": []
+        })
+
+    def update_recording_config(self, recording_config: dict) -> dict:
+        """Update recording configuration."""
+        config = self.load_config()
+        current = config.get('recording', {})
+        current.update(recording_config)
+        config['recording'] = current
+        self.save_config(config)
+        return current
+
     # ── Preset Management ──────────────────────────────────
 
     def get_presets(self, camera_id: str) -> list:

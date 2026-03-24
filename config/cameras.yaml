@@ -33,6 +33,11 @@ storage:
   snapshot_dir: data/snapshots
   recording_dir: data/recordings
   export_dir: data/exports
+recording:
+  enabled: false
+  recording_dir: F:\Camera
+  segment_duration: 600
+  auto_record_cameras: []
 stream:
   hls_dir: data/hls
   segment_duration: 2

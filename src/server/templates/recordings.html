@@ -1,0 +1,472 @@
+<!DOCTYPE html>
+<html lang="vi">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0, viewport-fit=cover">
+    <meta name="apple-mobile-web-app-capable" content="yes">
+    <meta name="theme-color" content="#111827">
+    <title>Bản ghi - Camera Server</title>
+    <script src="https://cdn.tailwindcss.com"></script>
+    <link rel="stylesheet" href="https://cdnjs.cloudflare.com/ajax/libs/font-awesome/6.5.1/css/all.min.css">
+    <script>
+        tailwind.config = {
+            theme: {
+                extend: {
+                    colors: { surface: '#1a1f2e', card: '#212736', border: '#2d3348' }
+                }
+            }
+        }
+    </script>
+    <style>
+        * { -webkit-tap-highlight-color: transparent; }
+        body { padding-top: env(safe-area-inset-top); padding-bottom: env(safe-area-inset-bottom); }
+        ::-webkit-scrollbar { width: 4px; }
+        ::-webkit-scrollbar-thumb { background: #374151; border-radius: 4px; }
+        .toast-in { animation: toastIn 0.3s ease-out; }
+        @keyframes toastIn { from { transform: translateY(100%); opacity:0; } to { transform: translateY(0); opacity:1; } }
+        input:focus, select:focus { outline: none; border-color: #3b82f6; box-shadow: 0 0 0 2px rgba(59,130,246,0.25); }
+    </style>
+</head>
+<body class="bg-gray-900 text-gray-100 min-h-screen">
+
+    <!-- Header -->
+    <header class="sticky top-0 z-40 bg-gray-900/80 backdrop-blur-lg border-b border-gray-800">
+        <div class="px-4 sm:px-6 lg:px-8 max-w-7xl mx-auto">
+            <div class="flex items-center justify-between h-14 sm:h-16">
+                <div class="flex items-center gap-3">
+                    <a href="/" class="w-8 h-8 rounded-lg bg-gray-700 flex items-center justify-center hover:bg-gray-600 transition-colors">
+                        <i class="fas fa-arrow-left text-sm"></i>
+                    </a>
+                    <div class="flex items-center gap-2.5">
+                        <div class="w-8 h-8 rounded-lg bg-red-600 flex items-center justify-center">
+                            <i class="fas fa-circle-dot text-sm"></i>
+                        </div>
+                        <span class="font-bold text-lg">Ban ghi</span>
+                    </div>
+                </div>
+                <button onclick="openSettings()" class="flex items-center gap-2 bg-gray-700 hover:bg-gray-600 px-3 py-2 rounded-xl text-sm transition-colors">
+                    <i class="fas fa-gear text-xs"></i> <span class="hidden sm:inline">Cai dat</span>
+                </button>
+            </div>
+        </div>
+    </header>
+
+    <main class="px-4 sm:px-6 lg:px-8 max-w-7xl mx-auto pb-8">
+
+        <!-- Storage Stats -->
+        <div class="flex gap-3 py-4 overflow-x-auto">
+            <div class="flex-shrink-0 bg-card rounded-2xl px-4 py-3 min-w-[140px] border border-border">
+                <div class="text-gray-500 text-xs font-medium uppercase tracking-wide">Luu tru</div>
+                <div class="text-xl font-bold mt-0.5" id="totalStorage">0 GB</div>
+            </div>
+            <div class="flex-shrink-0 bg-card rounded-2xl px-4 py-3 min-w-[140px] border border-border">
+                <div class="text-gray-500 text-xs font-medium uppercase tracking-wide">Dang ghi</div>
+                <div class="text-xl font-bold mt-0.5 text-red-400" id="recordingCount">0</div>
+            </div>
+            <div class="flex-shrink-0 bg-card rounded-2xl px-4 py-3 min-w-[140px] border border-border">
+                <div class="text-gray-500 text-xs font-medium uppercase tracking-wide">Thu muc</div>
+                <div class="text-sm font-mono mt-1 text-gray-300 truncate max-w-[200px]" id="recordingDir">-</div>
+            </div>
+        </div>
+
+        <!-- Recording Controls -->
+        <div class="bg-card rounded-2xl border border-border p-4 mb-4">
+            <div class="flex items-center justify-between mb-3">
+                <h2 class="font-semibold text-base">Dieu khien ghi hinh</h2>
+                <div class="flex gap-2">
+                    <button onclick="startAll()" class="bg-red-600 hover:bg-red-500 px-3 py-1.5 rounded-lg text-xs font-medium transition-colors">
+                        <i class="fas fa-circle mr-1"></i>Ghi tat ca
+                    </button>
+                    <button onclick="stopAll()" class="bg-gray-600 hover:bg-gray-500 px-3 py-1.5 rounded-lg text-xs font-medium transition-colors">
+                        <i class="fas fa-stop mr-1"></i>Dung tat ca
+                    </button>
+                </div>
+            </div>
+            <div id="cameraRecControls" class="grid grid-cols-1 sm:grid-cols-2 lg:grid-cols-3 gap-2">
+            </div>
+        </div>
+
+        <!-- Filters -->
+        <div class="flex flex-wrap gap-3 mb-4">
+            <select id="filterCamera" onchange="loadRecordings()" class="bg-gray-800 border border-gray-700 rounded-xl px-3 py-2 text-sm min-w-[150px]">
+                <option value="">Tat ca camera</option>
+            </select>
+            <select id="filterDate" onchange="loadRecordings()" class="bg-gray-800 border border-gray-700 rounded-xl px-3 py-2 text-sm min-w-[150px]">
+                <option value="">Tat ca ngay</option>
+            </select>
+            <button onclick="loadRecordings()" class="bg-gray-700 hover:bg-gray-600 px-3 py-2 rounded-xl text-sm transition-colors">
+                <i class="fas fa-refresh"></i>
+            </button>
+        </div>
+
+        <!-- Recordings List -->
+        <div id="recordingsList" class="space-y-2">
+        </div>
+
+        <div id="emptyRecordings" class="flex flex-col items-center justify-center py-20 hidden">
+            <div class="w-20 h-20 rounded-full bg-gray-800 flex items-center justify-center mb-5">
+                <i class="fas fa-film text-gray-600 text-3xl"></i>
+            </div>
+            <h3 class="text-lg font-semibold text-gray-300 mb-1">Chua co ban ghi</h3>
+            <p class="text-gray-500 text-sm">Bat ghi hinh de bat dau luu tru</p>
+        </div>
+    </main>
+
+    <!-- Video Player Modal -->
+    <div id="playerModal" class="fixed inset-0 z-50 hidden bg-black/80 backdrop-blur-sm flex items-center justify-center p-4" onclick="closePlayer(event)">
+        <div class="bg-card rounded-2xl overflow-hidden w-full max-w-4xl border border-border" onclick="event.stopPropagation()">
+            <div class="flex items-center justify-between px-4 py-3 border-b border-border">
+                <div>
+                    <h3 id="playerTitle" class="font-semibold text-sm"></h3>
+                    <p id="playerSubtitle" class="text-gray-500 text-xs mt-0.5"></p>
+                </div>
+                <div class="flex items-center gap-2">
+                    <a id="playerDownload" href="#" download class="w-8 h-8 rounded-lg flex items-center justify-center text-gray-400 hover:text-white hover:bg-gray-700 transition-colors">
+                        <i class="fas fa-download text-sm"></i>
+                    </a>
+                    <button onclick="closePlayerBtn()" class="w-8 h-8 rounded-lg flex items-center justify-center text-gray-400 hover:text-white hover:bg-gray-700 transition-colors">
+                        <i class="fas fa-xmark text-sm"></i>
+                    </button>
+                </div>
+            </div>
+            <div class="bg-black">
+                <video id="videoPlayer" controls class="w-full max-h-[70vh]" playsinline>
+                </video>
+            </div>
+        </div>
+    </div>
+
+    <!-- Settings Modal -->
+    <div id="settingsModal" class="fixed inset-0 z-50 hidden bg-black/60 backdrop-blur-sm flex items-end sm:items-center justify-center" onclick="closeSettings(event)">
+        <div class="bg-card rounded-t-2xl sm:rounded-2xl w-full sm:max-w-md border border-border" onclick="event.stopPropagation()">
+            <div class="flex justify-center pt-3 pb-1 sm:hidden">
+                <div class="w-10 h-1 rounded-full bg-gray-600"></div>
+            </div>
+            <div class="px-5 pb-2 pt-2 flex justify-between items-center">
+                <h3 class="text-lg font-bold">Cai dat ghi hinh</h3>
+                <button onclick="closeSettingsBtn()" class="w-8 h-8 rounded-full bg-gray-700 flex items-center justify-center text-gray-400 hover:text-white">
+                    <i class="fas fa-xmark text-sm"></i>
+                </button>
+            </div>
+            <form id="settingsForm" class="px-5 pb-8 space-y-4" onsubmit="saveSettings(event)">
+                <div>
+                    <label class="block text-xs text-gray-400 mb-1 font-medium">Thu muc luu tru</label>
+                    <input type="text" id="settingRecDir" class="w-full bg-gray-800 border border-gray-700 rounded-xl px-3.5 py-2.5 text-sm font-mono" placeholder="F:\Camera">
+                </div>
+                <div>
+                    <label class="block text-xs text-gray-400 mb-1 font-medium">Thoi luong segment (giay)</label>
+                    <input type="number" id="settingSegDuration" class="w-full bg-gray-800 border border-gray-700 rounded-xl px-3.5 py-2.5 text-sm" value="600" min="60" max="3600">
+                    <p class="text-gray-500 text-xs mt-1">Mac dinh 600 giay (10 phut). Moi segment la 1 file video rieng.</p>
+                </div>
+                <div class="flex gap-3 pt-2">
+                    <button type="button" onclick="closeSettingsBtn()" class="flex-1 py-3 bg-gray-700 hover:bg-gray-600 rounded-xl font-medium text-sm transition-colors">Huy</button>
+                    <button type="submit" class="flex-1 py-3 bg-blue-600 hover:bg-blue-500 rounded-xl font-medium text-sm transition-colors">Luu</button>
+                </div>
+            </form>
+        </div>
+    </div>
+
+    <!-- Toast -->
+    <div id="toast" class="fixed bottom-6 left-4 right-4 sm:left-auto sm:right-6 sm:w-80 z-50 hidden">
+        <div id="toastInner" class="flex items-center gap-3 px-4 py-3 rounded-2xl shadow-lg text-sm font-medium toast-in">
+            <i id="toastIcon" class="fas fa-check-circle"></i>
+            <span id="toastMessage"></span>
+        </div>
+    </div>
+
+    <script>
+        let cameras = [];
+        let recordings = [];
+
+        document.addEventListener('DOMContentLoaded', () => {
+            loadCameras();
+            loadSettings();
+            loadDates();
+            loadRecordings();
+        });
+
+        // ── Camera list & recording controls ────────────────
+
+        async function loadCameras() {
+            try {
+                const res = await fetch('/api/cameras');
+                cameras = await res.json();
+
+                // Populate filter dropdown
+                const sel = document.getElementById('filterCamera');
+                cameras.forEach(c => {
+                    const opt = document.createElement('option');
+                    opt.value = c.id;
+                    opt.textContent = c.name;
+                    sel.appendChild(opt);
+                });
+
+                updateRecControls();
+            } catch (e) {}
+        }
+
+        async function updateRecControls() {
+            const container = document.getElementById('cameraRecControls');
+            let statusMap = {};
+            try {
+                const res = await fetch('/api/recording/status');
+                statusMap = await res.json();
+            } catch (e) {}
+
+            let recordingCount = 0;
+            container.innerHTML = cameras.map(cam => {
+                const st = statusMap[cam.id];
+                const isRec = st && st.recording;
+                if (isRec) recordingCount++;
+                return `
+                    <div class="flex items-center justify-between bg-gray-800/50 rounded-xl px-3 py-2.5">
+                        <div class="flex items-center gap-2 min-w-0">
+                            ${isRec ? '<span class="w-2 h-2 rounded-full bg-red-500 animate-pulse flex-shrink-0"></span>' : '<span class="w-2 h-2 rounded-full bg-gray-600 flex-shrink-0"></span>'}
+                            <span class="text-sm truncate">${cam.name}</span>
+                        </div>
+                        <button onclick="toggleRec('${cam.id}', ${isRec})"
+                                class="flex-shrink-0 px-3 py-1 rounded-lg text-xs font-medium transition-colors
+                                ${isRec ? 'bg-red-600/20 text-red-400 hover:bg-red-600/30' : 'bg-gray-700 text-gray-300 hover:bg-gray-600'}">
+                            ${isRec ? '<i class="fas fa-stop mr-1"></i>Dung' : '<i class="fas fa-circle mr-1"></i>Ghi'}
+                        </button>
+                    </div>
+                `;
+            }).join('');
+
+            document.getElementById('recordingCount').textContent = recordingCount;
+        }
+
+        async function toggleRec(cameraId, isRecording) {
+            try {
+                const action = isRecording ? 'stop' : 'start';
+                await fetch(`/api/recording/${action}/${cameraId}`, { method: 'POST' });
+                showToast(isRecording ? 'Da dung ghi' : 'Bat dau ghi hinh');
+                setTimeout(updateRecControls, 500);
+            } catch (e) {
+                showToast('Loi', 'error');
+            }
+        }
+
+        async function startAll() {
+            await fetch('/api/recording/start-all', { method: 'POST' });
+            showToast('Bat dau ghi tat ca camera');
+            setTimeout(updateRecControls, 500);
+        }
+
+        async function stopAll() {
+            await fetch('/api/recording/stop-all', { method: 'POST' });
+            showToast('Da dung ghi tat ca');
+            setTimeout(updateRecControls, 500);
+        }
+
+        // ── Settings ────────────────────────────────────────
+
+        async function loadSettings() {
+            try {
+                const res = await fetch('/api/recording/settings');
+                const data = await res.json();
+                document.getElementById('recordingDir').textContent = data.recording_dir || '-';
+                document.getElementById('totalStorage').textContent = data.total_storage_gb >= 1
+                    ? `${data.total_storage_gb} GB` : `${data.total_storage_mb} MB`;
+                document.getElementById('settingRecDir').value = data.recording_dir || '';
+                document.getElementById('settingSegDuration').value = data.segment_duration || 600;
+            } catch (e) {}
+        }
+
+        function openSettings() {
+            document.getElementById('settingsModal').classList.remove('hidden');
+        }
+        function closeSettings(e) {
+            if (e.target === document.getElementById('settingsModal'))
+                document.getElementById('settingsModal').classList.add('hidden');
+        }
+        function closeSettingsBtn() {
+            document.getElementById('settingsModal').classList.add('hidden');
+        }
+
+        async function saveSettings(e) {
+            e.preventDefault();
+            try {
+                const res = await fetch('/api/recording/settings', {
+                    method: 'PUT',
+                    headers: { 'Content-Type': 'application/json' },
+                    body: JSON.stringify({
+                        recording_dir: document.getElementById('settingRecDir').value,
+                        segment_duration: parseInt(document.getElementById('settingSegDuration').value),
+                    })
+                });
+                if (!res.ok) throw new Error();
+                closeSettingsBtn();
+                loadSettings();
+                showToast('Da luu cai dat');
+            } catch (e) {
+                showToast('Loi luu cai dat', 'error');
+            }
+        }
+
+        // ── Recordings browser ──────────────────────────────
+
+        async function loadDates() {
+            try {
+                const res = await fetch('/api/recording/dates');
+                const dates = await res.json();
+                const sel = document.getElementById('filterDate');
+                // Clear existing except first option
+                while (sel.options.length > 1) sel.remove(1);
+                dates.forEach(d => {
+                    const opt = document.createElement('option');
+                    opt.value = d;
+                    opt.textContent = d;
+                    sel.appendChild(opt);
+                });
+            } catch (e) {}
+        }
+
+        async function loadRecordings() {
+            try {
+                const cameraId = document.getElementById('filterCamera').value;
+                const date = document.getElementById('filterDate').value;
+                let url = '/api/recording/files?';
+                if (cameraId) url += `camera_id=${cameraId}&`;
+                if (date) url += `date=${date}&`;
+
+                const res = await fetch(url);
+                recordings = await res.json();
+                renderRecordings();
+            } catch (e) {}
+        }
+
+        function renderRecordings() {
+            const list = document.getElementById('recordingsList');
+            const empty = document.getElementById('emptyRecordings');
+
+            if (recordings.length === 0) {
+                list.classList.add('hidden');
+                empty.classList.remove('hidden');
+                return;
+            }
+            list.classList.remove('hidden');
+            empty.classList.add('hidden');
+
+            // Group by date
+            const grouped = {};
+            recordings.forEach(r => {
+                const key = `${r.camera_id}|${r.date}`;
+                if (!grouped[key]) grouped[key] = { camera_id: r.camera_id, date: r.date, files: [] };
+                grouped[key].files.push(r);
+            });
+
+            list.innerHTML = Object.values(grouped).map(group => {
+                const camName = cameras.find(c => c.id === group.camera_id)?.name || group.camera_id;
+                return `
+                    <div class="bg-card rounded-2xl border border-border overflow-hidden">
+                        <div class="flex items-center justify-between px-4 py-3 border-b border-border">
+                            <div class="flex items-center gap-2">
+                                <i class="fas fa-video text-gray-500 text-xs"></i>
+                                <span class="font-semibold text-sm">${camName}</span>
+                                <span class="text-gray-500 text-xs">${group.date}</span>
+                            </div>
+                            <button onclick="deleteDate('${group.camera_id}','${group.date}')"
+                                    class="text-gray-500 hover:text-red-400 text-xs px-2 py-1 rounded-lg hover:bg-red-400/10 transition-colors">
+                                <i class="fas fa-trash-can"></i>
+                            </button>
+                        </div>
+                        <div class="divide-y divide-border">
+                            ${group.files.map(f => `
+                                <div class="flex items-center justify-between px-4 py-2.5 hover:bg-gray-800/30 transition-colors">
+                                    <button onclick="playVideo('${f.camera_id}','${f.date}','${f.filename}','${camName}')"
+                                            class="flex items-center gap-3 min-w-0 flex-1 text-left">
+                                        <div class="w-8 h-8 rounded-lg bg-blue-600/20 flex items-center justify-center flex-shrink-0">
+                                            <i class="fas fa-play text-blue-400 text-xs"></i>
+                                        </div>
+                                        <div class="min-w-0">
+                                            <div class="text-sm font-medium">${f.time}</div>
+                                            <div class="text-gray-500 text-xs">${f.size_mb} MB</div>
+                                        </div>
+                                    </button>
+                                    <div class="flex items-center gap-1">
+                                        <a href="/api/recording/play/${f.camera_id}/${f.date}/${f.filename}" download
+                                           class="w-8 h-8 rounded-lg flex items-center justify-center text-gray-500 hover:text-white hover:bg-gray-700 transition-colors">
+                                            <i class="fas fa-download text-xs"></i>
+                                        </a>
+                                        <button onclick="deleteFile('${f.camera_id}','${f.date}','${f.filename}')"
+                                                class="w-8 h-8 rounded-lg flex items-center justify-center text-gray-500 hover:text-red-400 hover:bg-red-400/10 transition-colors">
+                                            <i class="fas fa-trash-can text-xs"></i>
+                                        </button>
+                                    </div>
+                                </div>
+                            `).join('')}
+                        </div>
+                    </div>
+                `;
+            }).join('');
+        }
+
+        // ── Video player ────────────────────────────────────
+
+        function playVideo(cameraId, date, filename, camName) {
+            const url = `/api/recording/play/${cameraId}/${date}/${filename}`;
+            const video = document.getElementById('videoPlayer');
+            video.src = url;
+            document.getElementById('playerTitle').textContent = camName;
+            document.getElementById('playerSubtitle').textContent = `${date} ${filename.replace('.mp4','').replace(/-/g,':')}`;
+            document.getElementById('playerDownload').href = url;
+            document.getElementById('playerModal').classList.remove('hidden');
+            video.play();
+        }
+
+        function closePlayer(e) {
+            if (e.target === document.getElementById('playerModal')) closePlayerBtn();
+        }
+        function closePlayerBtn() {
+            document.getElementById('playerModal').classList.add('hidden');
+            document.getElementById('videoPlayer').pause();
+            document.getElementById('videoPlayer').src = '';
+        }
+
+        // ── Delete ──────────────────────────────────────────
+
+        async function deleteFile(cameraId, date, filename) {
+            if (!confirm('Xoa ban ghi nay?')) return;
+            try {
+                await fetch(`/api/recording/files/${cameraId}/${date}/${filename}`, { method: 'DELETE' });
+                showToast('Da xoa ban ghi');
+                loadRecordings();
+                loadSettings();
+            } catch (e) { showToast('Loi xoa', 'error'); }
+        }
+
+        async function deleteDate(cameraId, date) {
+            if (!confirm(`Xoa tat ca ban ghi ngay ${date}?`)) return;
+            try {
+                await fetch(`/api/recording/files/${cameraId}/${date}`, { method: 'DELETE' });
+                showToast('Da xoa');
+                loadRecordings();
+                loadDates();
+                loadSettings();
+            } catch (e) { showToast('Loi xoa', 'error'); }
+        }
+
+        // ── Toast ───────────────────────────────────────────
+
+        function showToast(msg, type = 'success') {
+            const toast = document.getElementById('toast');
+            const inner = document.getElementById('toastInner');
+            const styles = {
+                success: { bg: 'bg-emerald-600/90 text-white', icon: 'fa-check-circle' },
+                error:   { bg: 'bg-red-600/90 text-white', icon: 'fa-circle-exclamation' },
+            };
+            const s = styles[type] || styles.success;
+            inner.className = `flex items-center gap-3 px-4 py-3 rounded-2xl shadow-lg text-sm font-medium toast-in backdrop-blur ${s.bg}`;
+            document.getElementById('toastIcon').className = `fas ${s.icon}`;
+            document.getElementById('toastMessage').textContent = msg;
+            toast.classList.remove('hidden');
+            clearTimeout(toast._timer);
+            toast._timer = setTimeout(() => toast.classList.add('hidden'), 3000);
+        }
+
+        // Poll recording status
+        setInterval(() => { updateRecControls(); }, 5000);
+    </script>
+</body>
+</html>
