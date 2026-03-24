@@ -165,6 +165,12 @@
                 </div>
             </div>
             <div class="flex items-center gap-2">
+                <button class="action-btn" onclick="getPosition()" title="Xem vị trí">
+                    <i class="fas fa-crosshairs text-sm"></i>
+                </button>
+                <button class="action-btn" onclick="tarePosition()" title="Đặt làm gốc tọa độ">
+                    <i class="fas fa-target text-sm"></i>
+                </button>
                 <button class="action-btn" id="fullscreenBtn" onclick="toggleFullscreen()" title="Toàn màn hình">
                     <i class="fas fa-expand text-sm"></i>
                 </button>
@@ -249,18 +255,30 @@
 
         function getSpeed() { return parseInt(speedSlider.value); }
 
-        /* PTZ Controls */
+        /* PTZ Controls - Send continuously while holding */
+        let ptzInterval = null;
+        let ptzDirection = null;
+
         async function ptzMove(dir) {
-            try {
-                await fetch(`/api/cameras/${CAMERA_ID}/ptz/move`, {
-                    method: 'POST',
-                    headers: { 'Content-Type': 'application/json' },
-                    body: JSON.stringify({ direction: dir, speed: getSpeed() })
-                });
-            } catch (e) { console.error('PTZ:', e); }
+            ptzDirection = dir;
+            // Gửi move liên tục mỗi 0.5s để đếm số giây
+            if (ptzInterval) return;
+            ptzInterval = setInterval(async () => {
+                try {
+                    await fetch(`/api/cameras/${CAMERA_ID}/ptz/move`, {
+                        method: 'POST',
+                        headers: { 'Content-Type': 'application/json' },
+                        body: JSON.stringify({ direction: ptzDirection, speed: getSpeed() })
+                    });
+                } catch (e) {}
+            }, 500);
         }
 
         async function ptzStop(dir) {
+            if (ptzInterval) {
+                clearInterval(ptzInterval);
+                ptzInterval = null;
+            }
             try {
                 await fetch(`/api/cameras/${CAMERA_ID}/ptz/stop`, {
                     method: 'POST',
@@ -268,6 +286,7 @@
                     body: JSON.stringify({ direction: dir, speed: getSpeed() })
                 });
             } catch (e) { console.error('PTZ:', e); }
+            ptzDirection = null;
         }
 
         // Bind PTZ buttons (mouse + touch)
@@ -340,14 +359,16 @@
         async function loadPresets() {
             try {
                 const res = await fetch(`/api/cameras/${CAMERA_ID}/ptz/presets`);
-                presets = await res.json();
+                const data = await res.json();
+                // API returns {local: [...], hardware: [...]} or just array
+                presets = data.local || data;
                 renderPresets();
             } catch (e) { console.error('Load presets:', e); }
         }
 
         function renderPresets() {
             const bar = document.getElementById('presetBar');
-            if (!presets.length) {
+            if (!presets || !presets.length) {
                 bar.innerHTML = '<span class="text-gray-600 text-xs">Chưa có preset</span>';
                 return;
             }
@@ -429,6 +450,43 @@
 
         // Load presets on page load
         loadPresets();
+
+        /* Get Position - Debug */
+        async function getPosition() {
+            try {
+                const res = await fetch(`/api/cameras/${CAMERA_ID}/ptz/position`);
+                const data = await res.json();
+                if (data.success) {
+                    const pos = `Vị trí: Pan=${data.pan} | Tilt=${data.tilt}`;
+                    document.getElementById('presetHint').textContent = pos;
+                    setTimeout(() => {
+                        document.getElementById('presetHint').textContent = 'Nhấn giữ 2s để lưu vị trí hiện tại';
+                    }, 5000);
+                } else {
+                    alert('Lỗi: ' + (data.message || 'Unknown'));
+                }
+            } catch (e) {
+                alert('Lỗi kết nối: ' + e.message);
+            }
+        }
+
+        /* Tare - Set current position as origin */
+        async function tarePosition() {
+            try {
+                const res = await fetch(`/api/cameras/${CAMERA_ID}/ptz/tare`, { method: 'POST' });
+                const data = await res.json();
+                if (data.success) {
+                    document.getElementById('presetHint').textContent = '✓ Đã đặt làm gốc tọa độ!';
+                    setTimeout(() => {
+                        document.getElementById('presetHint').textContent = 'Nhấn giữ 2s để lưu vị trí hiện tại';
+                    }, 3000);
+                } else {
+                    alert('Lỗi: ' + (data.message || 'Unknown'));
+                }
+            } catch (e) {
+                alert('Lỗi kết nối: ' + e.message);
+            }
+        }
 
         /* Stream error */
         document.getElementById('streamImg').addEventListener('error', () => {

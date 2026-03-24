@@ -15,12 +15,20 @@ presets:
   cam_001:
   - number: 1
     name: window
+    pan: -2
+    tilt: 0
   - number: 2
     name: feed
+    pan: 4
+    tilt: 1
   - number: 3
     name: chicken
+    pan: 7
+    tilt: -2
   - number: 4
     name: daly
+    pan: 1
+    tilt: 2
 storage:
   snapshot_dir: data/snapshots
   recording_dir: data/recordings

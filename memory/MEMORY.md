@@ -153,6 +153,10 @@ PTZ Control:
 - `move(direction, speed)`, `stop(direction)`
 - Directions: up, down, left, right (IntEnum PTZCommand)
 - Auth: Digest first → Basic fallback
+- **Relative Position Tracking**: Server track vị trí tương đối (tính bằng giây giữ nút)
+- **PositionTracker**: Class quản lý relative position (pan, tilt)
+- **Tare**: Đặt vị trí hiện tại làm gốc tọa độ (0,0)
+- **Auto-tare**: Khi camera offline rồi online, sau 30s sẽ auto-tare
 
 ### ConfigService (src/services/storage/config_service.py)
 - YAML config CRUD
@@ -178,8 +182,12 @@ PTZ Control:
 ### PTZ Control
 | Method | Path | Body | Mô tả |
 |--------|------|------|--------|
-| POST | /api/cameras/{id}/ptz/move | {direction, speed} | Start PTZ movement |
+| POST | /api/cameras/{id}/ptz/move | {direction, speed} | Start PTZ movement (gửi liên tục mỗi 0.5s để đếm giây) |
 | POST | /api/cameras/{id}/ptz/stop | {direction, speed} | Stop PTZ movement |
+| GET | /api/cameras/{id}/ptz/position | - | Lấy vị trí tương đối (pan, tilt) |
+| POST | /api/cameras/{id}/ptz/tare | - | Đặt vị trí hiện tại làm gốc tọa độ |
+| POST | /api/cameras/{id}/ptz/presets/{n}/set | {name} | Lưu preset (relative position) |
+| POST | /api/cameras/{id}/ptz/presets/{n}/goto | - | Di chuyển đến preset (relative position) |
 
 ### Streaming
 | Method | Path | Mô tả |
@@ -247,7 +255,21 @@ PTZ Control:
 - [ ] Analytics/AI analysis module
 - [ ] Task scheduling
 
+### Đang phát triển 🚧
+- [x] Relative Position PTZ (2026-03-24) - Hệ tọa độ tự tạo tính bằng giây giữ nút
+- [x] Preset với UNV LAPI (2026-03-24) - Hardware preset hoạt động!
+- [x] Tare/Rectify function (2026-03-24) - Đặt gốc tọa độ qua PUT /LAPI/V1.0/Channels/0/PTZ/Rectify
+- [x] Auto-tare khi camera online (2026-03-24) - Tự động tare sau 30s khi camera reconnect
+
 ## Changelog
+
+### v0.3.0 (2026-03-24)
+1. **ptz_controller.py**: Thêm Relative Position Tracking - server đếm số giây giữ nút để tạo hệ tọa độ
+2. **PositionTracker**: Class mới track vị trí tương đối (pan, tilt tính bằng giây)
+3. **config_service.py**: Cập nhật set_preset lưu thêm pan/tilt
+4. **routes/ptz.py**: Thêm API /ptz/tare, /ptz/position, cập nhật preset APIs dùng relative position
+5. **camera_manager.py**: Thêm auto-tare khi camera reconnect
+6. **stream_view.html**: Thêm nút Tare, Crosshairs, cập nhật PTZ gửi liên tục mỗi 0.5s
 
 ### v0.2.0 (2026-03-23)
 1. **rtsp_client.py**: NVDEC hardware decode, CUDA resize, auto-fallback CPU, latest frame cache
@@ -279,14 +301,16 @@ PTZ Control:
 | Storage | 100GB SSD (free), 500GB HDD (free) |
 
 ## Camera đã test
-- **Brand**: Dahua
+- **Brand**: UNV (Uniview)
 - **IP**: 192.168.1.27
+- **HTTP Port**: 80
+- **RTSP Port**: 554
 - **Username**: admin / **Password**: Abc@@1234
 - **RTSP Path**: /unicast/c1/s0/live
 - **Full URL**: `rtsp://admin:Abc@@1234@192.168.1.27:554/unicast/c1/s0/live`
 - **Resolution**: 2304x1296 (2K)
 - **FPS**: 15-16 fps
-- **PTZ**: Supported (Uniview LAPI)
+- **PTZ**: ✅ Move/Stop hoạt động, Relative Position tracking hoạt động, Preset đang test
 - **Status**: ✅ Connected & Streaming
 
 ## Cách chạy

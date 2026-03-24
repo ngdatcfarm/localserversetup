@@ -128,8 +128,8 @@ class ConfigService:
         config = self.load_config()
         return config.get('presets', {}).get(camera_id, [])
 
-    def set_preset(self, camera_id: str, number: int, name: str) -> dict:
-        """Add or update a preset for a camera."""
+    def set_preset(self, camera_id: str, number: int, name: str, pan: int = 0, tilt: int = 0) -> dict:
+        """Add or update a preset for a camera with relative position."""
         config = self.load_config()
         config.setdefault('presets', {})
         config['presets'].setdefault(camera_id, [])
@@ -138,10 +138,12 @@ class ConfigService:
         for preset in config['presets'][camera_id]:
             if preset['number'] == number:
                 preset['name'] = name
+                preset['pan'] = pan
+                preset['tilt'] = tilt
                 self.save_config(config)
                 return preset
 
-        new_preset = {"number": number, "name": name}
+        new_preset = {"number": number, "name": name, "pan": pan, "tilt": tilt}
         config['presets'][camera_id].append(new_preset)
         self.save_config(config)
         return new_preset

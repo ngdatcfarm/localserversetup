@@ -6,6 +6,7 @@ from dataclasses import dataclass, field
 
 from .rtsp_client import RTSPClient, StreamStats, test_connection
 from src.models.camera import CameraConfig
+from src.cameras.ptz.ptz_controller import get_ptz_controller
 
 logger = logging.getLogger(__name__)
 
@@ -89,6 +90,8 @@ class CameraManager:
             on_frame=on_frame,
         )
 
+        was_online = camera_info.stats and camera_info.stats.connected if camera_info.stats else False
+
         if not client.connect():
             logger.error(f"Failed to connect to camera {camera_id}")
             camera_info.stats = client.stats
@@ -97,6 +100,13 @@ class CameraManager:
         client.start()
         camera_info.client = client
         camera_info.stats = client.stats
+
+        # If camera was offline before and now online, schedule auto-tare after 30s
+        if not was_online and client.stats.connected:
+            ptz = get_ptz_controller(config)
+            if ptz:
+                ptz.on_camera_online()
+                logger.info(f"Camera {camera_id} reconnected - auto-tare scheduled in 30s")
         camera_info.enabled = True
 
         logger.info(f"Started camera: {camera_id}")
