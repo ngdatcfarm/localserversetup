@@ -30,9 +30,11 @@ PTZ_DIRECTIONS = {
 
 
 class PTZController:
-    """Điều khiển PTZ cho camera qua Uniview LAPI."""
+    """Điều khiển PTZ cho camera qua Uniview LAPI + Dahua CGI fallback."""
 
-    LAPI_PATH = "/LAPI/V1.0/Channel/0/PTZ/PTZCtrl"
+    LAPI_PTZ_PATH = "/LAPI/V1.0/Channel/0/PTZ/PTZCtrl"
+    LAPI_PRESET_PATH = "/LAPI/V1.0/Channel/0/PTZ/Presets"
+    DAHUA_CGI_PATH = "/cgi-bin/ptz.cgi"
 
     def __init__(self, camera_ip: str, username: str, password: str, port: int = 80):
         self.camera_ip = camera_ip
@@ -50,32 +52,29 @@ class PTZController:
             "Para3": 0,
         }
 
+    async def _send_request(self, method: str, url: str, **kwargs) -> httpx.Response:
+        """Gửi HTTP request với Digest auth, fallback Basic auth."""
+        auth = httpx.DigestAuth(self.username, self.password)
+        async with httpx.AsyncClient(timeout=5.0) as client:
+            response = await getattr(client, method)(url, auth=auth, **kwargs)
+            if response.status_code == 401:
+                response = await getattr(client, method)(
+                    url, auth=(self.username, self.password), **kwargs
+                )
+            return response
+
     async def _send_command(self, cmd: int, speed: int = 6) -> dict:
         """Gửi lệnh PTZ đến camera."""
-        url = f"{self._base_url}{self.LAPI_PATH}"
+        url = f"{self._base_url}{self.LAPI_PTZ_PATH}"
         payload = self._build_payload(cmd, speed)
-        auth = httpx.DigestAuth(self.username, self.password)
 
         try:
-            async with httpx.AsyncClient(timeout=5.0) as client:
-                response = await client.put(url, json=payload, auth=auth)
-
-                if response.status_code == 200:
-                    logger.info(f"PTZ cmd {cmd} -> {self.camera_ip}: OK")
-                    return {"success": True, "message": "OK"}
-
-                # Some cameras use Basic auth instead of Digest
-                if response.status_code == 401:
-                    response = await client.put(
-                        url, json=payload,
-                        auth=(self.username, self.password)
-                    )
-                    if response.status_code == 200:
-                        logger.info(f"PTZ cmd {cmd} -> {self.camera_ip}: OK (basic auth)")
-                        return {"success": True, "message": "OK"}
-
-                logger.warning(f"PTZ cmd {cmd} -> {self.camera_ip}: HTTP {response.status_code}")
-                return {"success": False, "message": f"HTTP {response.status_code}"}
+            response = await self._send_request("put", url, json=payload)
+            if response.status_code == 200:
+                logger.info(f"PTZ cmd {cmd} -> {self.camera_ip}: OK")
+                return {"success": True, "message": "OK"}
+            logger.warning(f"PTZ cmd {cmd} -> {self.camera_ip}: HTTP {response.status_code}")
+            return {"success": False, "message": f"HTTP {response.status_code}"}
 
         except httpx.TimeoutException:
             logger.error(f"PTZ timeout: {self.camera_ip}")
@@ -97,6 +96,95 @@ class PTZController:
             return {"success": False, "message": f"Invalid direction: {direction}"}
         _, stop_cmd = PTZ_DIRECTIONS[direction]
         return await self._send_command(stop_cmd, speed)
+
+    # ── Preset Management ──────────────────────────────────
+
+    async def set_preset(self, preset_number: int) -> dict:
+        """Lưu vị trí hiện tại vào preset. Thử LAPI → Dahua CGI fallback."""
+        # Try 1: Uniview LAPI
+        result = await self._set_preset_lapi(preset_number)
+        if result["success"]:
+            return result
+
+        # Try 2: Dahua CGI
+        logger.info(f"LAPI set_preset failed, trying Dahua CGI for preset {preset_number}")
+        return await self._set_preset_dahua(preset_number)
+
+    async def goto_preset(self, preset_number: int) -> dict:
+        """Di chuyển camera đến vị trí preset. Thử LAPI → Dahua CGI fallback."""
+        # Try 1: Uniview LAPI
+        result = await self._goto_preset_lapi(preset_number)
+        if result["success"]:
+            return result
+
+        # Try 2: Dahua CGI
+        logger.info(f"LAPI goto_preset failed, trying Dahua CGI for preset {preset_number}")
+        return await self._goto_preset_dahua(preset_number)
+
+    async def _set_preset_lapi(self, preset_number: int) -> dict:
+        """Set preset qua Uniview LAPI."""
+        url = f"{self._base_url}{self.LAPI_PRESET_PATH}/{preset_number}"
+        payload = {"ID": preset_number, "Name": f"Preset_{preset_number}"}
+        try:
+            response = await self._send_request("put", url, json=payload)
+            if response.status_code == 200:
+                logger.info(f"LAPI set_preset {preset_number} -> {self.camera_ip}: OK")
+                return {"success": True, "message": "OK", "method": "lapi"}
+            return {"success": False, "message": f"LAPI HTTP {response.status_code}"}
+        except Exception as e:
+            return {"success": False, "message": str(e)}
+
+    async def _goto_preset_lapi(self, preset_number: int) -> dict:
+        """Goto preset qua Uniview LAPI."""
+        url = f"{self._base_url}{self.LAPI_PRESET_PATH}/{preset_number}/Goto"
+        try:
+            response = await self._send_request("put", url, json={"ID": preset_number})
+            if response.status_code == 200:
+                logger.info(f"LAPI goto_preset {preset_number} -> {self.camera_ip}: OK")
+                return {"success": True, "message": "OK", "method": "lapi"}
+            return {"success": False, "message": f"LAPI HTTP {response.status_code}"}
+        except Exception as e:
+            return {"success": False, "message": str(e)}
+
+    async def _set_preset_dahua(self, preset_number: int) -> dict:
+        """Set preset qua Dahua CGI API."""
+        url = f"{self._base_url}{self.DAHUA_CGI_PATH}"
+        params = {
+            "action": "start",
+            "channel": 0,
+            "code": "SetPreset",
+            "arg1": 0,
+            "arg2": preset_number,
+            "arg3": 0,
+        }
+        try:
+            response = await self._send_request("get", url, params=params)
+            if response.status_code == 200:
+                logger.info(f"Dahua set_preset {preset_number} -> {self.camera_ip}: OK")
+                return {"success": True, "message": "OK", "method": "dahua_cgi"}
+            return {"success": False, "message": f"Dahua CGI HTTP {response.status_code}"}
+        except Exception as e:
+            return {"success": False, "message": str(e)}
+
+    async def _goto_preset_dahua(self, preset_number: int) -> dict:
+        """Goto preset qua Dahua CGI API."""
+        url = f"{self._base_url}{self.DAHUA_CGI_PATH}"
+        params = {
+            "action": "start",
+            "channel": 0,
+            "code": "GotoPreset",
+            "arg1": 0,
+            "arg2": preset_number,
+            "arg3": 0,
+        }
+        try:
+            response = await self._send_request("get", url, params=params)
+            if response.status_code == 200:
+                logger.info(f"Dahua goto_preset {preset_number} -> {self.camera_ip}: OK")
+                return {"success": True, "message": "OK", "method": "dahua_cgi"}
+            return {"success": False, "message": f"Dahua CGI HTTP {response.status_code}"}
+        except Exception as e:
+            return {"success": False, "message": str(e)}
 
 
 def get_ptz_controller(camera_config) -> Optional[PTZController]:

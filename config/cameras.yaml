@@ -11,6 +11,16 @@ cameras:
   rtsp_path: /unicast/c1/s0/live
   enabled: true
   stream_type: main
+presets:
+  cam_001:
+  - number: 1
+    name: window
+  - number: 2
+    name: feed
+  - number: 3
+    name: chicken
+  - number: 4
+    name: daly
 storage:
   snapshot_dir: data/snapshots
   recording_dir: data/recordings

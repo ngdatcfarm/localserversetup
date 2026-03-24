@@ -99,6 +99,24 @@
         .action-btn:active { background: rgba(255,255,255,0.2); }
         .action-btn.active { background: #3b82f6; color: white; }
 
+        /* Preset buttons */
+        .preset-bar {
+            display: flex; gap: 8px; flex-wrap: wrap; justify-content: center;
+        }
+        .preset-btn {
+            padding: 6px 16px; border-radius: 20px; border: 1px solid rgba(255,255,255,0.12);
+            background: rgba(255,255,255,0.06); color: #d1d5db;
+            font-size: 13px; cursor: pointer; transition: all 0.15s;
+            backdrop-filter: blur(8px); text-transform: capitalize;
+            user-select: none; white-space: nowrap;
+        }
+        .preset-btn:active { background: #3b82f6; color: white; border-color: #3b82f6; transform: scale(0.95); }
+        .preset-btn.saving { border-color: #f59e0b; color: #f59e0b; animation: pulse-border 1s infinite; }
+        @keyframes pulse-border { 50% { border-color: transparent; } }
+        .preset-save-hint {
+            font-size: 11px; color: #6b7280; text-align: center;
+        }
+
         /* Landscape optimization */
         @media (orientation: landscape) and (max-height: 500px) {
             .top-bar-inner { padding: 6px 16px; }
@@ -158,6 +176,14 @@
     <div class="bottom-tray ui-layer" id="bottomTray">
         <div class="bottom-inner">
             <div class="bottom-layout flex flex-col items-center gap-4">
+                <!-- Presets -->
+                <div class="w-full max-w-[340px]">
+                    <div class="preset-bar" id="presetBar">
+                        <!-- Rendered by JS -->
+                    </div>
+                    <div class="preset-save-hint mt-2" id="presetHint">Nhấn giữ 2s để lưu vị trí hiện tại</div>
+                </div>
+
                 <!-- PTZ Ring -->
                 <div class="ptz-ring" id="ptzRing">
                     <button class="ptz-dir up" data-dir="up"><i class="fas fa-chevron-up"></i></button>
@@ -306,6 +332,103 @@
                 btn.classList.remove('active');
             }
         });
+
+        /* ── Presets ── */
+        let presets = [];
+        let longPressTimer = null;
+
+        async function loadPresets() {
+            try {
+                const res = await fetch(`/api/cameras/${CAMERA_ID}/ptz/presets`);
+                presets = await res.json();
+                renderPresets();
+            } catch (e) { console.error('Load presets:', e); }
+        }
+
+        function renderPresets() {
+            const bar = document.getElementById('presetBar');
+            if (!presets.length) {
+                bar.innerHTML = '<span class="text-gray-600 text-xs">Chưa có preset</span>';
+                return;
+            }
+            bar.innerHTML = presets.map(p => `
+                <button class="preset-btn" data-number="${p.number}" data-name="${p.name}">
+                    <i class="fas fa-location-dot mr-1" style="font-size:11px"></i>${p.name}
+                </button>
+            `).join('');
+
+            // Bind: tap = goto, long press = save
+            bar.querySelectorAll('.preset-btn').forEach(btn => {
+                const num = parseInt(btn.dataset.number);
+                const name = btn.dataset.name;
+
+                // Mouse
+                btn.addEventListener('mousedown', e => { e.preventDefault(); startLongPress(btn, num, name); });
+                btn.addEventListener('mouseup', () => endLongPress(btn, num));
+                btn.addEventListener('mouseleave', () => cancelLongPress(btn));
+
+                // Touch
+                btn.addEventListener('touchstart', e => { e.preventDefault(); startLongPress(btn, num, name); }, { passive: false });
+                btn.addEventListener('touchend', e => { e.preventDefault(); endLongPress(btn, num); });
+                btn.addEventListener('touchcancel', () => cancelLongPress(btn));
+
+                btn.addEventListener('click', e => e.stopPropagation());
+            });
+        }
+
+        function startLongPress(btn, num, name) {
+            btn._longPressed = false;
+            longPressTimer = setTimeout(() => {
+                btn._longPressed = true;
+                btn.classList.add('saving');
+                savePreset(num, name, btn);
+            }, 2000);
+        }
+
+        function endLongPress(btn, num) {
+            clearTimeout(longPressTimer);
+            if (!btn._longPressed) {
+                gotoPreset(num, btn);
+            }
+        }
+
+        function cancelLongPress(btn) {
+            clearTimeout(longPressTimer);
+            btn.classList.remove('saving');
+        }
+
+        async function gotoPreset(num, btn) {
+            try {
+                btn.style.background = '#3b82f6'; btn.style.color = 'white';
+                const res = await fetch(`/api/cameras/${CAMERA_ID}/ptz/presets/${num}/goto`, { method: 'POST' });
+                const data = await res.json();
+                if (!data.success) console.error('Goto preset failed:', data);
+            } catch (e) { console.error('Goto preset:', e); }
+            finally {
+                setTimeout(() => { btn.style.background = ''; btn.style.color = ''; }, 500);
+            }
+        }
+
+        async function savePreset(num, name, btn) {
+            try {
+                const res = await fetch(`/api/cameras/${CAMERA_ID}/ptz/presets/${num}/set`, {
+                    method: 'POST',
+                    headers: { 'Content-Type': 'application/json' },
+                    body: JSON.stringify({ name })
+                });
+                const data = await res.json();
+                if (data.success) {
+                    document.getElementById('presetHint').textContent = `"${name}" đã lưu vị trí!`;
+                    setTimeout(() => {
+                        document.getElementById('presetHint').textContent = 'Nhấn giữ 2s để lưu vị trí hiện tại';
+                    }, 3000);
+                }
+            } catch (e) { console.error('Save preset:', e); }
+            finally { btn.classList.remove('saving'); }
+        }
+
+        // Load presets on page load
+        loadPresets();
 
         /* Stream error */
         document.getElementById('streamImg').addEventListener('error', () => {
