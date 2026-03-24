@@ -337,17 +337,42 @@ class PTZController:
 
         return {"success": True, "message": f"Moved to ({target_pan},{target_tilt})", "method": "relative"}
 
+    def _check_response(self, response, action: str, method_name: str) -> dict:
+        """Kiểm tra response từ camera, log chi tiết body để debug."""
+        body = response.text.strip()
+        logger.info(f"{method_name} {action} -> {self.camera_ip}: HTTP {response.status_code} | Body: {body[:200]}")
+
+        if response.status_code != 200:
+            return {"success": False, "message": f"{method_name} HTTP {response.status_code}: {body[:100]}"}
+
+        # Uniview LAPI trả JSON có Response.ResponseCode
+        try:
+            data = response.json()
+            resp = data.get("Response", {})
+            code = resp.get("ResponseCode", 0)
+            if code != 0:
+                msg = resp.get("ResponseString", f"ErrorCode={code}")
+                logger.warning(f"{method_name} {action}: camera trả lỗi: {msg}")
+                return {"success": False, "message": f"{method_name}: {msg}"}
+        except Exception:
+            pass  # Không phải JSON (Dahua CGI trả text) → OK nếu 200
+
+        # Dahua CGI trả "Error" trong body
+        if "error" in body.lower() and "ok" not in body.lower():
+            logger.warning(f"{method_name} {action}: body chứa error: {body[:100]}")
+            return {"success": False, "message": f"{method_name}: {body[:100]}"}
+
+        return {"success": True, "message": "OK", "method": method_name}
+
     async def _set_preset_lapi(self, preset_number: int) -> dict:
         """Set preset qua Uniview LAPI."""
         url = f"{self._base_url}{self.LAPI_PRESET_PATH}/{preset_number}"
         payload = {"ID": preset_number, "Name": f"Preset_{preset_number}"}
         try:
             response = await self._send_request("put", url, json=payload)
-            if response.status_code == 200:
-                logger.info(f"LAPI set_preset {preset_number} -> {self.camera_ip}: OK")
-                return {"success": True, "message": "OK", "method": "lapi"}
-            return {"success": False, "message": f"LAPI HTTP {response.status_code}"}
+            return self._check_response(response, f"set_preset({preset_number})", "LAPI")
         except Exception as e:
+            logger.error(f"LAPI set_preset exception: {e}")
             return {"success": False, "message": str(e)}
 
     async def _goto_preset_lapi(self, preset_number: int) -> dict:
@@ -355,11 +380,9 @@ class PTZController:
         url = f"{self._base_url}{self.LAPI_PRESET_PATH}/{preset_number}/Goto"
         try:
             response = await self._send_request("put", url, json={"ID": preset_number})
-            if response.status_code == 200:
-                logger.info(f"LAPI goto_preset {preset_number} -> {self.camera_ip}: OK")
-                return {"success": True, "message": "OK", "method": "lapi"}
-            return {"success": False, "message": f"LAPI HTTP {response.status_code}"}
+            return self._check_response(response, f"goto_preset({preset_number})", "LAPI")
         except Exception as e:
+            logger.error(f"LAPI goto_preset exception: {e}")
             return {"success": False, "message": str(e)}
 
     async def _set_preset_dahua(self, preset_number: int) -> dict:
@@ -375,11 +398,9 @@ class PTZController:
         }
         try:
             response = await self._send_request("get", url, params=params)
-            if response.status_code == 200:
-                logger.info(f"Dahua set_preset {preset_number} -> {self.camera_ip}: OK")
-                return {"success": True, "message": "OK", "method": "dahua_cgi"}
-            return {"success": False, "message": f"Dahua CGI HTTP {response.status_code}"}
+            return self._check_response(response, f"set_preset({preset_number})", "Dahua_CGI")
         except Exception as e:
+            logger.error(f"Dahua set_preset exception: {e}")
             return {"success": False, "message": str(e)}
 
     async def _goto_preset_dahua(self, preset_number: int) -> dict:
@@ -395,11 +416,9 @@ class PTZController:
         }
         try:
             response = await self._send_request("get", url, params=params)
-            if response.status_code == 200:
-                logger.info(f"Dahua goto_preset {preset_number} -> {self.camera_ip}: OK")
-                return {"success": True, "message": "OK", "method": "dahua_cgi"}
-            return {"success": False, "message": f"Dahua CGI HTTP {response.status_code}"}
+            return self._check_response(response, f"goto_preset({preset_number})", "Dahua_CGI")
         except Exception as e:
+            logger.error(f"Dahua goto_preset exception: {e}")
             return {"success": False, "message": str(e)}
 
     # ── Position Query ─────────────────────────────────────
