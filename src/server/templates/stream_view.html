@@ -117,6 +117,18 @@
             font-size: 11px; color: #6b7280; text-align: center;
         }
 
+        /* Toast notification */
+        .toast {
+            position: fixed; top: 60px; left: 50%; transform: translateX(-50%);
+            padding: 8px 20px; border-radius: 20px; font-size: 13px;
+            color: white; z-index: 9999; opacity: 0;
+            transition: opacity 0.3s; pointer-events: none;
+            backdrop-filter: blur(12px);
+        }
+        .toast.show { opacity: 1; }
+        .toast.success { background: rgba(34,197,94,0.85); }
+        .toast.error { background: rgba(239,68,68,0.85); }
+
         /* Landscape optimization */
         @media (orientation: landscape) and (max-height: 500px) {
             .top-bar-inner { padding: 6px 16px; }
@@ -138,6 +150,7 @@
     </style>
 </head>
 <body>
+<div id="toast" class="toast"></div>
     <!-- Tap zone to toggle UI -->
     <div class="stream-wrap" id="streamWrap" onclick="toggleUI()">
         <img src="/stream/{{ camera_id }}/mjpeg" alt="Stream" id="streamImg">
@@ -418,14 +431,30 @@
             btn.classList.remove('saving');
         }
 
+        function showToast(msg, type = 'success') {
+            const t = document.getElementById('toast');
+            t.textContent = msg;
+            t.className = `toast ${type} show`;
+            clearTimeout(t._tid);
+            t._tid = setTimeout(() => t.classList.remove('show'), 2000);
+        }
+
         async function gotoPreset(num, btn) {
+            const name = btn.dataset.name || `preset ${num}`;
             try {
                 btn.style.background = '#3b82f6'; btn.style.color = 'white';
                 const res = await fetch(`/api/cameras/${CAMERA_ID}/ptz/presets/${num}/goto`, { method: 'POST' });
                 const data = await res.json();
-                if (!data.success) console.error('Goto preset failed:', data);
-            } catch (e) { console.error('Goto preset:', e); }
-            finally {
+                if (data.success) {
+                    showToast(`→ ${name}`, 'success');
+                } else {
+                    showToast(`Lỗi: ${data.detail || 'Không thể quay'}`, 'error');
+                    console.error('Goto preset failed:', data);
+                }
+            } catch (e) {
+                showToast(`Lỗi kết nối camera`, 'error');
+                console.error('Goto preset:', e);
+            } finally {
                 setTimeout(() => { btn.style.background = ''; btn.style.color = ''; }, 500);
             }
         }
@@ -439,12 +468,14 @@
                 });
                 const data = await res.json();
                 if (data.success) {
-                    document.getElementById('presetHint').textContent = `"${name}" đã lưu vị trí!`;
-                    setTimeout(() => {
-                        document.getElementById('presetHint').textContent = 'Nhấn giữ 2s để lưu vị trí hiện tại';
-                    }, 3000);
+                    showToast(`"${name}" đã lưu vị trí!`, 'success');
+                } else {
+                    showToast(`Lỗi lưu preset`, 'error');
                 }
-            } catch (e) { console.error('Save preset:', e); }
+            } catch (e) {
+                showToast(`Lỗi kết nối`, 'error');
+                console.error('Save preset:', e);
+            }
             finally { btn.classList.remove('saving'); }
         }
 
