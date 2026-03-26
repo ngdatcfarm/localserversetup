@@ -20,7 +20,7 @@ database:
 cameras:
 - id: cam_001
   name: Camera c?ng
-  ip: 192.168.1.27
+  ip: 192.168.1.72
   port: 554
   username: admin
   password: Abc@@1234
