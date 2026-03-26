@@ -1,0 +1,42 @@
+version: "3.8"
+
+services:
+  # ============================================
+  # Mosquitto MQTT Broker - Local IoT Hub
+  # ============================================
+  mqtt:
+    image: eclipse-mosquitto:2
+    container_name: cfarm-mqtt
+    restart: unless-stopped
+    ports:
+      - "1883:1883"   # MQTT
+      - "9001:9001"   # WebSocket (cho webapp)
+    volumes:
+      - ./docker/mosquitto/config:/mosquitto/config
+      - ./docker/mosquitto/data:/mosquitto/data
+      - ./docker/mosquitto/log:/mosquitto/log
+    networks:
+      - cfarm-net
+
+  # ============================================
+  # TimescaleDB - Time-series database
+  # ============================================
+  db:
+    image: timescale/timescaledb:latest-pg16
+    container_name: cfarm-db
+    restart: unless-stopped
+    ports:
+      - "5432:5432"
+    environment:
+      POSTGRES_DB: cfarm_local
+      POSTGRES_USER: cfarm
+      POSTGRES_PASSWORD: cfarm_local_2026
+    volumes:
+      - ./docker/db/data:/var/lib/postgresql/data
+      - ./docker/db/init:/docker-entrypoint-initdb.d
+    networks:
+      - cfarm-net
+
+networks:
+  cfarm-net:
+    driver: bridge

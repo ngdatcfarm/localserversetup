@@ -1,6 +1,22 @@
 server:
   host: 0.0.0.0
   port: 8000
+
+# ── Local MQTT Broker (Mosquitto Docker) ──
+mqtt:
+  host: localhost
+  port: 1883
+  username: cfarm_server
+  password: cfarm_server_2026
+  client_id: cfarm_local_server
+
+# ── TimescaleDB (Docker) ──
+database:
+  host: localhost
+  port: 5432
+  database: cfarm_local
+  user: cfarm
+  password: cfarm_local_2026
 cameras:
 - id: cam_001
   name: Camera c?ng

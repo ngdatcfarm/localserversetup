@@ -5,3 +5,9 @@ data/
 logs/
 static/records/
 *.log
+
+# Docker volumes (persistent data, not in git)
+docker/mosquitto/data/
+docker/mosquitto/log/
+docker/mosquitto/config/passwd
+docker/db/data/
