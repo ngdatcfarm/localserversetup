@@ -62,17 +62,18 @@ CFarm Local Server ready!
 
 ---
 
-## Phase 2: Local API hoàn chỉnh
+## Phase 2: Local API hoàn chỉnh ← ĐANG THỰC HIỆN
 
 **Mục tiêu**: Port business logic từ cfarm.vn (PHP) sang local server (Python)
 
 ### Checklist
-- [ ] Device management CRUD (register, update, delete)
-- [ ] Curtain control service (đã có, cần kết nối DB)
-- [ ] Sensor data collection & aggregation
-- [ ] Device heartbeat tracking & offline detection
-- [ ] Relay command logging
-- [ ] Environmental data API (temperature, humidity)
+- [x] Device management CRUD (register, update, delete, channels)
+- [x] Device state tracking (current states per channel)
+- [x] Sensor data API (latest, history, hourly aggregates, barn summary)
+- [x] Device heartbeat tracking & offline detection (background task 60s)
+- [x] Relay command logging to database
+- [x] Command history API per device
+- [ ] Curtain control service kết nối DB (đang dùng in-memory)
 - [ ] Automation rules engine (schedule, threshold triggers)
 - [ ] Firmware OTA management
 
@@ -136,3 +137,13 @@ CFarm Local Server ready!
 - Cài Python packages: paho-mqtt, asyncpg OK
 - Chạy server: DB Connected + MQTT Connected + Camera 25fps + Listener 4 handlers
 - **Phase 1 hoàn thành, sẵn sàng nhận data từ ESP32 qua LAN**
+
+### 2026-03-26 - Phase 2: Local API hoàn chỉnh
+- Tạo DeviceService: CRUD devices, channels, states, offline detection
+- Tạo SensorService: latest readings, history, hourly aggregates, barn summary
+- API routes: /api/devices (CRUD, channels, states) + /api/sensors (latest, history, hourly, barn)
+- Relay command logging vào device_commands table
+- Command history API: GET /api/iot/commands/{device_id}
+- Background task: kiểm tra device offline mỗi 60s (timeout 90s)
+- Health endpoint mở rộng: device count + online count
+- Server version: v0.5.0

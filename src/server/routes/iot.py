@@ -1,5 +1,6 @@
-"""IoT control API routes - MQTT, curtains, devices."""
+"""IoT control API routes - MQTT, curtains, relay commands."""
 
+import json
 from fastapi import APIRouter, HTTPException
 from pydantic import BaseModel
 from typing import Optional
@@ -7,6 +8,7 @@ from typing import Optional
 from src.iot.mqtt_client import mqtt_client
 from src.iot.curtain_service import curtain_service
 from src.services.storage.config_service import ConfigService
+from src.services.database.db import db
 
 router = APIRouter(prefix="/api/iot", tags=["iot"])
 config_service = ConfigService()
@@ -138,11 +140,41 @@ async def delete_curtain(curtain_id: str):
 
 @router.post("/relay")
 async def send_relay_command(req: RelayCommandRequest):
-    """Send direct relay command via MQTT."""
+    """Send direct relay command via MQTT and log to database."""
     if req.state not in ("on", "off"):
         raise HTTPException(status_code=400, detail="State must be 'on' or 'off'")
 
     sent = mqtt_client.send_relay_command(req.device_topic, req.channel, req.state)
     if not sent:
         raise HTTPException(status_code=502, detail="MQTT send failed")
+
+    # Log command to database
+    if db.pool:
+        device_id = await db.fetchval(
+            "SELECT id FROM devices WHERE mqtt_topic = $1", req.device_topic
+        )
+        if device_id:
+            await db.execute(
+                """INSERT INTO device_commands (device_id, command_type, payload, source, status)
+                VALUES ($1, 'relay', $2, 'manual', 'sent')""",
+                device_id,
+                json.dumps({"channel": req.channel, "state": req.state}),
+            )
+
     return {"ok": True, "topic": req.device_topic, "channel": req.channel, "state": req.state}
+
+
+# ── Command History ───────────────────────────────
+
+@router.get("/commands/{device_id}")
+async def get_command_history(device_id: int, limit: int = 50):
+    """Get recent commands sent to a device."""
+    rows = await db.fetch(
+        """SELECT id, command_type, payload, source, status, sent_at, delivered_at
+        FROM device_commands
+        WHERE device_id = $1
+        ORDER BY sent_at DESC
+        LIMIT $2""",
+        device_id, limit,
+    )
+    return [dict(r) for r in rows]
