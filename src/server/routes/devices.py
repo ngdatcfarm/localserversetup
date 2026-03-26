@@ -27,6 +27,20 @@ class DeviceUpdateRequest(BaseModel):
     alert_offline: Optional[bool] = None
 
 
+class DeviceTypeCreateRequest(BaseModel):
+    code: str
+    name: str
+    channel_count: int = 0
+    description: Optional[str] = None
+
+
+class DeviceTypeUpdateRequest(BaseModel):
+    code: Optional[str] = None
+    name: Optional[str] = None
+    channel_count: Optional[int] = None
+    description: Optional[str] = None
+
+
 class ChannelConfig(BaseModel):
     channel_number: int
     function: Optional[str] = None
@@ -46,6 +60,43 @@ async def list_devices(barn_id: str = None):
 async def list_device_types():
     """List available device types."""
     return await device_service.list_types()
+
+
+@router.get("/types/{type_id}")
+async def get_device_type(type_id: int):
+    """Get a single device type."""
+    dt = await device_service.get_type(type_id)
+    if not dt:
+        raise HTTPException(status_code=404, detail="Device type not found")
+    return dt
+
+
+@router.post("/types")
+async def create_device_type(req: DeviceTypeCreateRequest):
+    """Create a new device type."""
+    return await device_service.create_type(req.model_dump())
+
+
+@router.put("/types/{type_id}")
+async def update_device_type(type_id: int, req: DeviceTypeUpdateRequest):
+    """Update a device type."""
+    dt = await device_service.get_type(type_id)
+    if not dt:
+        raise HTTPException(status_code=404, detail="Device type not found")
+    await device_service.update_type(type_id, req.model_dump(exclude_none=True))
+    return await device_service.get_type(type_id)
+
+
+@router.delete("/types/{type_id}")
+async def delete_device_type(type_id: int):
+    """Delete a device type (fails if devices still use it)."""
+    deleted = await device_service.delete_type(type_id)
+    if not deleted:
+        raise HTTPException(
+            status_code=400,
+            detail="Cannot delete: device type is in use or not found"
+        )
+    return {"ok": True}
 
 
 @router.post("")
@@ -82,6 +133,17 @@ async def delete_device(device_id: int):
     if not deleted:
         raise HTTPException(status_code=404, detail="Device not found")
     return {"ok": True}
+
+
+# ── Test Command ───────────────────────────────────
+
+@router.post("/{device_id}/test")
+async def test_device(device_id: int):
+    """Send test/ping command to device via MQTT."""
+    result = await device_service.send_test(device_id)
+    if not result["ok"]:
+        raise HTTPException(status_code=400, detail=result["message"])
+    return result
 
 
 # ── Channels ────────────────────────────────────────

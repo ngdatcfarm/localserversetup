@@ -131,6 +131,13 @@ class AlertService:
 
         logger.warning(f"ALERT [{rule['severity']}]: {message}")
 
+        # Send push notification
+        try:
+            from src.iot.notification_service import notification_service
+            await notification_service.send_alert(rule["severity"], message)
+        except Exception as e:
+            logger.debug(f"Push notification skipped: {e}")
+
     # ── CRUD: Alert Rules ─────────────────────────────
 
     async def list_rules(self, barn_id: str = None) -> list[dict]:

@@ -15,6 +15,7 @@ from src.server.routes.sensors import router as sensors_router
 from src.server.routes.automation import router as automation_router
 from src.server.routes.firmware import router as firmware_router
 from src.server.routes.farm import router as farm_router
+from src.server.routes.notifications import router as notifications_router
 from src.cameras.stream.mjpeg_stream import router as stream_router, setup_mjpeg
 from src.services.storage.config_service import ConfigService
 from src.services.storage.recording_service import recording_service
@@ -24,6 +25,7 @@ from src.iot.mqtt_listener import mqtt_listener
 from src.iot.device_service import device_service
 from src.iot.automation_service import automation_service
 from src.iot.alert_service import alert_service
+from src.iot.notification_service import notification_service
 from src.services.database.db import db
 
 # Logging
@@ -41,7 +43,7 @@ config_service = ConfigService(str(BASE_DIR / "config" / "cameras.yaml"))
 app = FastAPI(
     title="CFarm Local Server",
     description="Local-first IoT hub for camera, sensor, and device management",
-    version="0.7.0"
+    version="0.8.0"
 )
 
 # Background task handle
@@ -95,6 +97,12 @@ async def startup_event():
     await automation_service.start()
     await alert_service.start()
 
+    # 4b. Configure push notifications (optional)
+    push_config = config.get("push_notifications", {})
+    if push_config:
+        notification_service.configure(push_config)
+        logger.info("Push notifications configured")
+
     # 5. Load curtains from config
     from src.iot.curtain_service import curtain_service
     curtains_config = config.get("curtains", [])
@@ -122,7 +130,7 @@ async def startup_event():
                 started += 1
     logger.info(f"Started {started}/{len(cameras)} cameras")
 
-    logger.info("CFarm Local Server v0.7.0 ready!")
+    logger.info("CFarm Local Server v0.8.0 ready!")
 
 
 @app.on_event("shutdown")
@@ -160,6 +168,7 @@ app.include_router(sensors_router)
 app.include_router(automation_router)
 app.include_router(firmware_router)
 app.include_router(farm_router)
+app.include_router(notifications_router)
 
 
 @app.get("/", response_class=HTMLResponse)
@@ -185,7 +194,7 @@ async def health_check():
 
     return {
         "status": "healthy",
-        "version": "0.7.0",
+        "version": "0.8.0",
         "mqtt": {
             "connected": mqtt_stats["connected"],
             "host": mqtt_stats["host"],

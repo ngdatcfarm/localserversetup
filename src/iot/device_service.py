@@ -96,6 +96,70 @@ class DeviceService:
         rows = await db.fetch("SELECT * FROM device_types ORDER BY name")
         return [dict(r) for r in rows]
 
+    async def get_type(self, type_id: int) -> Optional[dict]:
+        """Get a single device type."""
+        row = await db.fetchrow("SELECT * FROM device_types WHERE id = $1", type_id)
+        return dict(row) if row else None
+
+    async def create_type(self, data: dict) -> dict:
+        """Create a new device type."""
+        row = await db.fetchrow(
+            """INSERT INTO device_types (code, name, channel_count, description)
+            VALUES ($1, $2, $3, $4)
+            RETURNING id, code, name, channel_count, description""",
+            data["code"], data["name"],
+            data.get("channel_count", 0), data.get("description"),
+        )
+        return dict(row)
+
+    async def update_type(self, type_id: int, data: dict) -> dict:
+        """Update a device type."""
+        await db.execute(
+            """UPDATE device_types SET
+                code = COALESCE($1, code),
+                name = COALESCE($2, name),
+                channel_count = COALESCE($3, channel_count),
+                description = COALESCE($4, description)
+            WHERE id = $5""",
+            data.get("code"), data.get("name"),
+            data.get("channel_count"), data.get("description"),
+            type_id,
+        )
+        return {"ok": True}
+
+    async def delete_type(self, type_id: int) -> bool:
+        """Delete a device type (only if no devices use it)."""
+        in_use = await db.fetchval(
+            "SELECT COUNT(*) FROM devices WHERE device_type_id = $1", type_id
+        )
+        if in_use:
+            return False
+        result = await db.execute("DELETE FROM device_types WHERE id = $1", type_id)
+        return result == "DELETE 1"
+
+    # ── Test Command ───────────────────────────────────
+
+    async def send_test(self, device_id: int) -> dict:
+        """Send a test/ping command to device via MQTT."""
+        from src.iot.mqtt_client import mqtt_client
+
+        device = await self.get(device_id)
+        if not device:
+            return {"ok": False, "message": "Device not found"}
+
+        topic = device["mqtt_topic"]
+        sent = mqtt_client.publish(f"{topic}/cmd", {"action": "test", "ping": True})
+        if not sent:
+            return {"ok": False, "message": "MQTT send failed"}
+
+        # Log command
+        await db.execute(
+            """INSERT INTO device_commands (device_id, command_type, payload, source, status)
+            VALUES ($1, 'test', '{"action":"test"}', 'manual', 'sent')""",
+            device_id,
+        )
+        return {"ok": True, "device_code": device["device_code"], "topic": topic}
+
     # ── Channels ──────────────────────────────────────
 
     async def get_channels(self, device_id: int) -> list[dict]:

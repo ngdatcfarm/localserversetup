@@ -28,5 +28,5 @@ asyncpg==0.29.0
 # Automation scheduler (cron expression parsing)
 croniter==2.0.1
 
-# File upload support
-python-multipart==0.0.6
+# Push notifications (optional - server works without it)
+pywebpush==2.0.1

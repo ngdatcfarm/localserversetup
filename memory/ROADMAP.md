@@ -62,7 +62,7 @@ CFarm Local Server ready!
 
 ---
 
-## Phase 2: Local API hoàn chỉnh ← ĐANG THỰC HIỆN
+## Phase 2: Local API hoàn chỉnh ✅ HOÀN THÀNH
 
 **Mục tiêu**: Port business logic từ cfarm.vn (PHP) sang local server (Python)
 
@@ -88,9 +88,9 @@ CFarm Local Server ready!
 | 6 | **Cycle Management** - quản lý đợt nuôi, KPI dashboard | HIGH | ✅ Done |
 | 7 | **Inventory Management** - kho cám/thuốc, nhập/xuất/chuyển kho | HIGH | ✅ Done |
 | 8 | **Care Operations** - cho ăn, tử vong, thuốc/vaccine, cân, bán | HIGH | ✅ Done |
-| 9 | **Device Type CRUD** - tạo/sửa device type từ API | MEDIUM | Chờ |
-| 10 | **Device Test Command** - gửi test kiểm tra kết nối | MEDIUM | Chờ |
-| 11 | **Push Notifications** - WebPush alerts | LOW | Chờ |
+| 9 | **Device Type CRUD** - tạo/sửa device type từ API | MEDIUM | ✅ Done |
+| 10 | **Device Test Command** - gửi test kiểm tra kết nối | MEDIUM | ✅ Done |
+| 11 | **Push Notifications** - WebPush alerts | LOW | ✅ Done |
 
 ---
 
@@ -185,3 +185,13 @@ CFarm Local Server ready!
 - CareService: log feed (auto deduct stock), log death (auto update count), log medication (auto deduct), log weight (day_age calc), log sale (auto update count), weight reminders
 - API routes: /api/farm/* (barns, cycles, warehouses, products, inventory, care/*)
 - Server version: v0.7.0
+
+### 2026-03-26 - Phase 2: HOÀN THÀNH - Device Type CRUD + Test Command + Push Notifications
+- DeviceService: CRUD device types (create/get/update/delete với kiểm tra in-use)
+- Device Test Command: POST /api/devices/{id}/test - gửi ping qua MQTT
+- NotificationService: WebPush subscriptions, send_to_all, auto-cleanup expired
+- Push tích hợp AlertService: tự động gửi push khi có alert mới
+- DB migration: scripts/004_push_notifications.sql (push_subscriptions table)
+- API routes: /api/notifications/* (subscribe, unsubscribe, test, VAPID key)
+- pywebpush là optional dependency - server chạy bình thường nếu chưa cài
+- **Phase 2 hoàn thành 11/11 tính năng** - Server version: v0.8.0
