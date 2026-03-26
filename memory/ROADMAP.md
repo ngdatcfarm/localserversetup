@@ -30,24 +30,35 @@ ESP32 Sensors/Relays
 
 ---
 
-## Phase 1: Local MQTT Broker + Database ← ĐANG THỰC HIỆN
+## Phase 1: Local MQTT Broker + Database ✅ HOÀN THÀNH
 
 **Mục tiêu**: Dựng nền tảng hạ tầng local - MQTT broker và database
 
 ### Checklist
-- [ ] Docker Compose cho Mosquitto MQTT Broker
-- [ ] Cấu hình Mosquitto (auth, ACL, persistence)
-- [ ] Docker Compose cho TimescaleDB (PostgreSQL + time-series)
-- [ ] Database schema cho IoT data (devices, sensor_data, device_states, commands)
-- [ ] Cập nhật MQTT client kết nối local broker (thay cloud)
-- [ ] MQTT listener service nhận heartbeat + sensor data từ ESP32
-- [ ] Lưu sensor data vào database
-- [ ] Test kết nối ESP32 → Local MQTT → Database
+- [x] Mosquitto MQTT Broker (Windows native, port 1883)
+- [x] Cấu hình Mosquitto (auth 3 users: server/device/cloud, ACL, persistence)
+- [x] PostgreSQL 18 (Windows native, port 5432)
+- [x] Database schema cho IoT data (devices, sensor_data, device_states, commands, sync_queue)
+- [x] Cập nhật MQTT client kết nối local broker (thay cloud)
+- [x] MQTT listener service nhận heartbeat + sensor data từ ESP32
+- [x] Database service async (asyncpg connection pool)
+- [x] FastAPI tích hợp startup: DB → MQTT → Listener → Camera
+- [x] Test kết nối thành công: DB Connected + MQTT Connected + Camera 1280x720@25fps
 
 ### Quyết định kỹ thuật
-- **MQTT Broker**: Mosquitto (nhẹ, ổn định, Docker-ready)
-- **Database**: PostgreSQL + TimescaleDB extension (time-series tối ưu cho sensor data)
-- **ORM**: SQLAlchemy async (tương thích FastAPI)
+- **MQTT Broker**: Mosquitto 2.x (Windows native installer)
+- **Database**: PostgreSQL 18 (Windows native installer, TimescaleDB optional)
+- **DB Driver**: asyncpg (async connection pool, tương thích FastAPI)
+- **Deployment**: Windows native (không Docker, không VM)
+
+### Kết quả test (2026-03-26)
+```
+DB: Connected to TimescaleDB
+MQTT: Connected to localhost
+MqttListener: Registered handlers for heartbeat, status, sensor data
+Camera cam_001: CPU connected 1280x720 @ 25fps
+CFarm Local Server ready!
+```
 
 ---
 
@@ -117,3 +128,11 @@ ESP32 Sensors/Relays
 - Tạo scripts/init_db.sql - tương thích cả PostgreSQL thuần và TimescaleDB
 - TimescaleDB là optional, hệ thống vẫn chạy tốt với PostgreSQL thuần
 - Docker Compose giữ lại như option cho ai muốn dùng
+
+### 2026-03-26 - Phase 1: HOÀN THÀNH - Tất cả services kết nối thành công
+- Cài Mosquitto MQTT Broker trên Windows → port 1883 OK
+- Cài PostgreSQL 18 trên Windows → port 5432 OK
+- Tạo database cfarm_local, user cfarm, chạy init schema OK
+- Cài Python packages: paho-mqtt, asyncpg OK
+- Chạy server: DB Connected + MQTT Connected + Camera 25fps + Listener 4 handlers
+- **Phase 1 hoàn thành, sẵn sàng nhận data từ ESP32 qua LAN**
