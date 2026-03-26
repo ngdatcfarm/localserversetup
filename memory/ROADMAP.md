@@ -110,3 +110,10 @@ ESP32 Sensors/Relays
 - Tạo database schema cho IoT (devices, sensor_data, device_states, commands)
 - Cập nhật MQTT client kết nối local broker
 - Tạo MQTT listener service xử lý heartbeat & sensor data
+
+### 2026-03-26 - Phase 1: Chuyển sang Windows native (bỏ Docker dependency)
+- Quyết định: cài trực tiếp Mosquitto + PostgreSQL trên Windows (không cần Docker)
+- Tạo SETUP_WINDOWS.md - hướng dẫn cài đặt từng bước
+- Tạo scripts/init_db.sql - tương thích cả PostgreSQL thuần và TimescaleDB
+- TimescaleDB là optional, hệ thống vẫn chạy tốt với PostgreSQL thuần
+- Docker Compose giữ lại như option cho ai muốn dùng
