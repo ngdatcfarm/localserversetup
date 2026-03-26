@@ -78,15 +78,19 @@ CFarm Local Server ready!
 
 | # | Tính năng | Độ ưu tiên | Trạng thái |
 |---|---|---|---|
-| 1 | **Automation Scheduler** - hẹn giờ relay, điều kiện sensor | CRITICAL | ← Đang làm |
-| 2 | **Timed Relay** - bật relay X giây rồi tự tắt | CRITICAL | Chờ |
-| 3 | **Environmental Alerts** - cảnh báo sensor vượt ngưỡng | CRITICAL | Chờ |
-| 4 | **Firmware OTA** - upload/download/trigger update ESP32 | CRITICAL | Chờ |
-| 5 | **Cycle Management** - quản lý đợt nuôi, daily KPI | HIGH | Chờ |
-| 6 | **Care Operations** - log cho ăn, tử vong, thuốc, bán | HIGH | Chờ |
-| 7 | **Device Type CRUD** - tạo/sửa device type từ API | MEDIUM | Chờ |
-| 8 | **Device Test Command** - gửi test kiểm tra kết nối | MEDIUM | Chờ |
-| 9 | **Push Notifications** - WebPush alerts | LOW | Chờ |
+| # | Tính năng | Độ ưu tiên | Trạng thái |
+|---|---|---|---|
+| 1 | **Automation Scheduler** - hẹn giờ relay, điều kiện sensor | CRITICAL | ✅ Done |
+| 2 | **Timed Relay** - bật relay X giây rồi tự tắt | CRITICAL | ✅ Done |
+| 3 | **Environmental Alerts** - cảnh báo sensor vượt ngưỡng | CRITICAL | ✅ Done |
+| 4 | **Firmware OTA** - upload/download/trigger update ESP32 | CRITICAL | ✅ Done |
+| 5 | **Barn Management** - CRUD chuồng trại | HIGH | ✅ Done |
+| 6 | **Cycle Management** - quản lý đợt nuôi, KPI dashboard | HIGH | ✅ Done |
+| 7 | **Inventory Management** - kho cám/thuốc, nhập/xuất/chuyển kho | HIGH | ✅ Done |
+| 8 | **Care Operations** - cho ăn, tử vong, thuốc/vaccine, cân, bán | HIGH | ✅ Done |
+| 9 | **Device Type CRUD** - tạo/sửa device type từ API | MEDIUM | Chờ |
+| 10 | **Device Test Command** - gửi test kiểm tra kết nối | MEDIUM | Chờ |
+| 11 | **Push Notifications** - WebPush alerts | LOW | Chờ |
 
 ---
 
@@ -169,3 +173,15 @@ CFarm Local Server ready!
 - API routes: /api/automation/rules, /api/alerts, /api/firmware
 - Dependency mới: croniter (cron parsing), python-multipart (file upload)
 - Server version: v0.6.0
+
+### 2026-03-26 - Phase 2: Farm Management Module
+- DB migration: scripts/003_farm_management.sql
+  - Tables: barns, cycles, warehouses, products, inventory, inventory_transactions
+  - Care tables: care_feeds, care_deaths, care_medications, care_weights, care_sales
+  - Support tables: weight_reminders, cycle_daily_snapshots
+- BarnService: CRUD chuồng trại + summary (active cycle, device count)
+- CycleService: CRUD đợt nuôi, close cycle, dashboard KPI (alive, mortality%, FCR, feed/bird/day)
+- InventoryService: warehouse/product CRUD, import/export/transfer stock, transaction history
+- CareService: log feed (auto deduct stock), log death (auto update count), log medication (auto deduct), log weight (day_age calc), log sale (auto update count), weight reminders
+- API routes: /api/farm/* (barns, cycles, warehouses, products, inventory, care/*)
+- Server version: v0.7.0
