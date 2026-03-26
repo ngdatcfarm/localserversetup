@@ -24,3 +24,9 @@ paho-mqtt==1.6.1
 
 # Database (async PostgreSQL/TimescaleDB)
 asyncpg==0.29.0
+
+# Automation scheduler (cron expression parsing)
+croniter==2.0.1
+
+# File upload support
+python-multipart==0.0.6

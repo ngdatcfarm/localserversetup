@@ -12,6 +12,8 @@ from src.server.routes import cameras_router, ptz_router, recording_router
 from src.server.routes.iot import router as iot_router
 from src.server.routes.devices import router as devices_router
 from src.server.routes.sensors import router as sensors_router
+from src.server.routes.automation import router as automation_router
+from src.server.routes.firmware import router as firmware_router
 from src.cameras.stream.mjpeg_stream import router as stream_router, setup_mjpeg
 from src.services.storage.config_service import ConfigService
 from src.services.storage.recording_service import recording_service
@@ -19,6 +21,8 @@ from src.cameras.capture.camera_manager import camera_manager
 from src.iot.mqtt_client import mqtt_client
 from src.iot.mqtt_listener import mqtt_listener
 from src.iot.device_service import device_service
+from src.iot.automation_service import automation_service
+from src.iot.alert_service import alert_service
 from src.services.database.db import db
 
 # Logging
@@ -36,7 +40,7 @@ config_service = ConfigService(str(BASE_DIR / "config" / "cameras.yaml"))
 app = FastAPI(
     title="CFarm Local Server",
     description="Local-first IoT hub for camera, sensor, and device management",
-    version="0.5.0"
+    version="0.6.0"
 )
 
 # Background task handle
@@ -83,9 +87,12 @@ async def startup_event():
     # 3. Start MQTT listener (processes ESP32 messages → DB)
     mqtt_listener.start()
 
-    # 4. Start background offline detection
+    # 4. Start background services
     _offline_check_task = asyncio.create_task(_offline_check_loop())
     logger.info("Device offline detection started (every 60s)")
+
+    await automation_service.start()
+    await alert_service.start()
 
     # 5. Load curtains from config
     from src.iot.curtain_service import curtain_service
@@ -123,6 +130,8 @@ async def shutdown_event():
     global _offline_check_task
     if _offline_check_task:
         _offline_check_task.cancel()
+    await automation_service.stop()
+    await alert_service.stop()
     recording_service.stop_all()
     for camera_id in list(camera_manager.get_all_cameras().keys()):
         camera_manager.stop_camera(camera_id)
@@ -147,6 +156,8 @@ app.include_router(recording_router)
 app.include_router(iot_router)
 app.include_router(devices_router)
 app.include_router(sensors_router)
+app.include_router(automation_router)
+app.include_router(firmware_router)
 
 
 @app.get("/", response_class=HTMLResponse)

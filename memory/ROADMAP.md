@@ -66,16 +66,27 @@ CFarm Local Server ready!
 
 **Mục tiêu**: Port business logic từ cfarm.vn (PHP) sang local server (Python)
 
-### Checklist
+### Checklist (đã hoàn thành)
 - [x] Device management CRUD (register, update, delete, channels)
 - [x] Device state tracking (current states per channel)
 - [x] Sensor data API (latest, history, hourly aggregates, barn summary)
 - [x] Device heartbeat tracking & offline detection (background task 60s)
 - [x] Relay command logging to database
 - [x] Command history API per device
-- [ ] Curtain control service kết nối DB (đang dùng in-memory)
-- [ ] Automation rules engine (schedule, threshold triggers)
-- [ ] Firmware OTA management
+
+### Gap Analysis vs cfarm.vn - Thứ tự implement
+
+| # | Tính năng | Độ ưu tiên | Trạng thái |
+|---|---|---|---|
+| 1 | **Automation Scheduler** - hẹn giờ relay, điều kiện sensor | CRITICAL | ← Đang làm |
+| 2 | **Timed Relay** - bật relay X giây rồi tự tắt | CRITICAL | Chờ |
+| 3 | **Environmental Alerts** - cảnh báo sensor vượt ngưỡng | CRITICAL | Chờ |
+| 4 | **Firmware OTA** - upload/download/trigger update ESP32 | CRITICAL | Chờ |
+| 5 | **Cycle Management** - quản lý đợt nuôi, daily KPI | HIGH | Chờ |
+| 6 | **Care Operations** - log cho ăn, tử vong, thuốc, bán | HIGH | Chờ |
+| 7 | **Device Type CRUD** - tạo/sửa device type từ API | MEDIUM | Chờ |
+| 8 | **Device Test Command** - gửi test kiểm tra kết nối | MEDIUM | Chờ |
+| 9 | **Push Notifications** - WebPush alerts | LOW | Chờ |
 
 ---
 
@@ -147,3 +158,14 @@ CFarm Local Server ready!
 - Background task: kiểm tra device offline mỗi 60s (timeout 90s)
 - Health endpoint mở rộng: device count + online count
 - Server version: v0.5.0
+
+### 2026-03-26 - Phase 2: Automation + Alerts + Firmware OTA
+- Gap analysis so sánh cfarm.vn vs localserversetup → xác định 9 tính năng thiếu
+- DB migration: scripts/002_automation_alerts.sql (automation_rules, alert_rules, alerts, firmwares)
+- AutomationService: cron scheduler (30s loop) + sensor condition triggers
+- Timed Relay: POST /api/iot/relay/timed - bật relay X giây rồi tự tắt
+- AlertService: giám sát sensor ngưỡng min/max, tạo alerts, cooldown
+- FirmwareService: upload/download binary, trigger OTA qua MQTT
+- API routes: /api/automation/rules, /api/alerts, /api/firmware
+- Dependency mới: croniter (cron parsing), python-multipart (file upload)
+- Server version: v0.6.0
