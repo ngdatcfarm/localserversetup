@@ -45,6 +45,15 @@
                     <span class="text-lg">{{ item.icon }}</span>
                     <span>{{ item.label }}</span>
                 </router-link>
+                <!-- External links -->
+                <div class="border-t border-green-700 mt-2 pt-2">
+                    <a v-for="link in externalLinks" :key="link.href" :href="link.href" target="_blank"
+                        class="flex items-center gap-3 px-4 py-2.5 text-sm hover:bg-green-700 transition-colors">
+                        <span class="text-lg">{{ link.icon }}</span>
+                        <span>{{ link.label }}</span>
+                        <span class="text-xs text-green-400 ml-auto">&#8599;</span>
+                    </a>
+                </div>
             </nav>
 
             <!-- Server status -->

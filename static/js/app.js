@@ -74,6 +74,10 @@ const app = createApp({
             { path: '/cameras', icon: '📹', label: 'Camera' },
         ];
 
+        const externalLinks = [
+            { href: '/recordings', icon: '💾', label: 'Bản ghi' },
+        ];
+
         async function checkHealth() {
             try {
                 const h = await API.health();
@@ -89,7 +93,7 @@ const app = createApp({
             setInterval(checkHealth, 30000);
         });
 
-        return { sidebarOpen, serverStatus, navItems, toast };
+        return { sidebarOpen, serverStatus, navItems, externalLinks, toast };
     }
 });
 

@@ -16,7 +16,7 @@ const component = {
             <div v-for="cam in cameras" :key="cam.id" class="card">
                 <!-- Stream -->
                 <div class="bg-black rounded-lg overflow-hidden mb-3 relative" style="aspect-ratio:16/9">
-                    <img v-if="cam.enabled" :src="'/api/stream/' + cam.id + '/mjpeg'" class="w-full h-full object-contain"
+                    <img v-if="cam.enabled" :src="'/stream/' + cam.id + '/mjpeg'" class="w-full h-full object-contain"
                          @error="$event.target.style.display='none'" />
                     <div v-if="!cam.enabled" class="absolute inset-0 flex items-center justify-center text-gray-400">
                         Camera tắt
@@ -41,6 +41,9 @@ const component = {
 
                 <!-- Controls -->
                 <div class="flex flex-wrap gap-1">
+                    <a :href="'/stream/' + cam.id" target="_blank" class="btn btn-primary btn-sm">Xem stream</a>
+                    <a :href="'/stream/' + cam.id + '/mjpeg'" target="_blank" class="btn btn-secondary btn-sm">MJPEG</a>
+                    <a :href="'/stream/' + cam.id + '/snapshot'" target="_blank" class="btn btn-secondary btn-sm">Snapshot</a>
                     <button v-if="!cam.enabled || !getStatus(cam.id).online" class="btn btn-primary btn-sm" @click="startCam(cam)">Bật</button>
                     <button v-if="cam.enabled && getStatus(cam.id).online" class="btn btn-danger btn-sm" @click="stopCam(cam)">Tắt</button>
                     <button class="btn btn-secondary btn-sm" @click="testCam(cam)">Test</button>
