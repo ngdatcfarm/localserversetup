@@ -4,9 +4,12 @@
     <meta charset="UTF-8">
     <meta name="viewport" content="width=device-width, initial-scale=1.0">
     <title>CFarm - Quản lý trang trại</title>
-    <script src="https://unpkg.com/vue@3/dist/vue.global.prod.js"></script>
-    <script src="https://unpkg.com/vue-router@4/dist/vue-router.global.prod.js"></script>
-    <link href="https://cdn.jsdelivr.net/npm/tailwindcss@2.2.19/dist/tailwind.min.css" rel="stylesheet">
+    <!-- Vendor: local first, CDN fallback -->
+    <script src="/static/vendor/vue.global.prod.js"></script>
+    <script>window.Vue || document.write('<script src="https://unpkg.com/vue@3/dist/vue.global.prod.js"><\/script>')</script>
+    <script src="/static/vendor/vue-router.global.prod.js"></script>
+    <script>window.VueRouter || document.write('<script src="https://unpkg.com/vue-router@4/dist/vue-router.global.prod.js"><\/script>')</script>
+    <link href="/static/vendor/tailwind.min.css" rel="stylesheet" onerror="this.onerror=null;this.href='https://cdn.jsdelivr.net/npm/tailwindcss@2.2.19/dist/tailwind.min.css'">
     <link rel="stylesheet" href="/static/css/app.css">
 </head>
 <body class="bg-gray-100 min-h-screen">

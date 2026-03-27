@@ -7,6 +7,10 @@ logs/
 static/records/
 *.log
 
+# Vendor libs (downloaded locally, too large for git)
+static/vendor/*.js
+static/vendor/*.css
+
 # Docker volumes (persistent data, not in git)
 docker/mosquitto/data/
 docker/mosquitto/log/
