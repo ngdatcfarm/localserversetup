@@ -61,6 +61,12 @@ const app = createApp({
     setup() {
         const sidebarOpen = ref(false);
         const serverStatus = reactive({ ok: false, mqtt: false, devices: 0, online: 0 });
+        const viewMode = ref(localStorage.getItem('cfarm_view') || (window.innerWidth < 768 ? 'mobile' : 'desktop'));
+
+        function setView(mode) {
+            viewMode.value = mode;
+            localStorage.setItem('cfarm_view', mode);
+        }
 
         const navItems = [
             { path: '/', icon: '📊', label: 'Dashboard' },
@@ -93,7 +99,7 @@ const app = createApp({
             setInterval(checkHealth, 30000);
         });
 
-        return { sidebarOpen, serverStatus, navItems, externalLinks, toast };
+        return { sidebarOpen, serverStatus, viewMode, setView, navItems, externalLinks, toast };
     }
 });
 
