@@ -129,4 +129,28 @@ const API = {
         send(d) { return API.post('/api/iot/relay', d); },
         timed(d) { return API.post('/api/iot/relay/timed', d); },
     },
+
+    // Cameras
+    cameras: {
+        list() { return API.get('/api/cameras'); },
+        statusAll() { return API.get('/api/cameras/status/all'); },
+        get(id) { return API.get(`/api/cameras/${id}`); },
+        status(id) { return API.get(`/api/cameras/${id}/status`); },
+        start(id) { return API.post(`/api/cameras/${id}/start`); },
+        stop(id) { return API.post(`/api/cameras/${id}/stop`); },
+        test(id) { return API.get(`/api/cameras/${id}/test`); },
+        ptz: {
+            move(id, dir, speed) { return API.post(`/api/cameras/${id}/ptz/move`, { direction: dir, speed: speed || 6 }); },
+            stop(id) { return API.post(`/api/cameras/${id}/ptz/stop`); },
+        },
+    },
+
+    // Recording
+    recording: {
+        start(id) { return API.post(`/api/recording/start/${id}`); },
+        stop(id) { return API.post(`/api/recording/stop/${id}`); },
+        startAll() { return API.post('/api/recording/start-all'); },
+        stopAll() { return API.post('/api/recording/stop-all'); },
+        status() { return API.get('/api/recording/status'); },
+    },
 };

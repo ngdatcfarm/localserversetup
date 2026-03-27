@@ -37,6 +37,7 @@ const router = createRouter({
         { path: '/care', component: () => loadPage('care') },
         { path: '/alerts', component: () => loadPage('alerts') },
         { path: '/automation', component: () => loadPage('automation') },
+        { path: '/cameras', component: () => loadPage('cameras') },
     ],
 });
 
@@ -70,6 +71,7 @@ const app = createApp({
             { path: '/care', icon: '🩺', label: 'Chăm sóc' },
             { path: '/alerts', icon: '🔔', label: 'Cảnh báo' },
             { path: '/automation', icon: '⚡', label: 'Tự động hóa' },
+            { path: '/cameras', icon: '📹', label: 'Camera' },
         ];
 
         async function checkHealth() {
