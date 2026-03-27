@@ -15,6 +15,7 @@ from src.server.routes.sensors import router as sensors_router
 from src.server.routes.automation import router as automation_router
 from src.server.routes.firmware import router as firmware_router
 from src.server.routes.farm import router as farm_router
+from src.server.routes.farm_extended import router as farm_extended_router
 from src.server.routes.notifications import router as notifications_router
 from src.cameras.stream.mjpeg_stream import router as stream_router, setup_mjpeg
 from src.services.storage.config_service import ConfigService
@@ -168,6 +169,7 @@ app.include_router(sensors_router)
 app.include_router(automation_router)
 app.include_router(firmware_router)
 app.include_router(farm_router)
+app.include_router(farm_extended_router)
 app.include_router(notifications_router)
 
 

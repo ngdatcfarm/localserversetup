@@ -124,6 +124,79 @@ const API = {
         del(id) { return API.del(`/api/automation/rules/${id}`); },
     },
 
+    // Feed Brands & Types
+    feedBrands: {
+        list() { return API.get('/api/farm/feed-brands'); },
+        get(id) { return API.get(`/api/farm/feed-brands/${id}`); },
+        create(d) { return API.post('/api/farm/feed-brands', d); },
+        update(id, d) { return API.put(`/api/farm/feed-brands/${id}`, d); },
+        del(id) { return API.del(`/api/farm/feed-brands/${id}`); },
+    },
+    feedTypes: {
+        list(brandId) { return API.get(`/api/farm/feed-types${brandId ? '?brand_id=' + brandId : ''}`); },
+        get(id) { return API.get(`/api/farm/feed-types/${id}`); },
+        create(d) { return API.post('/api/farm/feed-types', d); },
+        update(id, d) { return API.put(`/api/farm/feed-types/${id}`, d); },
+        del(id) { return API.del(`/api/farm/feed-types/${id}`); },
+    },
+
+    // Medications
+    medications: {
+        list(cat) { return API.get(`/api/farm/medications${cat ? '?category=' + cat : ''}`); },
+        get(id) { return API.get(`/api/farm/medications/${id}`); },
+        create(d) { return API.post('/api/farm/medications', d); },
+        update(id, d) { return API.put(`/api/farm/medications/${id}`, d); },
+        del(id) { return API.del(`/api/farm/medications/${id}`); },
+    },
+
+    // Suppliers
+    suppliers: {
+        list() { return API.get('/api/farm/suppliers'); },
+        get(id) { return API.get(`/api/farm/suppliers/${id}`); },
+        create(d) { return API.post('/api/farm/suppliers', d); },
+        update(id, d) { return API.put(`/api/farm/suppliers/${id}`, d); },
+        del(id) { return API.del(`/api/farm/suppliers/${id}`); },
+    },
+
+    // Vaccine Programs & Schedules
+    vaccines: {
+        programs: {
+            list() { return API.get('/api/farm/vaccine-programs'); },
+            get(id) { return API.get(`/api/farm/vaccine-programs/${id}`); },
+            create(d) { return API.post('/api/farm/vaccine-programs', d); },
+            update(id, d) { return API.put(`/api/farm/vaccine-programs/${id}`, d); },
+            del(id) { return API.del(`/api/farm/vaccine-programs/${id}`); },
+            addItem(pid, d) { return API.post(`/api/farm/vaccine-programs/${pid}/items`, d); },
+            updateItem(id, d) { return API.put(`/api/farm/vaccine-programs/items/${id}`, d); },
+            delItem(id) { return API.del(`/api/farm/vaccine-programs/items/${id}`); },
+        },
+        schedules: {
+            list(cycleId) { return API.get(`/api/farm/vaccine-schedules?cycle_id=${cycleId}`); },
+            upcoming(days) { return API.get(`/api/farm/vaccine-schedules/upcoming?days=${days || 7}`); },
+            create(d) { return API.post('/api/farm/vaccine-schedules', d); },
+            applyProgram(cycleId, programId) { return API.post(`/api/farm/vaccine-schedules/apply-program?cycle_id=${cycleId}`, { program_id: programId }); },
+            done(id, notes) { return API.post(`/api/farm/vaccine-schedules/${id}/done${notes ? '?notes=' + encodeURIComponent(notes) : ''}`); },
+            skip(id, reason) { return API.post(`/api/farm/vaccine-schedules/${id}/skip${reason ? '?reason=' + encodeURIComponent(reason) : ''}`); },
+            del(id) { return API.del(`/api/farm/vaccine-schedules/${id}`); },
+        },
+    },
+
+    // Health Notes
+    healthNotes: {
+        list(cycleId) { return API.get(`/api/farm/health-notes?cycle_id=${cycleId}`); },
+        create(d) { return API.post('/api/farm/health-notes', d); },
+        resolve(id) { return API.post(`/api/farm/health-notes/${id}/resolve`); },
+        del(id) { return API.del(`/api/farm/health-notes/${id}`); },
+    },
+
+    // Weight Sessions
+    weightSessions: {
+        list(cycleId) { return API.get(`/api/farm/weight-sessions?cycle_id=${cycleId}`); },
+        get(id) { return API.get(`/api/farm/weight-sessions/${id}`); },
+        create(d) { return API.post('/api/farm/weight-sessions', d); },
+        del(id) { return API.del(`/api/farm/weight-sessions/${id}`); },
+    },
+
     // Relay
     relay: {
         send(d) { return API.post('/api/iot/relay', d); },
