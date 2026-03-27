@@ -1,4 +1,4 @@
-const { ref, onMounted, onUnmounted } = Vue;
+const { ref, reactive, onMounted, onUnmounted } = Vue;
 
 const component = {
     template: `
@@ -6,7 +6,7 @@ const component = {
         <div class="page-header">
             <h2 class="page-title">Camera</h2>
             <div class="flex gap-2">
-                <button class="btn btn-primary btn-sm" @click="refreshAll">Refresh</button>
+                <button class="btn btn-primary btn-sm" @click="refreshSnapshots">Refresh ảnh</button>
                 <button class="btn btn-secondary btn-sm" @click="recAll(true)">Ghi hình tất cả</button>
                 <button class="btn btn-danger btn-sm" @click="recAll(false)">Dừng ghi tất cả</button>
             </div>
@@ -14,12 +14,16 @@ const component = {
 
         <div v-if="cameras.length" class="grid grid-cols-1 md:grid-cols-2 gap-4">
             <div v-for="cam in cameras" :key="cam.id" class="card">
-                <!-- Stream -->
-                <div class="bg-black rounded-lg overflow-hidden mb-3 relative" style="aspect-ratio:16/9">
-                    <img v-if="cam.enabled" :src="'/stream/' + cam.id + '/mjpeg'" class="w-full h-full object-contain"
-                         @error="$event.target.style.display='none'" />
+                <!-- Preview: snapshot only, no live stream -->
+                <div class="bg-black rounded-lg overflow-hidden mb-3 relative cursor-pointer" style="aspect-ratio:16/9"
+                     @click="openStream(cam)">
+                    <img v-if="cam.enabled" :src="snapshotUrl(cam.id)" class="w-full h-full object-contain"
+                         @error="onImgError($event)" />
                     <div v-if="!cam.enabled" class="absolute inset-0 flex items-center justify-center text-gray-400">
                         Camera tắt
+                    </div>
+                    <div v-else class="absolute inset-0 flex items-center justify-center opacity-0 hover:opacity-100 transition-opacity bg-black bg-opacity-30">
+                        <span class="text-white text-3xl">&#9654;</span>
                     </div>
                     <div class="absolute top-2 right-2">
                         <span :class="getStatus(cam.id).online ? 'badge badge-green' : 'badge badge-red'">
@@ -42,8 +46,6 @@ const component = {
                 <!-- Controls -->
                 <div class="flex flex-wrap gap-1">
                     <a :href="'/stream/' + cam.id" target="_blank" class="btn btn-primary btn-sm">Xem stream</a>
-                    <a :href="'/stream/' + cam.id + '/mjpeg'" target="_blank" class="btn btn-secondary btn-sm">MJPEG</a>
-                    <a :href="'/stream/' + cam.id + '/snapshot'" target="_blank" class="btn btn-secondary btn-sm">Snapshot</a>
                     <button v-if="!cam.enabled || !getStatus(cam.id).online" class="btn btn-primary btn-sm" @click="startCam(cam)">Bật</button>
                     <button v-if="cam.enabled && getStatus(cam.id).online" class="btn btn-danger btn-sm" @click="stopCam(cam)">Tắt</button>
                     <button class="btn btn-secondary btn-sm" @click="testCam(cam)">Test</button>
@@ -81,10 +83,28 @@ const component = {
     setup() {
         const cameras = ref([]);
         const statuses = ref({});
+        const snapTs = ref(Date.now());
         let refreshTimer = null;
 
         function getStatus(id) {
             return statuses.value[id] || { online: false, fps: 0, recording: false };
+        }
+
+        function snapshotUrl(id) {
+            return '/stream/' + id + '/snapshot?t=' + snapTs.value;
+        }
+
+        function onImgError(e) {
+            e.target.style.opacity = '0.3';
+        }
+
+        function openStream(cam) {
+            window.open('/stream/' + cam.id, '_blank');
+        }
+
+        function refreshSnapshots() {
+            snapTs.value = Date.now();
+            showToast('Đã refresh ảnh');
         }
 
         async function loadCameras() {
@@ -104,13 +124,8 @@ const component = {
             } catch { /* ignore */ }
         }
 
-        async function refreshAll() {
-            await Promise.all([loadCameras(), loadStatuses()]);
-            showToast('Đã refresh');
-        }
-
         async function startCam(cam) {
-            try { await API.cameras.start(cam.id); showToast(cam.name + ' đã bật'); await loadStatuses(); }
+            try { await API.cameras.start(cam.id); showToast(cam.name + ' đã bật'); await loadStatuses(); snapTs.value = Date.now(); }
             catch(e) { showToast(e.message, 'error'); }
         }
         async function stopCam(cam) {
@@ -147,14 +162,15 @@ const component = {
 
         onMounted(async () => {
             await Promise.all([loadCameras(), loadStatuses()]);
-            refreshTimer = setInterval(loadStatuses, 5000);
+            refreshTimer = setInterval(loadStatuses, 10000);
         });
 
         onUnmounted(() => {
             if (refreshTimer) clearInterval(refreshTimer);
         });
 
-        return { cameras, statuses, getStatus, refreshAll, startCam, stopCam, testCam, startRec, stopRec, recAll, ptzMove, ptzStop };
+        return { cameras, statuses, snapTs, getStatus, snapshotUrl, onImgError, openStream, refreshSnapshots,
+            startCam, stopCam, testCam, startRec, stopRec, recAll, ptzMove, ptzStop };
     }
 };
 
