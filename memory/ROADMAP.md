@@ -215,3 +215,19 @@ CFarm Local Server ready!
 - Responsive: sidebar + mobile menu toggle
 - Vietnamese UI toàn bộ
 - Server version: v0.9.0
+
+### 2026-03-27 - Database Alignment: Local ↔ Cloud Schema Sync
+- Analyzed cfarm_app_raw.csv (cloud database export) vs local schema
+- Created scripts/005_align_cloud_schema.sql migration
+- **35+ cloud tables** identified, aligned local schema to match
+- Key additions:
+  - Feed system: feed_brands, feed_types, cycle_feed_programs, cycle_feed_stages
+  - Vaccine system: vaccine_programs, vaccine_program_items, vaccine_schedules
+  - Inventory: inventory_items, inventory_purchases, inventory_sales, inventory_barn_stock
+  - Device: device_pings, device_relay_states, device_relay_logs, device_firmwares
+  - Environment: env_readings, weather_readings, sensor_readings
+  - Care: care_expenses, care_item_uses, health_notes, weight_sessions, weight_details
+  - System: users, api_tokens, notification_rules, notification_logs, suppliers
+- Existing tables enhanced with cloud columns (ALTER TABLE ADD COLUMN)
+- Backward compatible: old local columns kept, new cloud columns added
+- Purpose: Enable future cloud-to-local full data migration
