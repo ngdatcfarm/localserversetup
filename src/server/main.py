@@ -5,7 +5,7 @@ import logging
 from pathlib import Path
 from fastapi import FastAPI
 from fastapi.staticfiles import StaticFiles
-from fastapi.responses import HTMLResponse
+from fastapi.responses import HTMLResponse, FileResponse
 from fastapi.templating import Jinja2Templates
 
 from src.server.routes import cameras_router, ptz_router, recording_router
@@ -174,7 +174,8 @@ app.include_router(notifications_router)
 @app.get("/", response_class=HTMLResponse)
 async def root():
     """Serve farm management webapp."""
-    return templates.TemplateResponse("farm.html", {"request": {}})
+    farm_html = BASE_DIR / "src" / "server" / "templates" / "farm.html"
+    return FileResponse(str(farm_html), media_type="text/html")
 
 
 @app.get("/recordings", response_class=HTMLResponse)
