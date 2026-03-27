@@ -43,7 +43,7 @@ config_service = ConfigService(str(BASE_DIR / "config" / "cameras.yaml"))
 app = FastAPI(
     title="CFarm Local Server",
     description="Local-first IoT hub for camera, sensor, and device management",
-    version="0.8.0"
+    version="0.9.0"
 )
 
 # Background task handle
@@ -130,7 +130,7 @@ async def startup_event():
                 started += 1
     logger.info(f"Started {started}/{len(cameras)} cameras")
 
-    logger.info("CFarm Local Server v0.8.0 ready!")
+    logger.info("CFarm Local Server v0.9.0 ready!")
 
 
 @app.on_event("shutdown")
@@ -173,8 +173,8 @@ app.include_router(notifications_router)
 
 @app.get("/", response_class=HTMLResponse)
 async def root():
-    """Serve dashboard."""
-    return templates.TemplateResponse("index.html", {"request": {}})
+    """Serve farm management webapp."""
+    return templates.TemplateResponse("farm.html", {"request": {}})
 
 
 @app.get("/recordings", response_class=HTMLResponse)
@@ -194,7 +194,7 @@ async def health_check():
 
     return {
         "status": "healthy",
-        "version": "0.8.0",
+        "version": "0.9.0",
         "mqtt": {
             "connected": mqtt_stats["connected"],
             "host": mqtt_stats["host"],

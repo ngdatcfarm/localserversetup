@@ -109,15 +109,23 @@ CFarm Local Server ready!
 
 ---
 
-## Phase 4: Hybrid Webapp
+## Phase 4: Hybrid Webapp ← ĐANG THỰC HIỆN
 
 **Mục tiêu**: Webapp chạy được cả LAN (nhanh) và Cloud (remote)
 
 ### Checklist
-- [ ] SPA framework (Vue.js hoặc React)
+- [x] SPA framework: Vue 3 + Vue Router (CDN, no build step)
+- [x] Tailwind CSS responsive UI
+- [x] Dashboard tổng quan (barns, cycles, devices, alerts)
+- [x] Quản lý chuồng trại (CRUD)
+- [x] Quản lý đợt nuôi + KPI dashboard (FCR, mortality, feed/bird)
+- [x] Quản lý thiết bị IoT + Device Type CRUD + Test command
+- [x] Quản lý kho: kho, sản phẩm, tồn kho, nhập/xuất/chuyển
+- [x] Chăm sóc: cho ăn, tử vong, thuốc, cân, bán
+- [x] Cảnh báo: xem/đánh dấu đọc + CRUD quy tắc
+- [x] Tự động hóa: CRUD rules (cron + sensor trigger)
 - [ ] Auto-detect LAN vs Cloud
 - [ ] Service Worker cho offline capability
-- [ ] Responsive UI (mobile-first)
 - [ ] Real-time updates via WebSocket
 - [ ] Cloud proxy forward commands về local
 
@@ -195,3 +203,15 @@ CFarm Local Server ready!
 - API routes: /api/notifications/* (subscribe, unsubscribe, test, VAPID key)
 - pywebpush là optional dependency - server chạy bình thường nếu chưa cài
 - **Phase 2 hoàn thành 11/11 tính năng** - Server version: v0.8.0
+
+### 2026-03-27 - Phase 4: Hybrid Webapp - Giao diện quản lý trang trại
+- Vue 3 SPA + Vue Router (CDN, không cần build) + Tailwind CSS
+- Dynamic page loading: mỗi trang là 1 file JS riêng (lazy load)
+- 8 trang: Dashboard, Chuồng trại, Đợt nuôi, Thiết bị, Kho, Chăm sóc, Cảnh báo, Tự động hóa
+- Dashboard: tổng quan barn/cycle/device/alert counts + active cycles
+- Đợt nuôi chi tiết: KPI cards (alive, mortality%, FCR, feed/bird, weight) + lịch sử tabs
+- Kho: CRUD warehouse/product + nhập/xuất/chuyển kho trực tiếp
+- Chăm sóc: form ghi nhận cho ăn, tử vong, thuốc, cân, bán - chọn theo cycle
+- Responsive: sidebar + mobile menu toggle
+- Vietnamese UI toàn bộ
+- Server version: v0.9.0
