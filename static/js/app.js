@@ -42,6 +42,7 @@ const router = createRouter({
         { path: '/alerts', component: () => loadPage('alerts') },
         { path: '/automation', component: () => loadPage('automation') },
         { path: '/cameras', component: () => loadPage('cameras') },
+        { path: '/sync', component: () => loadPage('sync') },
     ],
 });
 
@@ -86,6 +87,7 @@ const app = createApp({
             { path: '/alerts', icon: '🔔', label: 'Cảnh báo' },
             { path: '/automation', icon: '⚡', label: 'Tự động hóa' },
             { path: '/cameras', icon: '📹', label: 'Camera' },
+            { path: '/sync', icon: '☁️', label: 'Cloud Sync' },
         ];
 
         const externalLinks = [

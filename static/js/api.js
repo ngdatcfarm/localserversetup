@@ -197,6 +197,17 @@ const API = {
         del(id) { return API.del(`/api/farm/weight-sessions/${id}`); },
     },
 
+    // Cloud Sync
+    sync: {
+        status() { return API.get('/api/sync/status'); },
+        config() { return API.get('/api/sync/config'); },
+        updateConfig(d) { return API.post('/api/sync/config', d); },
+        now() { return API.post('/api/sync/now'); },
+        fullSync() { return API.post('/api/sync/full-sync'); },
+        queue(limit) { return API.get(`/api/sync/queue?limit=${limit || 50}`); },
+        logs(limit) { return API.get(`/api/sync/logs?limit=${limit || 20}`); },
+    },
+
     // Relay
     relay: {
         send(d) { return API.post('/api/iot/relay', d); },
