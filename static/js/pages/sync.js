@@ -95,8 +95,19 @@ return {
             else if (tab.value === 'queue') loadQueue();
         }
 
+        async function fullSync() {
+            syncing.value = true;
+            try {
+                const r = await API.sync.fullSync();
+                showToast(`Full sync xong: pulled ${r.pulled}, pushed ${r.pushed}, errors ${r.errors}`);
+                await loadStatus();
+                await loadLogs();
+            } catch(e) { showToast(e.message, 'error'); }
+            syncing.value = false;
+        }
+
         return { status, config, logs, queue, tab, syncing, saving, editMode,
-                 saveConfig, triggerSync, toggleEnabled, loadTab, fmtDate, fmtNum };
+                 saveConfig, triggerSync, fullSync, toggleEnabled, loadTab, fmtDate, fmtNum };
     },
 
     template: `
@@ -135,6 +146,10 @@ return {
             <button @click="triggerSync" :disabled="syncing || !config.cloud_url"
                     class="bg-blue-600 hover:bg-blue-700 text-white px-4 py-2 rounded-lg text-sm font-medium disabled:opacity-50">
                 {{ syncing ? 'Dang sync...' : 'Sync ngay' }}
+            </button>
+            <button @click="fullSync" :disabled="syncing || !config.cloud_url"
+                    class="bg-purple-600 hover:bg-purple-700 text-white px-4 py-2 rounded-lg text-sm font-medium disabled:opacity-50">
+                Full Sync
             </button>
         </div>
 

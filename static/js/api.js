@@ -203,6 +203,7 @@ const API = {
         config() { return API.get('/api/sync/config'); },
         updateConfig(d) { return API.post('/api/sync/config', d); },
         now() { return API.post('/api/sync/now'); },
+        fullSync() { return API.post('/api/sync/full-sync'); },
         queue(limit) { return API.get(`/api/sync/queue?limit=${limit || 50}`); },
         logs(limit) { return API.get(`/api/sync/logs?limit=${limit || 20}`); },
     },

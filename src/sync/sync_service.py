@@ -630,5 +630,38 @@ class SyncService:
         self._last_sync_at = datetime.now(timezone.utc).isoformat()
         return {"pushed": pushed, "pulled": pulled}
 
+    async def initial_full_sync(self) -> dict:
+        """Perform initial full sync - pull all config data from cloud.
+
+        Used when connecting to cloud for the first time to populate
+        local DB with feed brands, feed types, medications, etc.
+        """
+        if not self.config["cloud_url"]:
+            return {"error": "Cloud URL not configured"}
+
+        try:
+            result = await self.cloud_request("GET", "/api/sync/changes?since=2000-01-01T00:00:00Z")
+            items = result.get("items", [])
+            applied = 0
+            errors = []
+            for item in items:
+                try:
+                    await self._apply_cloud_change(item)
+                    applied += 1
+                except Exception as e:
+                    errors.append(str(e))
+
+            # Also push all local data to cloud
+            pushed = await self.push_to_cloud()
+
+            self._last_sync_at = datetime.now(timezone.utc).isoformat()
+            await self._log_sync("pull", applied, "ok" if not errors else "partial")
+
+            return {"pulled": applied, "pushed": pushed, "errors": len(errors)}
+
+        except Exception as e:
+            logger.error(f"Initial full sync failed: {e}")
+            return {"error": str(e)}
+
 
 sync_service = SyncService()

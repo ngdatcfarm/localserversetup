@@ -92,6 +92,17 @@ async def trigger_sync_now():
     return {"ok": True, **result}
 
 
+@router.post("/full-sync")
+async def trigger_full_sync():
+    """Trigger initial full sync - pull all data from cloud + push all local data."""
+    if not sync_service.config["cloud_url"]:
+        raise HTTPException(400, "Cloud URL not configured")
+    result = await sync_service.initial_full_sync()
+    if "error" in result:
+        raise HTTPException(400, result["error"])
+    return {"ok": True, **result}
+
+
 @router.post("/receive")
 async def receive_from_cloud(body: SyncReceivePayload, authorization: str = Header(None)):
     """Receive changes pushed from cloud to local.

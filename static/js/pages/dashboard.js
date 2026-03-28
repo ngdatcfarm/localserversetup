@@ -9,6 +9,7 @@ return {
         const cycles = ref([]);
         const alerts = ref([]);
         const upcomingVaccines = ref([]);
+        const syncStatus = ref(null);
 
         onMounted(async () => {
             try {
@@ -31,10 +32,13 @@ return {
                 stats.alerts = alertList.length || 0;
                 alerts.value = alertList.slice(0, 5);
                 upcomingVaccines.value = vaccines.slice(0, 5);
+
+                // Load sync status
+                try { syncStatus.value = await API.sync.status(); } catch {}
             } catch (e) { console.error('Dashboard load error:', e); }
         });
 
-        return { stats, cycles, alerts, upcomingVaccines, fmtDate, fmtNum };
+        return { stats, cycles, alerts, upcomingVaccines, syncStatus, fmtDate, fmtNum };
     },
 
     template: `
@@ -42,7 +46,7 @@ return {
         <h2 class="text-xl font-bold mb-4">Dashboard</h2>
 
         <!-- Stats -->
-        <div class="grid grid-cols-2 lg:grid-cols-5 gap-3 mb-4">
+        <div class="grid grid-cols-2 lg:grid-cols-6 gap-3 mb-4">
             <div class="card p-3 text-center">
                 <div class="text-xs text-gray-500 uppercase">Chuong trai</div>
                 <div class="text-2xl font-bold text-green-600">{{ stats.barns }}</div>
@@ -62,6 +66,12 @@ return {
             <div class="card p-3 text-center">
                 <div class="text-xs text-gray-500 uppercase">Canh bao</div>
                 <div class="text-2xl font-bold text-red-600">{{ stats.alerts }}</div>
+            </div>
+            <div class="card p-3 text-center" v-if="syncStatus">
+                <div class="text-xs text-gray-500 uppercase">Cloud Sync</div>
+                <router-link to="/sync" class="text-2xl font-bold" :class="syncStatus.enabled && syncStatus.running ? 'text-green-600' : 'text-gray-400'">
+                    {{ syncStatus.enabled ? (syncStatus.running ? 'ON' : 'Paused') : 'OFF' }}
+                </router-link>
             </div>
         </div>
 
