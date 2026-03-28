@@ -135,9 +135,19 @@ async def execute_remote_command(body: RemoteCommand, authorization: str = Heade
 async def get_sync_queue(limit: int = 50):
     """View pending sync queue items (for debugging)."""
     items = await sync_service.get_pending_queue(limit)
-    # Convert datetime objects to strings for JSON
     for item in items:
         for k, v in item.items():
             if hasattr(v, 'isoformat'):
                 item[k] = v.isoformat()
     return {"count": len(items), "items": items}
+
+
+@router.get("/logs")
+async def get_sync_logs(limit: int = 20):
+    """Get recent sync operation logs."""
+    logs = await sync_service.get_sync_logs(limit)
+    for log in logs:
+        for k, v in log.items():
+            if hasattr(v, 'isoformat'):
+                log[k] = v.isoformat()
+    return {"count": len(logs), "logs": logs}
