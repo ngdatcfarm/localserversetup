@@ -593,6 +593,7 @@ class SyncService:
 
     async def _sync_loop(self):
         """Main sync loop - runs periodically."""
+        cycle_count = 0
         while self._running:
             try:
                 # Push local changes to cloud
@@ -600,6 +601,16 @@ class SyncService:
 
                 # Pull cloud changes to local
                 await self.pull_from_cloud()
+
+                # Push sensor data every 5 cycles (5 * interval seconds)
+                cycle_count += 1
+                if cycle_count % 5 == 0:
+                    try:
+                        from src.sync.sensor_sync import sensor_sync
+                        await sensor_sync.push_sensor_summary()
+                        await sensor_sync.push_device_states()
+                    except Exception as e:
+                        logger.error(f"Sensor sync error: {e}")
 
                 self._last_sync_at = datetime.now(timezone.utc).isoformat()
 
