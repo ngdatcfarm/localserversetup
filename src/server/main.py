@@ -17,6 +17,8 @@ from src.server.routes.firmware import router as firmware_router
 from src.server.routes.farm import router as farm_router
 from src.server.routes.farm_extended import router as farm_extended_router
 from src.server.routes.notifications import router as notifications_router
+from src.server.routes.sync import router as sync_router
+from src.sync.sync_service import sync_service
 from src.cameras.stream.mjpeg_stream import router as stream_router, setup_mjpeg
 from src.services.storage.config_service import ConfigService
 from src.services.storage.recording_service import recording_service
@@ -44,7 +46,7 @@ config_service = ConfigService(str(BASE_DIR / "config" / "cameras.yaml"))
 app = FastAPI(
     title="CFarm Local Server",
     description="Local-first IoT hub for camera, sensor, and device management",
-    version="0.9.0"
+    version="0.10.0"
 )
 
 # Background task handle
@@ -98,7 +100,10 @@ async def startup_event():
     await automation_service.start()
     await alert_service.start()
 
-    # 4b. Configure push notifications (optional)
+    # 4b. Start cloud sync service
+    await sync_service.start()
+
+    # 4c. Configure push notifications (optional)
     push_config = config.get("push_notifications", {})
     if push_config:
         notification_service.configure(push_config)
@@ -131,7 +136,7 @@ async def startup_event():
                 started += 1
     logger.info(f"Started {started}/{len(cameras)} cameras")
 
-    logger.info("CFarm Local Server v0.9.0 ready!")
+    logger.info("CFarm Local Server v0.10.0 ready!")
 
 
 @app.on_event("shutdown")
@@ -140,6 +145,7 @@ async def shutdown_event():
     global _offline_check_task
     if _offline_check_task:
         _offline_check_task.cancel()
+    await sync_service.stop()
     await automation_service.stop()
     await alert_service.stop()
     recording_service.stop_all()
@@ -171,6 +177,7 @@ app.include_router(firmware_router)
 app.include_router(farm_router)
 app.include_router(farm_extended_router)
 app.include_router(notifications_router)
+app.include_router(sync_router)
 
 
 @app.get("/", response_class=HTMLResponse)
