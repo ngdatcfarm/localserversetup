@@ -10,6 +10,22 @@ from src.sync.sync_service import sync_service
 logger = logging.getLogger(__name__)
 
 
+def _parse_timestamp(val):
+    """Convert string timestamp to datetime for DB queries."""
+    if isinstance(val, datetime):
+        return val
+    if isinstance(val, str):
+        # Try parsing ISO format
+        for fmt in ('%Y-%m-%dT%H:%M:%S%z', '%Y-%m-%dT%H:%M:%SZ', '%Y-%m-%dT%H:%M:%S'):
+            try:
+                return datetime.strptime(val, fmt)
+            except ValueError:
+                continue
+        # Fallback
+        return datetime(2000, 1, 1, tzinfo=timezone.utc)
+    return datetime(2000, 1, 1, tzinfo=timezone.utc)
+
+
 class SensorSync:
     """Handles pushing sensor data from local TimescaleDB to cloud.
 
@@ -21,11 +37,7 @@ class SensorSync:
         self._last_sensor_push = None
 
     async def push_sensor_summary(self) -> int:
-        """Push hourly sensor summaries to cloud.
-
-        Aggregates sensor_data into hourly averages per device per sensor type,
-        then pushes to cloud's /api/sync/sensor-data endpoint.
-        """
+        """Push hourly sensor summaries to cloud."""
         if not sync_service.config.get("cloud_url"):
             return 0
 
@@ -36,7 +48,9 @@ class SensorSync:
                 row = await db.fetchrow(
                     "SELECT value FROM sync_config WHERE key = 'last_sensor_push'"
                 )
-                last_push = row["value"] if row else "2000-01-01T00:00:00Z"
+                last_push = row["value"] if row else None
+
+            last_push_dt = _parse_timestamp(last_push) if last_push else datetime(2000, 1, 1, tzinfo=timezone.utc)
 
             # Aggregate sensor data since last push (hourly averages)
             rows = await db.fetch(
@@ -51,11 +65,11 @@ class SensorSync:
                     COUNT(*) AS sample_count
                 FROM sensor_data sd
                 JOIN devices d ON d.id = sd.device_id
-                WHERE sd.time > $1::timestamptz
+                WHERE sd.time > $1
                 GROUP BY device_id, d.device_code, sensor_type, date_trunc('hour', sd.time)
                 ORDER BY hour ASC
                 LIMIT 500""",
-                last_push,
+                last_push_dt,
             )
 
             if not rows:
@@ -99,7 +113,7 @@ class SensorSync:
 
         try:
             rows = await db.fetch(
-                """SELECT device_code, name, device_type, is_online,
+                """SELECT device_code, name, device_type_id, is_online,
                     firmware_version, ip_address, last_seen
                 FROM devices"""
             )
@@ -110,7 +124,7 @@ class SensorSync:
             items = [{
                 "device_code": r["device_code"],
                 "name": r["name"],
-                "device_type": r["device_type"],
+                "device_type": str(r["device_type_id"]) if r["device_type_id"] else None,
                 "is_online": r["is_online"],
                 "firmware_version": r["firmware_version"],
                 "ip_address": r["ip_address"],
