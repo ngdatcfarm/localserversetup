@@ -247,6 +247,29 @@ class SyncService:
     # ── Type Casting Helpers ───────────────────────────
 
     @staticmethod
+    def _to_dt(val):
+        """Convert ISO string to datetime or None."""
+        if val is None or val == '':
+            return None
+        if isinstance(val, datetime):
+            return val
+        try:
+            # Handle ISO format with timezone
+            from dateutil.parser import parse as dt_parse
+            return dt_parse(val)
+        except Exception:
+            try:
+                # Fallback: manual parse common formats
+                for fmt in ('%Y-%m-%dT%H:%M:%S%z', '%Y-%m-%dT%H:%M:%S', '%Y-%m-%d %H:%M:%S', '%Y-%m-%d'):
+                    try:
+                        return datetime.strptime(val, fmt)
+                    except ValueError:
+                        continue
+            except Exception:
+                pass
+        return None
+
+    @staticmethod
     def _to_int(val):
         """Convert to int or None."""
         if val is None or val == '':
@@ -311,7 +334,7 @@ class SyncService:
                 VALUES ($1, $2, $3, $4, $5, $6, $7, COALESCE($8, NOW()))
                 ON CONFLICT (id) DO UPDATE SET name=$2, capacity=$3, barn_type=$4, area_m2=$5, note=$6, status=$7""",
                 p["id"], p["name"], p.get("capacity"), p.get("barn_type"),
-                p.get("area_m2"), p.get("note"), p.get("status", "active"), p.get("created_at"),
+                p.get("area_m2"), p.get("note"), p.get("status", "active"), self._to_dt(p.get("created_at")),
             )
         elif action == "delete":
             await db.execute("DELETE FROM barns WHERE id = $1", p["id"])
@@ -325,8 +348,8 @@ class SyncService:
                 ON CONFLICT (id) DO UPDATE SET barn_id=$2, code=$3, name=$4, breed=$5,
                     start_date=$6, end_date=$7, initial_count=$8, current_count=$9, status=$10, note=$11""",
                 p["id"], p["barn_id"], p.get("code"), p.get("name"), p.get("breed"),
-                p.get("start_date"), p.get("end_date"), p.get("initial_count"),
-                p.get("current_count"), p.get("status", "active"), p.get("note"), p.get("created_at"),
+                self._to_dt(p.get("start_date")), self._to_dt(p.get("end_date")), p.get("initial_count"),
+                p.get("current_count"), p.get("status", "active"), p.get("note"), self._to_dt(p.get("created_at")),
             )
         elif action == "delete":
             await db.execute("DELETE FROM cycles WHERE id = $1", p["id"])
@@ -338,7 +361,7 @@ class SyncService:
                 VALUES ($1, $2, $3, $4, $5, COALESCE($6, NOW()))
                 ON CONFLICT (id) DO UPDATE SET name=$2, kg_per_bag=$3, note=$4, status=$5""",
                 self._to_int(p["id"]), p["name"], self._to_float(p.get("kg_per_bag")),
-                p.get("note"), p.get("status", "active"), p.get("created_at"),
+                p.get("note"), p.get("status", "active"), self._to_dt(p.get("created_at")),
             )
         elif action == "delete":
             await db.execute("DELETE FROM feed_brands WHERE id = $1", self._to_int(p["id"]))
@@ -352,7 +375,7 @@ class SyncService:
                 self._to_int(p["id"]), self._to_int(p.get("feed_brand_id")), p.get("code"),
                 self._to_float(p.get("price_per_bag")), p.get("name", p.get("code", "")),
                 p.get("suggested_stage"), p.get("note"), p.get("status", "active"),
-                p.get("created_at"),
+                self._to_dt(p.get("created_at")),
             )
         elif action == "delete":
             await db.execute("DELETE FROM feed_types WHERE id = $1", self._to_int(p["id"]))
@@ -366,7 +389,7 @@ class SyncService:
                 self._to_int(p["id"]), p["name"], p.get("unit"), p.get("category"),
                 p.get("manufacturer"), self._to_float(p.get("price_per_unit")),
                 p.get("recommended_dose"), p.get("note"),
-                p.get("status", "active"), p.get("created_at"),
+                p.get("status", "active"), self._to_dt(p.get("created_at")),
             )
         elif action == "delete":
             await db.execute("DELETE FROM medications WHERE id = $1", self._to_int(p["id"]))
@@ -378,7 +401,7 @@ class SyncService:
                 VALUES ($1, $2, $3, $4, $5, $6, COALESCE($7, NOW()))
                 ON CONFLICT (id) DO UPDATE SET name=$2, phone=$3, address=$4, note=$5, status=$6""",
                 self._to_int(p["id"]), p["name"], p.get("phone"), p.get("address"),
-                p.get("note"), p.get("status", "active"), p.get("created_at"),
+                p.get("note"), p.get("status", "active"), self._to_dt(p.get("created_at")),
             )
         elif action == "delete":
             await db.execute("DELETE FROM suppliers WHERE id = $1", self._to_int(p["id"]))
@@ -390,7 +413,7 @@ class SyncService:
                 VALUES ($1, $2, $3, $4, COALESCE($5, NOW()))
                 ON CONFLICT (id) DO UPDATE SET name=$2, note=$3, active=$4""",
                 self._to_int(p["id"]), p["name"], p.get("note"),
-                self._to_bool(p.get("active", True)), p.get("created_at"),
+                self._to_bool(p.get("active", True)), self._to_dt(p.get("created_at")),
             )
         elif action == "delete":
             await db.execute("DELETE FROM vaccine_programs WHERE id = $1", self._to_int(p["id"]))
@@ -428,9 +451,9 @@ class SyncService:
                 ON CONFLICT (id) DO UPDATE SET vaccine_name=$4, day_age_target=$5,
                     scheduled_date=$6, method=$7, done=$8, done_at=$9, skipped=$10, skip_reason=$11""",
                 p["id"], p["cycle_id"], p.get("program_item_id"), p["vaccine_name"],
-                p.get("day_age_target"), p.get("scheduled_date"), p.get("method"),
-                p.get("done", False), p.get("done_at"), p.get("skipped", False),
-                p.get("skip_reason"), p.get("created_at"),
+                p.get("day_age_target"), self._to_dt(p.get("scheduled_date")), p.get("method"),
+                p.get("done", False), self._to_dt(p.get("done_at")), p.get("skipped", False),
+                p.get("skip_reason"), self._to_dt(p.get("created_at")),
             )
         elif action == "delete":
             await db.execute("DELETE FROM vaccine_schedules WHERE id = $1", p["id"])
@@ -443,9 +466,9 @@ class SyncService:
                 VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10, $11, COALESCE($12, NOW()))
                 ON CONFLICT (id) DO UPDATE SET feed_date=$3, feed_type_id=$4, product_name=$5,
                     quantity=$6, bags=$7, kg_actual=$8, remaining_pct=$9, feed_session=$10, notes=$11""",
-                p["id"], p["cycle_id"], p.get("feed_date"), p.get("feed_type_id"),
+                p["id"], p["cycle_id"], self._to_dt(p.get("feed_date")), p.get("feed_type_id"),
                 p.get("product_name"), p.get("quantity"), p.get("bags"), p.get("kg_actual"),
-                p.get("remaining_pct"), p.get("feed_session"), p.get("notes"), p.get("created_at"),
+                p.get("remaining_pct"), p.get("feed_session"), p.get("notes"), self._to_dt(p.get("created_at")),
             )
         elif action == "delete":
             await db.execute("DELETE FROM feed_records WHERE id = $1", p["id"])
@@ -458,9 +481,9 @@ class SyncService:
                 VALUES ($1, $2, $3, $4, $5, $6, $7, $8, COALESCE($9, NOW()))
                 ON CONFLICT (id) DO UPDATE SET death_date=$3, count=$4, cause=$5,
                     death_category=$6, symptoms=$7, notes=$8""",
-                p["id"], p["cycle_id"], p.get("death_date"), p.get("count"),
+                p["id"], p["cycle_id"], self._to_dt(p.get("death_date")), p.get("count"),
                 p.get("cause"), p.get("death_category"), p.get("symptoms"),
-                p.get("notes"), p.get("created_at"),
+                p.get("notes"), self._to_dt(p.get("created_at")),
             )
         elif action == "delete":
             await db.execute("DELETE FROM death_records WHERE id = $1", p["id"])
@@ -473,9 +496,9 @@ class SyncService:
                 VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, COALESCE($10, NOW()))
                 ON CONFLICT (id) DO UPDATE SET med_date=$3, medication_id=$4, product_name=$5,
                     method=$6, quantity=$7, unit=$8, notes=$9""",
-                p["id"], p["cycle_id"], p.get("med_date"), p.get("medication_id"),
+                p["id"], p["cycle_id"], self._to_dt(p.get("med_date")), p.get("medication_id"),
                 p.get("product_name"), p.get("method"), p.get("quantity"),
-                p.get("unit"), p.get("notes"), p.get("created_at"),
+                p.get("unit"), p.get("notes"), self._to_dt(p.get("created_at")),
             )
         elif action == "delete":
             await db.execute("DELETE FROM medication_records WHERE id = $1", p["id"])
@@ -488,9 +511,9 @@ class SyncService:
                 VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, COALESCE($10, NOW()))
                 ON CONFLICT (id) DO UPDATE SET weigh_date=$3, day_age=$4, sample_count=$5,
                     total_weight=$6, min_weight=$7, max_weight=$8, notes=$9""",
-                p["id"], p["cycle_id"], p.get("weigh_date"), p.get("day_age"),
+                p["id"], p["cycle_id"], self._to_dt(p.get("weigh_date")), p.get("day_age"),
                 p.get("sample_count"), p.get("total_weight"), p.get("min_weight"),
-                p.get("max_weight"), p.get("notes"), p.get("created_at"),
+                p.get("max_weight"), p.get("notes"), self._to_dt(p.get("created_at")),
             )
         elif action == "delete":
             await db.execute("DELETE FROM weight_sessions WHERE id = $1", p["id"])
@@ -503,9 +526,9 @@ class SyncService:
                 VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10, COALESCE($11, NOW()))
                 ON CONFLICT (id) DO UPDATE SET sale_date=$3, count=$4, total_weight=$5,
                     unit_price=$6, total_amount=$7, gender=$8, buyer=$9, notes=$10""",
-                p["id"], p["cycle_id"], p.get("sale_date"), p.get("count"),
+                p["id"], p["cycle_id"], self._to_dt(p.get("sale_date")), p.get("count"),
                 p.get("total_weight"), p.get("unit_price"), p.get("total_amount"),
-                p.get("gender"), p.get("buyer"), p.get("notes"), p.get("created_at"),
+                p.get("gender"), p.get("buyer"), p.get("notes"), self._to_dt(p.get("created_at")),
             )
         elif action == "delete":
             await db.execute("DELETE FROM sale_records WHERE id = $1", p["id"])
@@ -518,9 +541,9 @@ class SyncService:
                 VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, COALESCE($10, NOW()))
                 ON CONFLICT (id) DO UPDATE SET day_age=$3, recorded_at=$4, symptoms=$5,
                     severity=$6, resolved=$7, resolved_at=$8, notes=$9""",
-                p["id"], p["cycle_id"], p.get("day_age"), p.get("recorded_at"),
+                p["id"], p["cycle_id"], p.get("day_age"), self._to_dt(p.get("recorded_at")),
                 p.get("symptoms"), p.get("severity"), p.get("resolved", False),
-                p.get("resolved_at"), p.get("notes"), p.get("created_at"),
+                self._to_dt(p.get("resolved_at")), p.get("notes"), self._to_dt(p.get("created_at")),
             )
         elif action == "delete":
             await db.execute("DELETE FROM health_notes WHERE id = $1", p["id"])
@@ -535,7 +558,7 @@ class SyncService:
                     barn_id=$5, firmware_version=$7, ip_address=$8""",
                 p["id"], p["device_code"], p.get("name"), p.get("device_type"),
                 p.get("barn_id"), p.get("is_online", False), p.get("firmware_version"),
-                p.get("ip_address"), p.get("last_seen"), p.get("created_at"),
+                p.get("ip_address"), self._to_dt(p.get("last_seen")), self._to_dt(p.get("created_at")),
             )
         elif action == "delete":
             await db.execute("DELETE FROM devices WHERE id = $1", p["id"])
