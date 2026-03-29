@@ -128,6 +128,9 @@ class SyncService:
                 raise ValueError(f"Unsupported method: {method}")
 
             resp.raise_for_status()
+            text = resp.text.strip()
+            if not text:
+                return {}
             return resp.json()
         except httpx.HTTPStatusError as e:
             logger.error(f"Cloud API error {e.response.status_code}: {path}")
@@ -217,16 +220,21 @@ class SyncService:
                 return 0
 
             applied = 0
+            errors = []
             for item in items:
                 try:
                     await self._apply_cloud_change(item)
                     applied += 1
                 except Exception as e:
-                    logger.error(f"Failed to apply cloud change: {e}")
+                    err_msg = f"{item.get('table','?')}#{item.get('payload',{}).get('id','?')}: {e}"
+                    logger.error(f"Failed to apply cloud change: {err_msg}")
+                    errors.append(err_msg)
 
             self._sync_stats["pulled"] += applied
-            await self._log_sync("pull", applied, "ok")
-            logger.info(f"Pulled {applied} items from cloud")
+            status = "ok" if not errors else "partial"
+            err_log = "; ".join(errors[:5]) if errors else None
+            await self._log_sync("pull", applied, status, err_log)
+            logger.info(f"Pulled {applied} items from cloud ({len(errors)} errors)")
             return applied
 
         except Exception as e:
