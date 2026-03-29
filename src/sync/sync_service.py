@@ -4,6 +4,7 @@ import asyncio
 import logging
 import hashlib
 import time
+import urllib.parse
 from datetime import datetime, timezone
 from typing import Optional
 
@@ -212,8 +213,9 @@ class SyncService:
         """Pull changes from cloud to local."""
         try:
             last_sync = self._last_sync_at or "2000-01-01T00:00:00Z"
+            since_encoded = urllib.parse.quote(last_sync, safe='')
             result = await self.cloud_request("GET",
-                f"/api/sync/changes?since={last_sync}")
+                f"/api/sync/changes?since={since_encoded}")
 
             items = result.get("items", [])
             if not items:
@@ -241,6 +243,33 @@ class SyncService:
             logger.error(f"Pull from cloud failed: {e}")
             await self._log_sync("pull", 0, "error", str(e))
             return 0
+
+    # ── Type Casting Helpers ───────────────────────────
+
+    @staticmethod
+    def _to_int(val):
+        """Convert to int or None."""
+        if val is None or val == '':
+            return None
+        return int(val)
+
+    @staticmethod
+    def _to_float(val):
+        """Convert to float or None."""
+        if val is None or val == '':
+            return None
+        return float(val)
+
+    @staticmethod
+    def _to_bool(val):
+        """Convert to bool."""
+        if val is None:
+            return False
+        if isinstance(val, bool):
+            return val
+        if isinstance(val, (int, float)):
+            return val != 0
+        return str(val).lower() in ('true', '1', 'yes')
 
     async def _apply_cloud_change(self, item: dict):
         """Apply a single change from cloud to local database."""
@@ -308,11 +337,11 @@ class SyncService:
                 """INSERT INTO feed_brands (id, name, kg_per_bag, note, status, created_at)
                 VALUES ($1, $2, $3, $4, $5, COALESCE($6, NOW()))
                 ON CONFLICT (id) DO UPDATE SET name=$2, kg_per_bag=$3, note=$4, status=$5""",
-                p["id"], p["name"], p.get("kg_per_bag"), p.get("note"), p.get("status", "active"),
-                p.get("created_at"),
+                self._to_int(p["id"]), p["name"], self._to_float(p.get("kg_per_bag")),
+                p.get("note"), p.get("status", "active"), p.get("created_at"),
             )
         elif action == "delete":
-            await db.execute("DELETE FROM feed_brands WHERE id = $1", p["id"])
+            await db.execute("DELETE FROM feed_brands WHERE id = $1", self._to_int(p["id"]))
 
     async def _sync_feed_types(self, action: str, p: dict):
         if action in ("insert", "update"):
@@ -320,12 +349,13 @@ class SyncService:
                 """INSERT INTO feed_types (id, feed_brand_id, code, price_per_bag, name, suggested_stage, note, status, created_at)
                 VALUES ($1, $2, $3, $4, $5, $6, $7, $8, COALESCE($9, NOW()))
                 ON CONFLICT (id) DO UPDATE SET feed_brand_id=$2, code=$3, price_per_bag=$4, name=$5, suggested_stage=$6, note=$7, status=$8""",
-                p["id"], p.get("feed_brand_id"), p.get("code"), p.get("price_per_bag"),
-                p["name"], p.get("suggested_stage"), p.get("note"), p.get("status", "active"),
+                self._to_int(p["id"]), self._to_int(p.get("feed_brand_id")), p.get("code"),
+                self._to_float(p.get("price_per_bag")), p.get("name", p.get("code", "")),
+                p.get("suggested_stage"), p.get("note"), p.get("status", "active"),
                 p.get("created_at"),
             )
         elif action == "delete":
-            await db.execute("DELETE FROM feed_types WHERE id = $1", p["id"])
+            await db.execute("DELETE FROM feed_types WHERE id = $1", self._to_int(p["id"]))
 
     async def _sync_medications(self, action: str, p: dict):
         if action in ("insert", "update"):
@@ -333,12 +363,13 @@ class SyncService:
                 """INSERT INTO medications (id, name, unit, category, manufacturer, price_per_unit, recommended_dose, note, status, created_at)
                 VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, COALESCE($10, NOW()))
                 ON CONFLICT (id) DO UPDATE SET name=$2, unit=$3, category=$4, manufacturer=$5, price_per_unit=$6, recommended_dose=$7, note=$8, status=$9""",
-                p["id"], p["name"], p.get("unit"), p.get("category"), p.get("manufacturer"),
-                p.get("price_per_unit"), p.get("recommended_dose"), p.get("note"),
+                self._to_int(p["id"]), p["name"], p.get("unit"), p.get("category"),
+                p.get("manufacturer"), self._to_float(p.get("price_per_unit")),
+                p.get("recommended_dose"), p.get("note"),
                 p.get("status", "active"), p.get("created_at"),
             )
         elif action == "delete":
-            await db.execute("DELETE FROM medications WHERE id = $1", p["id"])
+            await db.execute("DELETE FROM medications WHERE id = $1", self._to_int(p["id"]))
 
     async def _sync_suppliers(self, action: str, p: dict):
         if action in ("insert", "update"):
@@ -346,11 +377,11 @@ class SyncService:
                 """INSERT INTO suppliers (id, name, phone, address, note, status, created_at)
                 VALUES ($1, $2, $3, $4, $5, $6, COALESCE($7, NOW()))
                 ON CONFLICT (id) DO UPDATE SET name=$2, phone=$3, address=$4, note=$5, status=$6""",
-                p["id"], p["name"], p.get("phone"), p.get("address"),
+                self._to_int(p["id"]), p["name"], p.get("phone"), p.get("address"),
                 p.get("note"), p.get("status", "active"), p.get("created_at"),
             )
         elif action == "delete":
-            await db.execute("DELETE FROM suppliers WHERE id = $1", p["id"])
+            await db.execute("DELETE FROM suppliers WHERE id = $1", self._to_int(p["id"]))
 
     async def _sync_vaccine_programs(self, action: str, p: dict):
         if action in ("insert", "update"):
@@ -358,10 +389,11 @@ class SyncService:
                 """INSERT INTO vaccine_programs (id, name, note, active, created_at)
                 VALUES ($1, $2, $3, $4, COALESCE($5, NOW()))
                 ON CONFLICT (id) DO UPDATE SET name=$2, note=$3, active=$4""",
-                p["id"], p["name"], p.get("note"), p.get("active", True), p.get("created_at"),
+                self._to_int(p["id"]), p["name"], p.get("note"),
+                self._to_bool(p.get("active", True)), p.get("created_at"),
             )
         elif action == "delete":
-            await db.execute("DELETE FROM vaccine_programs WHERE id = $1", p["id"])
+            await db.execute("DELETE FROM vaccine_programs WHERE id = $1", self._to_int(p["id"]))
 
     async def _sync_vaccine_program_items(self, action: str, p: dict):
         if action in ("insert", "update"):
@@ -369,11 +401,13 @@ class SyncService:
                 """INSERT INTO vaccine_program_items (id, program_id, vaccine_brand_id, vaccine_name, day_age, method, remind_days, sort_order)
                 VALUES ($1, $2, $3, $4, $5, $6, $7, $8)
                 ON CONFLICT (id) DO UPDATE SET program_id=$2, vaccine_name=$4, day_age=$5, method=$6, remind_days=$7, sort_order=$8""",
-                p["id"], p["program_id"], p.get("vaccine_brand_id"), p["vaccine_name"],
-                p["day_age"], p.get("method"), p.get("remind_days", 1), p.get("sort_order", 0),
+                self._to_int(p["id"]), self._to_int(p["program_id"]),
+                self._to_int(p.get("vaccine_brand_id")), p["vaccine_name"],
+                self._to_int(p["day_age"]), p.get("method"),
+                self._to_int(p.get("remind_days", 1)), self._to_int(p.get("sort_order", 0)),
             )
         elif action == "delete":
-            await db.execute("DELETE FROM vaccine_program_items WHERE id = $1", p["id"])
+            await db.execute("DELETE FROM vaccine_program_items WHERE id = $1", self._to_int(p["id"]))
 
     async def _sync_notification_rules(self, action: str, p: dict):
         if action in ("insert", "update"):
@@ -657,15 +691,19 @@ class SyncService:
                     await self._apply_cloud_change(item)
                     applied += 1
                 except Exception as e:
-                    errors.append(str(e))
+                    err_msg = f"{item.get('table','?')}#{item.get('payload',{}).get('id','?')}: {e}"
+                    logger.error(f"Full sync apply error: {err_msg}")
+                    errors.append(err_msg)
 
             # Also push all local data to cloud
             pushed = await self.push_to_cloud()
 
             self._last_sync_at = datetime.now(timezone.utc).isoformat()
-            await self._log_sync("pull", applied, "ok" if not errors else "partial")
+            err_log = "; ".join(errors[:5]) if errors else None
+            await self._log_sync("pull", applied, "ok" if not errors else "partial", err_log)
 
-            return {"pulled": applied, "pushed": pushed, "errors": len(errors)}
+            return {"pulled": applied, "pushed": pushed, "errors": len(errors),
+                    "error_details": errors[:5]}
 
         except Exception as e:
             logger.error(f"Initial full sync failed: {e}")
