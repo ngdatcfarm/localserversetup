@@ -3,6 +3,7 @@
 import asyncio
 import logging
 from pathlib import Path
+
 from fastapi import FastAPI
 from fastapi.staticfiles import StaticFiles
 from fastapi.responses import HTMLResponse, FileResponse
@@ -18,11 +19,13 @@ from src.server.routes.farm import router as farm_router
 from src.server.routes.farm_extended import router as farm_extended_router
 from src.server.routes.notifications import router as notifications_router
 from src.server.routes.sync import router as sync_router
+from src.server.routes.database import router as database_router
 from src.sync.sync_service import sync_service
+
 from src.cameras.stream.mjpeg_stream import router as stream_router, setup_mjpeg
+from src.cameras.capture.camera_manager import camera_manager
 from src.services.storage.config_service import ConfigService
 from src.services.storage.recording_service import recording_service
-from src.cameras.capture.camera_manager import camera_manager
 from src.iot.mqtt_client import mqtt_client
 from src.iot.mqtt_listener import mqtt_listener
 from src.iot.device_service import device_service
@@ -167,6 +170,7 @@ if static_dir.exists():
 # Include routers
 app.include_router(cameras_router)
 app.include_router(ptz_router)
+app.include_router(sync_router)
 app.include_router(stream_router)
 app.include_router(recording_router)
 app.include_router(iot_router)
@@ -177,7 +181,7 @@ app.include_router(firmware_router)
 app.include_router(farm_router)
 app.include_router(farm_extended_router)
 app.include_router(notifications_router)
-app.include_router(sync_router)
+app.include_router(database_router)
 
 
 @app.get("/", response_class=HTMLResponse)
@@ -191,6 +195,12 @@ async def root():
 async def recordings_page():
     """Serve recordings browser page."""
     return templates.TemplateResponse("recordings.html", {"request": {}})
+
+
+@app.get("/database", response_class=HTMLResponse)
+async def database_page():
+    """Serve database manager page."""
+    return templates.TemplateResponse("database.html", {"request": {}})
 
 
 @app.get("/health")
@@ -228,5 +238,5 @@ if __name__ == "__main__":
         "src.server.main:app",
         host=server_config.get("host", "0.0.0.0"),
         port=server_config.get("port", 8000),
-        reload=True
+        reload=True,
     )

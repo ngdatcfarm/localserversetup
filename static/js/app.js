@@ -92,6 +92,7 @@ const app = createApp({
 
         const externalLinks = [
             { href: '/recordings', icon: '💾', label: 'Bản ghi' },
+            { href: '/database', icon: '🗄️', label: 'Database' },
         ];
 
         async function checkHealth() {
