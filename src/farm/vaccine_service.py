@@ -186,11 +186,11 @@ class VaccineService:
             """SELECT vs.*, c.code as cycle_code, b.name as barn_name
             FROM vaccine_schedules vs
             JOIN cycles c ON vs.cycle_id = c.id
-            LEFT JOIN barns b ON c.barn_id::int = b.id
+            LEFT JOIN barns b ON c.barn_id::int = b.id::int
             WHERE c.status = 'active' AND vs.done = FALSE AND vs.skipped = FALSE
-              AND vs.scheduled_date <= CURRENT_DATE + $1
+              AND vs.scheduled_date <= CURRENT_DATE + ($1::text || ' days')::interval
             ORDER BY vs.scheduled_date""",
-            days,
+            str(days),
         )
         return [dict(r) for r in rows]
 

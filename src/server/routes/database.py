@@ -1,11 +1,13 @@
 """Database management routes - pgAdmin-style interface."""
 
 import logging
+from pathlib import Path
 from fastapi import APIRouter, HTTPException, Query
 from pydantic import BaseModel
 from typing import Optional, Any
 
 from src.services.database.db import db
+from src.services.storage.config_service import ConfigService
 
 logger = logging.getLogger(__name__)
 router = APIRouter(prefix="/api/db", tags=["database"])
@@ -285,6 +287,84 @@ async def list_databases():
         ORDER BY datname
     """)
     return {"databases": [dict(row) for row in dbs]}
+
+
+@router.post("/migrate")
+async def run_migration(script_number: int = None):
+    """Run database migration scripts."""
+    import os
+
+    # Get BASE_DIR from config
+    scripts_dir = Path(__file__).resolve().parent.parent.parent.parent / "scripts"
+    results = []
+
+    if script_number:
+        # Run specific script
+        script_file = scripts_dir / f"{script_number:03d}_*.sql"
+        import glob
+        matches = list(scripts_dir.glob(f"{script_number:03d}_*.sql"))
+        if matches:
+            script_path = matches[0]
+            try:
+                sql = script_path.read_text(encoding='utf-8')
+                await db.execute(sql)
+                results.append({"script": script_path.name, "status": "ok"})
+            except Exception as e:
+                results.append({"script": script_path.name, "status": "error", "error": str(e)})
+    else:
+        # Run all scripts in order
+        for i in range(1, 100):
+            matches = list(scripts_dir.glob(f"{i:03d}_*.sql"))
+            if not matches:
+                break
+            script_path = matches[0]
+            try:
+                sql = script_path.read_text(encoding='utf-8')
+                await db.execute(sql)
+                results.append({"script": script_path.name, "status": "ok"})
+            except Exception as e:
+                results.append({"script": script_path.name, "status": "error", "error": str(e)})
+
+    return {"results": results}
+
+
+@router.post("/fix-sync")
+async def fix_sync_compatibility():
+    """Fix sync compatibility - add updated_at columns."""
+    results = []
+
+    # Add updated_at to barns
+    try:
+        await db.execute("ALTER TABLE barns ADD COLUMN IF NOT EXISTS updated_at TIMESTAMPTZ DEFAULT NOW()")
+        results.append("barns.updated_at: ok")
+    except Exception as e:
+        results.append(f"barns.updated_at: error - {e}")
+
+    # Add updated_at to cycles
+    try:
+        await db.execute("ALTER TABLE cycles ADD COLUMN IF NOT EXISTS updated_at TIMESTAMPTZ DEFAULT NOW()")
+        results.append("cycles.updated_at: ok")
+    except Exception as e:
+        results.append(f"cycles.updated_at: error - {e}")
+
+    # Add other columns to cycles
+    extra_cols = [
+        "parent_cycle_id INT", "split_date DATE", "code VARCHAR(50)",
+        "season VARCHAR(50)", "flock_source VARCHAR(100)",
+        "male_quantity INT", "female_quantity INT", "purchase_price DECIMAL(15,2)",
+        "stage VARCHAR(20)", "vaccine_program_id INT", "final_quantity INT",
+        "total_sold_weight_kg DOUBLE PRECISION", "total_revenue DOUBLE PRECISION",
+        "close_reason TEXT"
+    ]
+    for col in extra_cols:
+        col_name = col.split()[0]
+        try:
+            await db.execute(f"ALTER TABLE cycles ADD COLUMN IF NOT EXISTS {col_name} {col.split()[1]}")
+            results.append(f"cycles.{col_name}: ok")
+        except:
+            pass  # May already exist
+
+    return {"results": results}
 
 
 @router.get("/status")

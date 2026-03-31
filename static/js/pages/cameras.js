@@ -6,9 +6,75 @@ const component = {
         <div class="page-header">
             <h2 class="page-title">Camera</h2>
             <div class="flex gap-2">
-                <button class="btn btn-primary btn-sm" @click="refreshSnapshots">Refresh ảnh</button>
+                <button class="btn btn-primary btn-sm" @click="openAddModal()">+ Thêm Camera</button>
+                <button class="btn btn-secondary btn-sm" @click="refreshSnapshots">Refresh ảnh</button>
                 <button class="btn btn-secondary btn-sm" @click="recAll(true)">Ghi hình tất cả</button>
                 <button class="btn btn-danger btn-sm" @click="recAll(false)">Dừng ghi tất cả</button>
+            </div>
+        </div>
+
+        <!-- Add Camera Modal -->
+        <div v-if="showModal" class="modal-overlay" @click.self="showModal = false">
+            <div class="modal">
+                <div class="flex justify-between items-center mb-4">
+                    <h3 class="text-lg font-bold">Thêm Camera</h3>
+                    <button class="text-gray-500 hover:text-gray-700 text-xl" @click="showModal = false">&times;</button>
+                </div>
+                <form @submit.prevent="saveCamera">
+                    <div class="grid grid-cols-2 gap-3">
+                        <div>
+                            <label class="block text-xs font-medium text-gray-600 mb-1">ID *</label>
+                            <input v-model="form.id" type="text" class="input" placeholder="cam_001" required>
+                        </div>
+                        <div>
+                            <label class="block text-xs font-medium text-gray-600 mb-1">Tên *</label>
+                            <input v-model="form.name" type="text" class="input" placeholder="Camera cổng" required>
+                        </div>
+                    </div>
+                    <div class="grid grid-cols-3 gap-3 mt-3">
+                        <div class="col-span-2">
+                            <label class="block text-xs font-medium text-gray-600 mb-1">IP *</label>
+                            <input v-model="form.ip" type="text" class="input" placeholder="192.168.1.72" required>
+                        </div>
+                        <div>
+                            <label class="block text-xs font-medium text-gray-600 mb-1">Port</label>
+                            <input v-model="form.port" type="number" class="input" placeholder="554">
+                        </div>
+                    </div>
+                    <div class="grid grid-cols-2 gap-3 mt-3">
+                        <div>
+                            <label class="block text-xs font-medium text-gray-600 mb-1">Username *</label>
+                            <input v-model="form.username" type="text" class="input" placeholder="admin" required>
+                        </div>
+                        <div>
+                            <label class="block text-xs font-medium text-gray-600 mb-1">Password *</label>
+                            <input v-model="form.password" type="password" class="input" placeholder="••••••••" required>
+                        </div>
+                    </div>
+                    <div class="mt-3">
+                        <label class="block text-xs font-medium text-gray-600 mb-1">RTSP Path</label>
+                        <input v-model="form.rtsp_path" type="text" class="input" placeholder="/unicast/c1/s0/live">
+                    </div>
+                    <div class="grid grid-cols-2 gap-3 mt-3">
+                        <div>
+                            <label class="block text-xs font-medium text-gray-600 mb-1">Stream Type</label>
+                            <select v-model="form.stream_type" class="input">
+                                <option value="main">Main</option>
+                                <option value="sub">Sub</option>
+                            </select>
+                        </div>
+                        <div class="flex items-center h-full pt-4">
+                            <label class="flex items-center gap-2 cursor-pointer">
+                                <input v-model="form.enabled" type="checkbox" class="w-4 h-4 text-green-600">
+                                <span class="text-sm">Kích hoạt</span>
+                            </label>
+                        </div>
+                    </div>
+                    <div class="flex gap-2 mt-4">
+                        <button type="button" class="btn btn-secondary flex-1" @click="showModal = false">Hủy</button>
+                        <button type="submit" class="btn btn-primary flex-1">Lưu</button>
+                    </div>
+                </form>
             </div>
         </div>
 
@@ -85,6 +151,49 @@ const component = {
         const statuses = ref({});
         const snapTs = ref(Date.now());
         let refreshTimer = null;
+
+        // Modal state
+        const showModal = ref(false);
+        const form = ref({
+            id: '', name: '', ip: '', port: 554,
+            username: '', password: '',
+            rtsp_path: '/unicast/c1/s0/live',
+            stream_type: 'main', enabled: true
+        });
+
+        function openAddModal() {
+            form.value = { id: '', name: '', ip: '', port: 554,
+                username: '', password: '',
+                rtsp_path: '/unicast/c1/s0/live',
+                stream_type: 'main', enabled: true };
+            showModal.value = true;
+        }
+
+        async function saveCamera() {
+            try {
+                const payload = {
+                    id: form.value.id,
+                    name: form.value.name,
+                    ip: form.value.ip,
+                    port: parseInt(form.value.port) || 554,
+                    username: form.value.username,
+                    password: form.value.password,
+                    rtsp_path: form.value.rtsp_path || '/unicast/c1/s0/live',
+                    enabled: form.value.enabled,
+                    stream_type: form.value.stream_type
+                };
+                await fetch('/api/cameras', {
+                    method: 'POST',
+                    headers: { 'Content-Type': 'application/json' },
+                    body: JSON.stringify(payload)
+                });
+                showModal.value = false;
+                showToast('Đã thêm camera ' + form.value.name);
+                await loadCameras();
+            } catch(e) {
+                showToast(e.message, 'error');
+            }
+        }
 
         function getStatus(id) {
             return statuses.value[id] || { online: false, fps: 0, recording: false };
@@ -170,7 +279,8 @@ const component = {
         });
 
         return { cameras, statuses, snapTs, getStatus, snapshotUrl, onImgError, openStream, refreshSnapshots,
-            startCam, stopCam, testCam, startRec, stopRec, recAll, ptzMove, ptzStop };
+            startCam, stopCam, testCam, startRec, stopRec, recAll, ptzMove, ptzStop,
+            showModal, form, openAddModal, saveCamera };
     }
 };
 
