@@ -304,6 +304,7 @@ class SyncService:
         handlers = {
             "barns": self._sync_barns,
             "cycles": self._sync_cycles,
+            "cycle_splits": self._sync_cycle_splits,
             "feed_brands": self._sync_feed_brands,
             "feed_types": self._sync_feed_types,
             "medications": self._sync_medications,
@@ -311,11 +312,11 @@ class SyncService:
             "vaccine_programs": self._sync_vaccine_programs,
             "vaccine_program_items": self._sync_vaccine_program_items,
             "vaccine_schedules": self._sync_vaccine_schedules,
-            "feed_records": self._sync_feed_records,
-            "death_records": self._sync_death_records,
-            "medication_records": self._sync_medication_records,
+            "care_feeds": self._sync_care_feeds,
+            "care_deaths": self._sync_care_deaths,
+            "care_medications": self._sync_care_medications,
             "weight_sessions": self._sync_weight_sessions,
-            "sale_records": self._sync_sale_records,
+            "care_sales": self._sync_care_sales,
             "health_notes": self._sync_health_notes,
             "devices": self._sync_devices,
             "notification_rules": self._sync_notification_rules,
@@ -330,29 +331,72 @@ class SyncService:
     async def _sync_barns(self, action: str, p: dict):
         if action in ("insert", "update"):
             await db.execute(
-                """INSERT INTO barns (id, name, capacity, barn_type, area_m2, note, status, created_at)
-                VALUES ($1, $2, $3, $4, $5, $6, $7, COALESCE($8, NOW()))
-                ON CONFLICT (id) DO UPDATE SET name=$2, capacity=$3, barn_type=$4, area_m2=$5, note=$6, status=$7""",
-                p["id"], p["name"], p.get("capacity"), p.get("barn_type"),
-                p.get("area_m2"), p.get("note"), p.get("status", "active"), self._to_dt(p.get("created_at")),
+                """INSERT INTO barns (id, number, name, length_m, width_m, height_m, status, note, created_at)
+                VALUES ($1::text, $2, $3, $4, $5, $6, $7, $8, COALESCE($9, NOW()))
+                ON CONFLICT (id) DO UPDATE SET
+                    number=$2, name=$3, length_m=$4, width_m=$5, height_m=$6, status=$7, note=$8""",
+                str(p["id"]), self._to_int(p.get("number")), p["name"],
+                self._to_float(p.get("length_m")), self._to_float(p.get("width_m")),
+                self._to_float(p.get("height_m")), p.get("status", "active"),
+                p.get("note"), self._to_dt(p.get("created_at")),
             )
         elif action == "delete":
-            await db.execute("DELETE FROM barns WHERE id = $1", p["id"])
+            await db.execute("DELETE FROM barns WHERE id = $1", str(p["id"]))
 
     async def _sync_cycles(self, action: str, p: dict):
         if action in ("insert", "update"):
+            # Map cloud field names to local: initial_quantity->initial_count, current_quantity->current_count
+            initial = self._to_int(p.get("initial_quantity") or p.get("initial_count"))
+            current = self._to_int(p.get("current_quantity") or p.get("current_count"))
             await db.execute(
-                """INSERT INTO cycles (id, barn_id, code, name, breed, start_date, end_date,
-                    initial_count, current_count, status, note, created_at)
-                VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10, $11, COALESCE($12, NOW()))
-                ON CONFLICT (id) DO UPDATE SET barn_id=$2, code=$3, name=$4, breed=$5,
-                    start_date=$6, end_date=$7, initial_count=$8, current_count=$9, status=$10, note=$11""",
-                p["id"], p["barn_id"], p.get("code"), p.get("name"), p.get("breed"),
-                self._to_dt(p.get("start_date")), self._to_dt(p.get("end_date")), p.get("initial_count"),
-                p.get("current_count"), p.get("status", "active"), p.get("note"), self._to_dt(p.get("created_at")),
+                """INSERT INTO cycles (id, barn_id, code, name, breed, start_date, expected_end_date, end_date,
+                    initial_count, current_count, status, notes,
+                    parent_cycle_id, split_date, season, flock_source,
+                    male_quantity, female_quantity, purchase_price, stage,
+                    vaccine_program_id, final_quantity, total_sold_weight_kg, total_revenue, close_reason,
+                    created_at)
+                VALUES ($1, $2::text, $3, $4, $5, $6, $7, $8, $9, $10, $11, $12,
+                    $13, $14, $15, $16, $17, $18, $19, $20, $21, $22, $23, $24, $25,
+                    COALESCE($26, NOW()))
+                ON CONFLICT (id) DO UPDATE SET
+                    barn_id=$2::text, code=$3, name=$4, breed=$5,
+                    start_date=$6, expected_end_date=$7, end_date=$8,
+                    initial_count=$9, current_count=$10, status=$11, notes=$12,
+                    parent_cycle_id=$13, split_date=$14, season=$15, flock_source=$16,
+                    male_quantity=$17, female_quantity=$18, purchase_price=$19, stage=$20,
+                    vaccine_program_id=$21, final_quantity=$22, total_sold_weight_kg=$23,
+                    total_revenue=$24, close_reason=$25""",
+                self._to_int(p["id"]), str(p["barn_id"]), p.get("code"),
+                p.get("name", p.get("code", "")), p.get("breed"),
+                self._to_dt(p.get("start_date")), self._to_dt(p.get("expected_end_date")),
+                self._to_dt(p.get("end_date")),
+                initial, current,
+                p.get("status", "active"), p.get("notes") or p.get("note"),
+                self._to_int(p.get("parent_cycle_id")), self._to_dt(p.get("split_date")),
+                p.get("season"), p.get("flock_source"),
+                self._to_int(p.get("male_quantity")), self._to_int(p.get("female_quantity")),
+                self._to_float(p.get("purchase_price")), p.get("stage", "chick"),
+                self._to_int(p.get("vaccine_program_id")), self._to_int(p.get("final_quantity")),
+                self._to_float(p.get("total_sold_weight_kg")), self._to_float(p.get("total_revenue")),
+                p.get("close_reason"), self._to_dt(p.get("created_at")),
             )
         elif action == "delete":
-            await db.execute("DELETE FROM cycles WHERE id = $1", p["id"])
+            await db.execute("DELETE FROM cycles WHERE id = $1", self._to_int(p["id"]))
+
+    async def _sync_cycle_splits(self, action: str, p: dict):
+        if action in ("insert", "update"):
+            await db.execute(
+                """INSERT INTO cycle_splits (id, from_cycle_id, to_cycle_id, quantity, split_date, note, created_at)
+                VALUES ($1, $2, $3, $4, $5, $6, COALESCE($7, NOW()))
+                ON CONFLICT (id) DO UPDATE SET
+                    from_cycle_id=$2, to_cycle_id=$3, quantity=$4, split_date=$5, note=$6""",
+                self._to_int(p["id"]), self._to_int(p["from_cycle_id"]),
+                self._to_int(p["to_cycle_id"]), self._to_int(p["quantity"]),
+                self._to_dt(p.get("split_date")), p.get("note"),
+                self._to_dt(p.get("created_at")),
+            )
+        elif action == "delete":
+            await db.execute("DELETE FROM cycle_splits WHERE id = $1", self._to_int(p["id"]))
 
     async def _sync_feed_brands(self, action: str, p: dict):
         if action in ("insert", "update"):
@@ -458,110 +502,143 @@ class SyncService:
         elif action == "delete":
             await db.execute("DELETE FROM vaccine_schedules WHERE id = $1", p["id"])
 
-    async def _sync_feed_records(self, action: str, p: dict):
+    async def _sync_care_feeds(self, action: str, p: dict):
         if action in ("insert", "update"):
             await db.execute(
-                """INSERT INTO feed_records (id, cycle_id, feed_date, feed_type_id, product_name,
-                    quantity, bags, kg_actual, remaining_pct, feed_session, notes, created_at)
-                VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10, $11, COALESCE($12, NOW()))
-                ON CONFLICT (id) DO UPDATE SET feed_date=$3, feed_type_id=$4, product_name=$5,
-                    quantity=$6, bags=$7, kg_actual=$8, remaining_pct=$9, feed_session=$10, notes=$11""",
-                p["id"], p["cycle_id"], self._to_dt(p.get("feed_date")), p.get("feed_type_id"),
-                p.get("product_name"), p.get("quantity"), p.get("bags"), p.get("kg_actual"),
-                p.get("remaining_pct"), p.get("feed_session"), p.get("notes"), self._to_dt(p.get("created_at")),
-            )
-        elif action == "delete":
-            await db.execute("DELETE FROM feed_records WHERE id = $1", p["id"])
-
-    async def _sync_death_records(self, action: str, p: dict):
-        if action in ("insert", "update"):
-            await db.execute(
-                """INSERT INTO death_records (id, cycle_id, death_date, count, cause,
-                    death_category, symptoms, notes, created_at)
-                VALUES ($1, $2, $3, $4, $5, $6, $7, $8, COALESCE($9, NOW()))
-                ON CONFLICT (id) DO UPDATE SET death_date=$3, count=$4, cause=$5,
-                    death_category=$6, symptoms=$7, notes=$8""",
-                p["id"], p["cycle_id"], self._to_dt(p.get("death_date")), p.get("count"),
-                p.get("cause"), p.get("death_category"), p.get("symptoms"),
+                """INSERT INTO care_feeds (id, cycle_id, barn_id, feed_date, meal,
+                    product_id, feed_type_id, quantity, bags, kg_actual, remaining_pct,
+                    remaining, session, warehouse_id, notes, created_at)
+                VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10, $11, $12, $13, $14, $15, COALESCE($16, NOW()))
+                ON CONFLICT (id) DO UPDATE SET feed_date=$4, meal=$5, product_id=$6,
+                    feed_type_id=$7, quantity=$8, bags=$9, kg_actual=$10, remaining_pct=$11,
+                    remaining=$12, session=$13, warehouse_id=$14, notes=$15""",
+                self._to_int(p["id"]), self._to_int(p.get("cycle_id")),
+                p.get("barn_id"), self._to_dt(p.get("feed_date")),
+                p.get("meal"), self._to_int(p.get("product_id")),
+                self._to_int(p.get("feed_type_id")), self._to_float(p.get("quantity")),
+                self._to_float(p.get("bags")), self._to_float(p.get("kg_actual")),
+                self._to_float(p.get("remaining_pct")), self._to_float(p.get("remaining")),
+                p.get("session") or p.get("feed_session"), self._to_int(p.get("warehouse_id")),
                 p.get("notes"), self._to_dt(p.get("created_at")),
             )
         elif action == "delete":
-            await db.execute("DELETE FROM death_records WHERE id = $1", p["id"])
+            await db.execute("DELETE FROM care_feeds WHERE id = $1", self._to_int(p["id"]))
 
-    async def _sync_medication_records(self, action: str, p: dict):
+    async def _sync_care_deaths(self, action: str, p: dict):
         if action in ("insert", "update"):
             await db.execute(
-                """INSERT INTO medication_records (id, cycle_id, med_date, medication_id,
-                    product_name, method, quantity, unit, notes, created_at)
-                VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, COALESCE($10, NOW()))
-                ON CONFLICT (id) DO UPDATE SET med_date=$3, medication_id=$4, product_name=$5,
-                    method=$6, quantity=$7, unit=$8, notes=$9""",
-                p["id"], p["cycle_id"], self._to_dt(p.get("med_date")), p.get("medication_id"),
-                p.get("product_name"), p.get("method"), p.get("quantity"),
-                p.get("unit"), p.get("notes"), self._to_dt(p.get("created_at")),
+                """INSERT INTO care_deaths (id, cycle_id, barn_id, death_date, count, quantity,
+                    cause, reason, death_category, symptoms, notes, created_at)
+                VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10, $11, COALESCE($12, NOW()))
+                ON CONFLICT (id) DO UPDATE SET death_date=$4, count=$5, quantity=$6,
+                    cause=$7, reason=$8, death_category=$9, symptoms=$10, notes=$11""",
+                self._to_int(p["id"]), self._to_int(p.get("cycle_id")),
+                p.get("barn_id"), self._to_dt(p.get("death_date")),
+                self._to_int(p.get("count")), self._to_int(p.get("quantity") or p.get("count")),
+                p.get("cause"), p.get("reason"), p.get("death_category"),
+                p.get("symptoms"), p.get("notes"), self._to_dt(p.get("created_at")),
             )
         elif action == "delete":
-            await db.execute("DELETE FROM medication_records WHERE id = $1", p["id"])
+            await db.execute("DELETE FROM care_deaths WHERE id = $1", self._to_int(p["id"]))
+
+    async def _sync_care_medications(self, action: str, p: dict):
+        if action in ("insert", "update"):
+            await db.execute(
+                """INSERT INTO care_medications (id, cycle_id, barn_id, med_date, med_type,
+                    product_id, medication_id, medication_name, quantity, dosage, unit,
+                    method, warehouse_id, purpose, notes, created_at)
+                VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10, $11, $12, $13, $14, $15, COALESCE($16, NOW()))
+                ON CONFLICT (id) DO UPDATE SET med_date=$4, med_type=$5, product_id=$6,
+                    medication_id=$7, medication_name=$8, quantity=$9, dosage=$10, unit=$11,
+                    method=$12, warehouse_id=$13, purpose=$14, notes=$15""",
+                self._to_int(p["id"]), self._to_int(p.get("cycle_id")),
+                p.get("barn_id"), self._to_dt(p.get("med_date")),
+                p.get("med_type", "medication"), self._to_int(p.get("product_id")),
+                self._to_int(p.get("medication_id")), p.get("medication_name") or p.get("product_name"),
+                self._to_float(p.get("quantity")), self._to_float(p.get("dosage")),
+                p.get("unit"), p.get("method"),
+                self._to_int(p.get("warehouse_id")), p.get("purpose"),
+                p.get("notes"), self._to_dt(p.get("created_at")),
+            )
+        elif action == "delete":
+            await db.execute("DELETE FROM care_medications WHERE id = $1", self._to_int(p["id"]))
 
     async def _sync_weight_sessions(self, action: str, p: dict):
         if action in ("insert", "update"):
             await db.execute(
-                """INSERT INTO weight_sessions (id, cycle_id, weigh_date, day_age, sample_count,
-                    total_weight, min_weight, max_weight, notes, created_at)
-                VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, COALESCE($10, NOW()))
-                ON CONFLICT (id) DO UPDATE SET weigh_date=$3, day_age=$4, sample_count=$5,
-                    total_weight=$6, min_weight=$7, max_weight=$8, notes=$9""",
-                p["id"], p["cycle_id"], self._to_dt(p.get("weigh_date")), p.get("day_age"),
-                p.get("sample_count"), p.get("total_weight"), p.get("min_weight"),
-                p.get("max_weight"), p.get("notes"), self._to_dt(p.get("created_at")),
+                """INSERT INTO weight_sessions (id, cycle_id, day_age, sample_count,
+                    avg_weight_g, note, weighed_at, created_at)
+                VALUES ($1, $2, $3, $4, $5, $6, $7, COALESCE($8, NOW()))
+                ON CONFLICT (id) DO UPDATE SET day_age=$3, sample_count=$4,
+                    avg_weight_g=$5, note=$6, weighed_at=$7""",
+                self._to_int(p["id"]), self._to_int(p.get("cycle_id")),
+                self._to_int(p.get("day_age")), self._to_int(p.get("sample_count")),
+                self._to_float(p.get("avg_weight_g")),
+                p.get("note") or p.get("notes"),
+                self._to_dt(p.get("weighed_at") or p.get("weigh_date")),
+                self._to_dt(p.get("created_at")),
             )
         elif action == "delete":
-            await db.execute("DELETE FROM weight_sessions WHERE id = $1", p["id"])
+            await db.execute("DELETE FROM weight_sessions WHERE id = $1", self._to_int(p["id"]))
 
-    async def _sync_sale_records(self, action: str, p: dict):
+    async def _sync_care_sales(self, action: str, p: dict):
         if action in ("insert", "update"):
             await db.execute(
-                """INSERT INTO sale_records (id, cycle_id, sale_date, count, total_weight,
-                    unit_price, total_amount, gender, buyer, notes, created_at)
-                VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10, COALESCE($11, NOW()))
-                ON CONFLICT (id) DO UPDATE SET sale_date=$3, count=$4, total_weight=$5,
-                    unit_price=$6, total_amount=$7, gender=$8, buyer=$9, notes=$10""",
-                p["id"], p["cycle_id"], self._to_dt(p.get("sale_date")), p.get("count"),
-                p.get("total_weight"), p.get("unit_price"), p.get("total_amount"),
-                p.get("gender"), p.get("buyer"), p.get("notes"), self._to_dt(p.get("created_at")),
+                """INSERT INTO care_sales (id, cycle_id, barn_id, sale_date, count, total_weight,
+                    avg_weight, unit_price, price_per_kg, total_amount, gender, buyer,
+                    sale_type, weight_kg, notes, created_at)
+                VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10, $11, $12, $13, $14, $15, COALESCE($16, NOW()))
+                ON CONFLICT (id) DO UPDATE SET sale_date=$4, count=$5, total_weight=$6,
+                    avg_weight=$7, unit_price=$8, price_per_kg=$9, total_amount=$10,
+                    gender=$11, buyer=$12, sale_type=$13, weight_kg=$14, notes=$15""",
+                self._to_int(p["id"]), self._to_int(p.get("cycle_id")),
+                p.get("barn_id"), self._to_dt(p.get("sale_date")),
+                self._to_int(p.get("count")), self._to_float(p.get("total_weight")),
+                self._to_float(p.get("avg_weight")), self._to_float(p.get("unit_price")),
+                self._to_float(p.get("price_per_kg")), self._to_float(p.get("total_amount")),
+                p.get("gender"), p.get("buyer"),
+                p.get("sale_type", "sale"), self._to_float(p.get("weight_kg")),
+                p.get("notes"), self._to_dt(p.get("created_at")),
             )
         elif action == "delete":
-            await db.execute("DELETE FROM sale_records WHERE id = $1", p["id"])
+            await db.execute("DELETE FROM care_sales WHERE id = $1", self._to_int(p["id"]))
 
     async def _sync_health_notes(self, action: str, p: dict):
         if action in ("insert", "update"):
             await db.execute(
                 """INSERT INTO health_notes (id, cycle_id, day_age, recorded_at, symptoms,
-                    severity, resolved, resolved_at, notes, created_at)
+                    severity, resolved, resolved_at, image_path, created_at)
                 VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, COALESCE($10, NOW()))
                 ON CONFLICT (id) DO UPDATE SET day_age=$3, recorded_at=$4, symptoms=$5,
-                    severity=$6, resolved=$7, resolved_at=$8, notes=$9""",
-                p["id"], p["cycle_id"], p.get("day_age"), self._to_dt(p.get("recorded_at")),
-                p.get("symptoms"), p.get("severity"), p.get("resolved", False),
-                self._to_dt(p.get("resolved_at")), p.get("notes"), self._to_dt(p.get("created_at")),
+                    severity=$6, resolved=$7, resolved_at=$8, image_path=$9""",
+                self._to_int(p["id"]), self._to_int(p.get("cycle_id")),
+                self._to_int(p.get("day_age")), self._to_dt(p.get("recorded_at")),
+                p.get("symptoms"), p.get("severity"), self._to_bool(p.get("resolved", False)),
+                self._to_dt(p.get("resolved_at")), p.get("image_path"),
+                self._to_dt(p.get("created_at")),
             )
         elif action == "delete":
-            await db.execute("DELETE FROM health_notes WHERE id = $1", p["id"])
+            await db.execute("DELETE FROM health_notes WHERE id = $1", self._to_int(p["id"]))
 
     async def _sync_devices(self, action: str, p: dict):
         if action in ("insert", "update"):
             await db.execute(
-                """INSERT INTO devices (id, device_code, name, device_type, barn_id, is_online,
-                    firmware_version, ip_address, last_seen, created_at)
-                VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, COALESCE($10, NOW()))
-                ON CONFLICT (id) DO UPDATE SET device_code=$2, name=$3, device_type=$4,
-                    barn_id=$5, firmware_version=$7, ip_address=$8""",
-                p["id"], p["device_code"], p.get("name"), p.get("device_type"),
-                p.get("barn_id"), p.get("is_online", False), p.get("firmware_version"),
-                p.get("ip_address"), self._to_dt(p.get("last_seen")), self._to_dt(p.get("created_at")),
+                """INSERT INTO devices (id, device_code, name, device_type_id, barn_id,
+                    mqtt_topic, is_online, firmware_version, ip_address, last_heartbeat_at,
+                    notes, created_at)
+                VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10, $11, COALESCE($12, NOW()))
+                ON CONFLICT (id) DO UPDATE SET device_code=$2, name=$3, device_type_id=$4,
+                    barn_id=$5, mqtt_topic=$6, is_online=$7, firmware_version=$8,
+                    ip_address=$9, last_heartbeat_at=$10, notes=$11""",
+                self._to_int(p["id"]), p["device_code"], p.get("name"),
+                self._to_int(p.get("device_type_id")), p.get("barn_id"),
+                p.get("mqtt_topic", ""), self._to_bool(p.get("is_online", False)),
+                p.get("firmware_version"), p.get("ip_address"),
+                self._to_dt(p.get("last_heartbeat_at") or p.get("last_seen")),
+                p.get("notes"), self._to_dt(p.get("created_at")),
             )
         elif action == "delete":
-            await db.execute("DELETE FROM devices WHERE id = $1", p["id"])
+            await db.execute("DELETE FROM devices WHERE id = $1", self._to_int(p["id"]))
 
     # ── Sync Log ─────────────────────────────────────
 

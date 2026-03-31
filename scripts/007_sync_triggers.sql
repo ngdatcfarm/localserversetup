@@ -104,22 +104,22 @@ DO $$ BEGIN
             FOR EACH ROW EXECUTE FUNCTION fn_sync_queue_change();
     END IF;
 
-    -- Care records
-    IF EXISTS (SELECT 1 FROM information_schema.tables WHERE table_name = 'feed_records') THEN
-        DROP TRIGGER IF EXISTS trg_sync_feed_records ON feed_records;
-        CREATE TRIGGER trg_sync_feed_records AFTER INSERT OR UPDATE OR DELETE ON feed_records
+    -- Care records (table names match cloud: care_feeds, care_deaths, etc.)
+    IF EXISTS (SELECT 1 FROM information_schema.tables WHERE table_name = 'care_feeds') THEN
+        DROP TRIGGER IF EXISTS trg_sync_care_feeds ON care_feeds;
+        CREATE TRIGGER trg_sync_care_feeds AFTER INSERT OR UPDATE OR DELETE ON care_feeds
             FOR EACH ROW EXECUTE FUNCTION fn_sync_queue_change();
     END IF;
 
-    IF EXISTS (SELECT 1 FROM information_schema.tables WHERE table_name = 'death_records') THEN
-        DROP TRIGGER IF EXISTS trg_sync_death_records ON death_records;
-        CREATE TRIGGER trg_sync_death_records AFTER INSERT OR UPDATE OR DELETE ON death_records
+    IF EXISTS (SELECT 1 FROM information_schema.tables WHERE table_name = 'care_deaths') THEN
+        DROP TRIGGER IF EXISTS trg_sync_care_deaths ON care_deaths;
+        CREATE TRIGGER trg_sync_care_deaths AFTER INSERT OR UPDATE OR DELETE ON care_deaths
             FOR EACH ROW EXECUTE FUNCTION fn_sync_queue_change();
     END IF;
 
-    IF EXISTS (SELECT 1 FROM information_schema.tables WHERE table_name = 'medication_records') THEN
-        DROP TRIGGER IF EXISTS trg_sync_medication_records ON medication_records;
-        CREATE TRIGGER trg_sync_medication_records AFTER INSERT OR UPDATE OR DELETE ON medication_records
+    IF EXISTS (SELECT 1 FROM information_schema.tables WHERE table_name = 'care_medications') THEN
+        DROP TRIGGER IF EXISTS trg_sync_care_medications ON care_medications;
+        CREATE TRIGGER trg_sync_care_medications AFTER INSERT OR UPDATE OR DELETE ON care_medications
             FOR EACH ROW EXECUTE FUNCTION fn_sync_queue_change();
     END IF;
 
@@ -135,9 +135,16 @@ DO $$ BEGIN
             FOR EACH ROW EXECUTE FUNCTION fn_sync_queue_change();
     END IF;
 
-    IF EXISTS (SELECT 1 FROM information_schema.tables WHERE table_name = 'sale_records') THEN
-        DROP TRIGGER IF EXISTS trg_sync_sale_records ON sale_records;
-        CREATE TRIGGER trg_sync_sale_records AFTER INSERT OR UPDATE OR DELETE ON sale_records
+    IF EXISTS (SELECT 1 FROM information_schema.tables WHERE table_name = 'care_sales') THEN
+        DROP TRIGGER IF EXISTS trg_sync_care_sales ON care_sales;
+        CREATE TRIGGER trg_sync_care_sales AFTER INSERT OR UPDATE OR DELETE ON care_sales
+            FOR EACH ROW EXECUTE FUNCTION fn_sync_queue_change();
+    END IF;
+
+    -- Cycle splits
+    IF EXISTS (SELECT 1 FROM information_schema.tables WHERE table_name = 'cycle_splits') THEN
+        DROP TRIGGER IF EXISTS trg_sync_cycle_splits ON cycle_splits;
+        CREATE TRIGGER trg_sync_cycle_splits AFTER INSERT OR UPDATE OR DELETE ON cycle_splits
             FOR EACH ROW EXECUTE FUNCTION fn_sync_queue_change();
     END IF;
 
