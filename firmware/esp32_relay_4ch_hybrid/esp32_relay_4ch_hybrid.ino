@@ -27,7 +27,7 @@ const char* WIFI_PASSWORD = "hoilamgi";
 
 // Device Identity
 const char* DEVICE_CODE = "esp-004ch-001";     // Must match device_code in local DB
-const char* DEVICE_TYPE = "relay_4ch";         // relay_4ch, relay_8ch, sensor, mixed
+const char* DEVICE_TYPE = "relay_4ch";           // relay_4ch, relay_8ch, sensor, mixed
 
 // Local Server (for OTA checks)
 const char* LOCAL_SERVER = "http://192.168.1.9:8000";
@@ -64,7 +64,6 @@ bool relayStates[4] = {false, false, false, false};
 // ============================================
 
 const unsigned long HEARTBEAT_INTERVAL = 30000;    // 30 seconds
-const unsigned long RELAY_CHECK_INTERVAL = 1000;  // 1 second
 const unsigned long LOCAL_LOCK_MS = 30000;        // 30 seconds local priority lock
 const unsigned long OTA_CHECK_INTERVAL = 300000;  // 5 minutes
 
@@ -88,18 +87,24 @@ bool cloudConnected = false;
 // TOPIC NAMES
 // ============================================
 
-char CMD_TOPIC[64];
-char HEARTBEAT_TOPIC[64];
-char STATUS_TOPIC[64];
-char ACK_TOPIC[64];
-char OTA_TOPIC[64];
+char LOCAL_CMD_TOPIC[64];
+char LOCAL_HEARTBEAT_TOPIC[64];
+char LOCAL_ACK_TOPIC[64];
+
+char CLOUD_CMD_TOPIC[64];
+char CLOUD_HEARTBEAT_TOPIC[64];
+char CLOUD_ACK_TOPIC[64];
 
 void buildTopics() {
-    snprintf(CMD_TOPIC, sizeof(CMD_TOPIC), "cfarm/%s/cmd", DEVICE_CODE);
-    snprintf(HEARTBEAT_TOPIC, sizeof(HEARTBEAT_TOPIC), "cfarm/%s/heartbeat", DEVICE_CODE);
-    snprintf(STATUS_TOPIC, sizeof(STATUS_TOPIC), "cfarm/%s/status", DEVICE_CODE);
-    snprintf(ACK_TOPIC, sizeof(ACK_TOPIC), "cfarm/%s/ack", DEVICE_CODE);
-    snprintf(OTA_TOPIC, sizeof(OTA_TOPIC), "cfarm/%s/ota", DEVICE_CODE);
+    // Local topics: cfarm/{device_code}/...
+    snprintf(LOCAL_CMD_TOPIC, sizeof(LOCAL_CMD_TOPIC), "cfarm/%s/cmd", DEVICE_CODE);
+    snprintf(LOCAL_HEARTBEAT_TOPIC, sizeof(LOCAL_HEARTBEAT_TOPIC), "cfarm/%s/heartbeat", DEVICE_CODE);
+    snprintf(LOCAL_ACK_TOPIC, sizeof(LOCAL_ACK_TOPIC), "cfarm/%s/ack", DEVICE_CODE);
+
+    // Cloud topics: cfarm.vn/{device_code}/...
+    snprintf(CLOUD_CMD_TOPIC, sizeof(CLOUD_CMD_TOPIC), "cfarm.vn/%s/cmd", DEVICE_CODE);
+    snprintf(CLOUD_HEARTBEAT_TOPIC, sizeof(CLOUD_HEARTBEAT_TOPIC), "cfarm.vn/%s/heartbeat", DEVICE_CODE);
+    snprintf(CLOUD_ACK_TOPIC, sizeof(CLOUD_ACK_TOPIC), "cfarm.vn/%s/ack", DEVICE_CODE);
 }
 
 // ============================================
@@ -121,7 +126,7 @@ void setup() {
 
     localMqttClient.setClient(wifiClient);
     localMqttClient.setServer(LOCAL_MQTT_SERVER, LOCAL_MQTT_PORT);
-    localMqttClient.setCallback(mqttCallback);
+    localMqttClient.setCallback(localMqttCallback);
     connectLocalMqtt();
 
     cloudMqttClient.setClient(wifiClient);
@@ -200,7 +205,8 @@ void connectLocalMqtt() {
 
     if (localMqttClient.connect(DEVICE_CODE, LOCAL_MQTT_USER, LOCAL_MQTT_PASS)) {
         Serial.println("OK");
-        localMqttClient.subscribe(CMD_TOPIC);
+        localMqttClient.subscribe(LOCAL_CMD_TOPIC);
+        Serial.println("Subscribed to: " + String(LOCAL_CMD_TOPIC));
         localConnected = true;
     } else {
         Serial.print("FAILED rc=");
@@ -209,8 +215,8 @@ void connectLocalMqtt() {
     }
 }
 
-void mqttCallback(char* topic, byte* payload, unsigned int length) {
-    if (String(topic) != CMD_TOPIC) return;
+void localMqttCallback(char* topic, byte* payload, unsigned int length) {
+    Serial.println("LOCAL MQTT: " + String(topic));
 
     StaticJsonDocument<512> doc;
     if (deserializeJson(doc, payload, length) == DeserializationError::ok) {
@@ -231,7 +237,8 @@ void connectCloudMqtt() {
 
     if (cloudMqttClient.connect(cloudClientId, CLOUD_MQTT_USER, CLOUD_MQTT_PASS)) {
         Serial.println("OK");
-        cloudMqttClient.subscribe(CMD_TOPIC);
+        cloudMqttClient.subscribe(CLOUD_CMD_TOPIC);
+        Serial.println("Subscribed to: " + String(CLOUD_CMD_TOPIC));
         cloudConnected = true;
     } else {
         Serial.print("FAILED rc=");
@@ -241,7 +248,7 @@ void connectCloudMqtt() {
 }
 
 void cloudMqttCallback(char* topic, byte* payload, unsigned int length) {
-    if (String(topic) != CMD_TOPIC) return;
+    Serial.println("CLOUD MQTT: " + String(topic));
 
     // Check local priority lock
     unsigned long elapsed = millis() - lastLocalCommandTime;
@@ -266,25 +273,10 @@ void handleCommand(JsonDocument& doc, const char* source) {
     const char* action = doc["action"] | "unknown";
 
     if (strcmp(action, "relay") == 0) {
-        const char* relayKey = doc["relay"] | "";
-        bool state = doc["state"] | false;
-
-        int relayIndex = -1;
-        for (int i = 0; i < 4; i++) {
-            if (strcmp(relayKey, RELAY_KEYS[i]) == 0) {
-                relayIndex = i;
-                break;
-            }
-        }
-
-        if (relayIndex >= 0) {
-            setRelay(relayIndex, state);
-            Serial.printf("Relay %d => %s\n", relayIndex + 1, state ? "ON" : "OFF");
-            sendAck("relay", relayKey, state);
-        }
+        handleRelayCommand(doc);
     } else if (strcmp(action, "ping") == 0) {
         Serial.println("PING");
-        sendAck("ping", "", false);
+        sendAck("ping");
     } else if (strcmp(action, "ota") == 0) {
         Serial.println("OTA command");
         const char* url = doc["url"] | "";
@@ -293,10 +285,50 @@ void handleCommand(JsonDocument& doc, const char* source) {
         }
     } else if (strcmp(action, "test") == 0) {
         Serial.println("TEST");
-        sendAck("test", "", false);
+        sendAck("test");
     } else {
         Serial.println(action);
     }
+}
+
+void handleRelayCommand(JsonDocument& doc) {
+    int relayIndex = -1;
+    bool state = false;
+
+    // Support both formats:
+    // 1. Cloud format: {"action": "relay", "channel": 1, "state": "on"}
+    // 2. Local format: {"action": "relay", "relay": "relay1", "state": true}
+
+    if (doc.containsKey("channel")) {
+        // Cloud format - channel is 1-based
+        int channel = doc["channel"] | 1;
+        relayIndex = channel - 1;  // Convert to 0-based index
+
+        // Support both "on"/"off" strings and boolean
+        const char* stateStr = doc["state"] | "off";
+        state = (strcmp(stateStr, "on") == 0 || strcmp(stateStr, "1") == 0 || strcmp(stateStr, "true") == 0);
+    } else if (doc.containsKey("relay")) {
+        // Local format - relay key like "relay1"
+        const char* relayKey = doc["relay"] | "";
+
+        for (int i = 0; i < 4; i++) {
+            if (strcmp(relayKey, RELAY_KEYS[i]) == 0) {
+                relayIndex = i;
+                break;
+            }
+        }
+
+        state = doc["state"] | false;
+    }
+
+    if (relayIndex < 0 || relayIndex >= 4) {
+        Serial.println("Invalid relay index");
+        return;
+    }
+
+    setRelay(relayIndex, state);
+    Serial.printf("Relay %d => %s\n", relayIndex + 1, state ? "ON" : "OFF");
+    sendAck("relay");
 }
 
 void setRelay(int index, bool state) {
@@ -309,21 +341,20 @@ void setRelay(int index, bool state) {
 // ACK
 // ============================================
 
-void sendAck(const char* action, const char* relayKey, bool state) {
+void sendAck(const char* action) {
     StaticJsonDocument<256> ackDoc;
     ackDoc["action"] = action;
     ackDoc["status"] = "ok";
     ackDoc["timestamp"] = millis();
-    if (strlen(relayKey) > 0) {
-        ackDoc["relay"] = relayKey;
-        ackDoc["state"] = state;
-    }
 
     char buffer[256];
     serializeJson(ackDoc, buffer);
 
     if (localMqttClient.connected()) {
-        localMqttClient.publish(ACK_TOPIC, buffer);
+        localMqttClient.publish(LOCAL_ACK_TOPIC, buffer);
+    }
+    if (cloudMqttClient.connected()) {
+        cloudMqttClient.publish(CLOUD_ACK_TOPIC, buffer);
     }
 }
 
@@ -353,10 +384,10 @@ void sendHeartbeat() {
     serializeJson(doc, buffer);
 
     if (localMqttClient.connected()) {
-        localMqttClient.publish(HEARTBEAT_TOPIC, buffer);
+        localMqttClient.publish(LOCAL_HEARTBEAT_TOPIC, buffer);
     }
     if (cloudMqttClient.connected()) {
-        cloudMqttClient.publish(HEARTBEAT_TOPIC, buffer);
+        cloudMqttClient.publish(CLOUD_HEARTBEAT_TOPIC, buffer);
     }
 }
 
@@ -380,10 +411,10 @@ void checkForOta() {
 
             if (strcmp(FIRMWARE_VERSION, latestVersion) < 0) {
                 Serial.printf("New firmware: %s -> %s\n", FIRMWARE_VERSION, latestVersion);
-                const char* fwUrl = doc["url"] | "";
-                if (strlen(fwUrl) > 0) {
-                    performOta(fwUrl);
-                }
+                char downloadUrl[256];
+                snprintf(downloadUrl, sizeof(downloadUrl), "%s/api/firmware/download/%s",
+                    LOCAL_SERVER, doc["id"] | "0");
+                performOta(downloadUrl);
             } else {
                 Serial.println("Firmware up to date");
             }
