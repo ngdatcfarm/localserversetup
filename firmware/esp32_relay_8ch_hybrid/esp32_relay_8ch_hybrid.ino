@@ -33,7 +33,7 @@ const char* DEVICE_TYPE = "relay_8ch";      // relay_4ch, relay_8ch, sensor, mix
 const char* LOCAL_SERVER = "http://192.168.1.9:8000";  // Local server IP
 
 // MQTT Brokers
-const char* LOCAL_MQTT_SERVER = "192.168.1.100";  // Local Mosquitto IP
+const char* LOCAL_MQTT_SERVER = "192.168.1.9";  // Local Mosquitto IP
 const int LOCAL_MQTT_PORT = 1883;
 const char* LOCAL_MQTT_USER = "cfarm";
 const char* LOCAL_MQTT_PASS = "cfarm_local";
