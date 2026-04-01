@@ -22,15 +22,15 @@
 // ============================================
 
 // WiFi
-const char* WIFI_SSID = "YourWiFiSSID";
-const char* WIFI_PASSWORD = "YourWiFiPassword";
+const char* WIFI_SSID = "Dat Lim";
+const char* WIFI_PASSWORD = "hoilamgi";
 
 // Device Identity
 const char* DEVICE_CODE = "esp-004ch-001";     // Must match device_code in local DB
 const char* DEVICE_TYPE = "relay_4ch";         // relay_4ch, relay_8ch, sensor, mixed
 
 // Local Server (for OTA checks)
-const char* LOCAL_SERVER = "http://192.168.1.100:8000";
+const char* LOCAL_SERVER = "http://192.168.1.9:8000";
 
 // MQTT Brokers
 const char* LOCAL_MQTT_SERVER = "192.168.1.100";

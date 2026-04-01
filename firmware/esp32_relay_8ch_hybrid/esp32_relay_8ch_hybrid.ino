@@ -22,15 +22,15 @@
 // ============================================
 
 // WiFi
-const char* WIFI_SSID = "YourWiFiSSID";
-const char* WIFI_PASSWORD = "YourWiFiPassword";
+const char* WIFI_SSID = "Dat Lim";
+const char* WIFI_PASSWORD = "hoilamgi";
 
 // Device Identity
 const char* DEVICE_CODE = "esp-001";        // Must match device_code in local DB
 const char* DEVICE_TYPE = "relay_8ch";      // relay_4ch, relay_8ch, sensor, mixed
 
 // Local Server (where this firmware will check for OTA)
-const char* LOCAL_SERVER = "http://192.168.1.100:8000";  // Local server IP
+const char* LOCAL_SERVER = "http://192.168.1.9:8000";  // Local server IP
 
 // MQTT Brokers
 const char* LOCAL_MQTT_SERVER = "192.168.1.100";  // Local Mosquitto IP
