@@ -427,6 +427,7 @@
         let deviceTypes = [];
         let devices = [];
         let firmwares = [];
+        let motherSources = [];
         let barns = [];
         let validationState = { deviceCode: null, deviceName: null, deviceMqtt: null };
 
@@ -481,8 +482,12 @@
 
         async function loadFirmwares() {
             try {
-                const res = await fetch('/api/firmware');
-                firmwares = await res.json();
+                const [fwRes, motherRes] = await Promise.all([
+                    fetch('/api/firmware'),
+                    fetch('/api/firmware/mother-sources')
+                ]);
+                firmwares = await fwRes.json();
+                motherSources = await motherRes.json();
                 renderFirmwares();
             } catch (e) {
                 showToast('Lỗi tải firmwares: ' + e.message, 'error');
@@ -784,7 +789,7 @@
             const list = document.getElementById('firmwaresList');
             const empty = document.getElementById('firmwaresEmpty');
 
-            if (firmwares.length === 0) {
+            if (firmwares.length === 0 && motherSources.length === 0) {
                 list.classList.add('hidden');
                 empty.classList.remove('hidden');
                 return;
@@ -793,13 +798,15 @@
             list.classList.remove('hidden');
             empty.classList.add('hidden');
 
+            // Group uploaded firmwares by type
             const grouped = {};
             firmwares.forEach(fw => {
                 if (!grouped[fw.device_type_code]) grouped[fw.device_type_code] = [];
                 grouped[fw.device_type_code].push(fw);
             });
 
-            list.innerHTML = Object.entries(grouped).map(([type, fws]) => `
+            // Render uploaded firmwares section
+            let uploadedHtml = Object.entries(grouped).map(([type, fws]) => `
                 <div class="card p-4">
                     <h3 class="font-semibold text-blue-400 mb-3">${type}</h3>
                     <div class="space-y-2">
@@ -829,6 +836,51 @@
                     </div>
                 </div>
             `).join('');
+
+            // Render mother firmware sources section (read-only)
+            let motherHtml = '';
+            if (motherSources.length > 0) {
+                motherHtml = `
+                    <div class="card p-4 border border-yellow-600/30">
+                        <h3 class="font-semibold text-yellow-400 mb-1">Mother Firmware Sources (Read-only)</h3>
+                        <p class="text-xs text-slate-500 mb-3">Các file .ino gốc trong firmware/. Chỉnh sửa thủ công qua file system.</p>
+                        <div class="space-y-2">
+                            ${motherSources.map(ms => `
+                                <div class="flex items-center justify-between bg-slate-800 rounded-lg p-3">
+                                    <div>
+                                        <div class="flex items-center gap-2">
+                                            <span class="font-medium text-yellow-400">${escapeHtml(ms.folder)}</span>
+                                            <span class="badge badge-yellow">${ms.lines} lines</span>
+                                        </div>
+                                        <p class="text-xs text-slate-500 mt-1">${escapeHtml(ms.filename)} • ${(ms.size / 1024).toFixed(1)} KB</p>
+                                        <p class="text-xs text-slate-600 mt-1 font-mono truncate">${escapeHtml(ms.preview.substring(0, 100))}...</p>
+                                    </div>
+                                    <button onclick="viewMotherSource('${escapeHtml(ms.folder)}')" class="px-3 py-1.5 rounded-lg bg-blue-900/50 hover:bg-blue-800 text-blue-400 text-xs" title="View Source">
+                                        <i class="fas fa-code"></i>
+                                    </button>
+                                </div>
+                            `).join('')}
+                        </div>
+                    </div>
+                `;
+            }
+
+            list.innerHTML = motherHtml + uploadedHtml;
+        }
+
+        async function viewMotherSource(folderName) {
+            try {
+                const res = await fetch(`/api/firmware/mother-source/${folderName}`);
+                if (!res.ok) throw new Error('Failed to load');
+                const data = await res.json();
+
+                document.getElementById('codeModalSubtitle').textContent =
+                    `Mother Source • ${data.folder} • ${data.size} bytes`;
+                document.getElementById('codeContent').textContent = data.content;
+                document.getElementById('codeModal').classList.remove('hidden');
+            } catch (e) {
+                showToast('Lỗi tải source: ' + e.message, 'error');
+            }
         }
 
         function renderDeviceTypes() {

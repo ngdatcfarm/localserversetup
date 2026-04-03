@@ -42,6 +42,75 @@ async def get_mother_firmware(device_type_code: str):
     return fw
 
 
+@router.get("/mother-sources")
+async def list_mother_firmware_sources():
+    """List all mother firmware source files (read-only, for viewing only).
+
+    Returns firmware sources from firmware/ folder - these are the master
+    templates used to generate device-specific firmware. Updates to these
+    files should be done manually via git/file system.
+    """
+    import os
+    from pathlib import Path
+
+    firmware_source_dir = Path("firmware")
+    if not firmware_source_dir.exists():
+        return []
+
+    sources = []
+    for folder in firmware_source_dir.iterdir():
+        if folder.is_dir():
+            ino_files = list(folder.glob("*.ino"))
+            if ino_files:
+                main_file = ino_files[0]
+                content = ""
+                try:
+                    content = main_file.read_text(encoding="utf-8")
+                except Exception:
+                    content = "# Unable to read file"
+
+                sources.append({
+                    "folder": folder.name,
+                    "filename": main_file.name,
+                    "path": str(main_file.relative_to(firmware_source_dir)),
+                    "size": len(content),
+                    "lines": len(content.splitlines()),
+                    "preview": content[:500] if len(content) > 500 else content,
+                })
+
+    return sources
+
+
+@router.get("/mother-source/{folder_name}")
+async def get_mother_firmware_source(folder_name: str):
+    """Get full content of a mother firmware source file (read-only)."""
+    from pathlib import Path
+
+    firmware_source_dir = Path("firmware")
+    folder_path = firmware_source_dir / folder_name
+
+    if not folder_path.exists() or not folder_path.is_dir():
+        raise HTTPException(status_code=404, detail="Firmware folder not found")
+
+    ino_files = list(folder_path.glob("*.ino"))
+    if not ino_files:
+        raise HTTPException(status_code=404, detail="No .ino file found")
+
+    main_file = ino_files[0]
+    try:
+        content = main_file.read_text(encoding="utf-8")
+    except Exception as e:
+        raise HTTPException(status_code=500, detail=f"Failed to read file: {e}")
+
+    return {
+        "folder": folder_name,
+        "filename": main_file.name,
+        "path": str(main_file),
+        "size": len(content),
+        "content": content,
+    }
+
+
 @router.post("/set-mother/{firmware_id}")
 async def set_mother_firmware(firmware_id: int):
     """Set a firmware as mother (default) for its device type."""
