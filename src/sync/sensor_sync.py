@@ -114,24 +114,23 @@ class SensorSync:
         try:
             rows = await db.fetch(
                 """SELECT device_code, name, device_type_id, is_online,
-                    firmware_version, ip_address, last_seen
+                    firmware_version, ip_address, last_heartbeat_at
                 FROM devices"""
             )
-
             if not rows:
                 return 0
 
             items = [{
                 "device_code": r["device_code"],
                 "name": r["name"],
-                "device_type": str(r["device_type_id"]) if r["device_type_id"] else None,
+                "device_type_id": r["device_type_id"],
                 "is_online": r["is_online"],
                 "firmware_version": r["firmware_version"],
                 "ip_address": r["ip_address"],
-                "last_seen": r["last_seen"].isoformat() if r["last_seen"] else None,
+                "last_seen": r["last_heartbeat_at"].isoformat() if r["last_heartbeat_at"] else None,
             } for r in rows]
 
-            await sync_service.cloud_request("POST", "/api/sync/device-states", {
+            result = await sync_service.cloud_request("POST", "/api/sync/device-states", {
                 "source": "local",
                 "items": items,
             })
