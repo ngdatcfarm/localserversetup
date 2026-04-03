@@ -189,9 +189,14 @@ ALTER TABLE cycles RENAME COLUMN actual_end_date TO end_date;
 
 | Table | Cloud Status | Local Status | Action |
 |-------|-------------|--------------|--------|
-| `weight_samples` | ✅ | ❌ Missing | Create? (per bird weight data) |
+| `weight_samples` | ✅ | ❌ Missing | Create (per bird weight data) |
 | `care_expenses` | ✅ | ❌ Missing | Create (feed/medicine cost tracking) |
 | `care_litters` | ✅ | ❌ Missing | Create (litter management) |
+| `feed_trough_checks` | ✅ | ❌ Missing | Create (kiểm tra máng ăn sau bữa ăn) |
+| `cycle_feed_programs` | ✅ | ❌ Missing | Create (assign feed_brand to cycle) |
+| `cycle_feed_program_items` | ✅ | ❌ Missing | Create (items trong chương trình) |
+| `cycle_feed_stages` | ✅ | ❌ Missing | Create (stage + primary/mix feed) |
+| `cycle_splits` | ✅ | ❌ Missing | Create (lịch sử tách cycle) |
 
 **weight_samples** (cloud has, local doesn't):
 ```sql
@@ -225,11 +230,29 @@ CREATE TABLE care_litters (
     cycle_id INT REFERENCES cycles(id),
     barn_id VARCHAR(50) REFERENCES barns(id),
     litter_date DATE NOT NULL,
-    litter_type VARCHAR(50),  -- 'new' | 'top_up' | 'change'
-    quantity_kg DECIMAL(10,2),
+    litter_type VARCHAR(20) NOT NULL,  -- 'new' | 'top_up' | 'change'
+    product_id INT REFERENCES products(id),  -- vật liệu lót (rơm, mùn cưa...)
+    quantity_kg DECIMAL(10,2),         -- kg vật liệu tiêu hao
     notes TEXT,
     created_at TIMESTAMPTZ DEFAULT NOW()
 );
+-- Side-effect: khi ghi litter → trừ inventory_transactions (use_litter)
+```
+
+**feed_trough_checks** (cloud has, local doesn't) — kiểm tra máng ăn sau bữa ăn:
+```sql
+-- Ghi nhận thủ công, KHÔNG phải từ sensor
+CREATE TABLE feed_trough_checks (
+    id SERIAL PRIMARY KEY,
+    cycle_id INT REFERENCES cycles(id),
+    barn_id VARCHAR(50) REFERENCES barns(id),
+    ref_feed_id INT REFERENCES care_feeds(id),  -- bữa ăn được kiểm tra
+    remaining_pct INT NOT NULL,  -- % còn lại (0-100)
+    checked_at TIMESTAMPTZ NOT NULL,
+    notes TEXT,
+    created_at TIMESTAMPTZ DEFAULT NOW()
+);
+-- NOTE: care_feeds.remaining_pct = ước lượng lúc cho, feed_trough_checks = ghi sau
 ```
 
 **cycle_feed_programs** (cloud has, local doesn't) — gán feed_brand cho cycle:

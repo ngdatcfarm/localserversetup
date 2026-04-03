@@ -27,26 +27,37 @@ Barn (1) ─────< Warehouse (N)  -- nullable barn_id (central warehouse)
 Barn (1) ─────< Equipment (N)
 Barn (1) ─────< SensorData (N)
 
-Cycle (1) ────< care_feeds
+Cycle (1) ────< care_feeds ────────────────→ inventory_transactions (side-effect)
 Cycle (1) ────< care_deaths
-Cycle (1) ────< care_medications
+Cycle (1) ────< care_medications ──────────→ inventory_transactions (side-effect)
 Cycle (1) ────< care_sales
 Cycle (1) ────< care_weights
+Cycle (1) ────< care_litters ──────────────→ inventory_transactions (side-effect) [NEW]
+Cycle (1) ────< care_expenses              [NEW]
+Cycle (1) ────< feed_trough_checks          [NEW] - kiểm tra máng ăn
 Cycle (1) ────< weight_reminders
+Cycle (1) ────< weight_samples             [NEW]
 Cycle (1) ────< cycle_daily_snapshots
 Cycle (1) ────< vaccine_schedules
 Cycle (1) ────< health_notes
+Cycle (1) ────< cycle_feed_programs       [NEW]
+Cycle (1) ────< cycle_feed_stages         [NEW]
+Cycle (1) ────< cycle_splits              [NEW]
 
 Device (1) ───< device_channels
 Device (1) ───< device_states
 Device (1) ───< device_state_log
-Device (1) ───< device_commands
+Device (1) ───< device_commands ─────────── lên bạt/xuống bạt, bật quạt...
 
 Warehouse (1) ─< inventory
-Warehouse (1) ─< inventory_transactions
+Warehouse (1) ─< inventory_transactions ←── care_feeds, care_medications, care_litters
 
 SensorData: indexed by device_id + time (TimescaleDB hypertable)
 ```
+
+**Cross-Domain Pattern (Fact Table):**
+Care tables (Cycle domain) tạo inventory transactions (Warehouse domain) như side-effect.
+Dùng `reference_id` FK để track: `care_feeds.id` → `inventory_transactions.ref_care_feed_id`
 
 ---
 
@@ -56,24 +67,35 @@ SensorData: indexed by device_id + time (TimescaleDB hypertable)
 Farm
 └── Barn
     ├── Cycle
-    │   ├── care_feeds
+    │   ├── care_feeds ────────────→ inventory_transactions
     │   ├── care_deaths
-    │   ├── care_medications
+    │   ├── care_medications ───────→ inventory_transactions
     │   ├── care_sales
     │   ├── care_weights
+    │   │   └── weight_samples (1 con trong 1 phiên cân)
+    │   ├── care_litters ───────────→ inventory_transactions [NEW]
+    │   ├── care_expenses [NEW]
+    │   ├── feed_trough_checks [NEW] - kiểm tra máng ăn sau bữa ăn
     │   ├── weight_reminders
     │   ├── cycle_daily_snapshots
     │   ├── vaccine_schedules
-    │   └── health_notes
+    │   ├── health_notes
+    │   ├── cycle_feed_programs [NEW] - gán feed_brand cho cycle
+    │   │   └── cycle_feed_program_items [NEW]
+    │   ├── cycle_feed_stages [NEW] - stage + primary/mix feed
+    │   └── cycle_splits [NEW] - lịch sử tách cycle
+    │
     ├── Device
-    │   ├── device_channels
+    │   ├── device_channels ──────── curtain_up, curtain_down, fan, light, water...
     │   ├── device_states
     │   ├── device_state_log
-    │   └── device_commands
+    │   └── device_commands ──────── điều khiển lên bạt/xuống bạt, bật quạt...
+    │
     ├── Warehouse
     │   ├── inventory
-    │   └── inventory_transactions
-    ├── Equipment
+    │   └── inventory_transactions ←── care_feeds, care_medications, care_litters
+    │
+    ├── Equipment [NEW]
     └── SensorData
 
 Reference Data (independent, Cloud→Local sync):
@@ -314,7 +336,11 @@ CREATE TABLE inventory_transactions (
     warehouse_id INT REFERENCES warehouses(id),
     product_id INT REFERENCES products(id),
     transaction_type VARCHAR(20) NOT NULL,  -- 'import' | 'export' | 'transfer'
-    quantity DOUBLE PRECISION NOT NULL,
+    -- Cross-domain references (fact table pattern):
+    -- reference_type = 'care_feed'     → reference_id = care_feeds.id
+    -- reference_type = 'care_med'      → reference_id = care_medications.id
+    -- reference_type = 'care_litter'   → reference_id = care_litters.id
+    -- reference_type = 'transfer'      → reference_id = self (for transfer pairs)
     reference_type VARCHAR(50),
     reference_id INT,
     from_warehouse_id INT REFERENCES warehouses(id),
@@ -327,6 +353,10 @@ CREATE TABLE inventory_transactions (
     created_at TIMESTAMPTZ DEFAULT NOW()
 );
 ```
+
+**Cross-Domain Pattern:**
+inventory_transactions là "fact table" - nó được tạo như **side-effect** từ các care operations.
+Dùng `reference_type` + `reference_id` để track nguồn gốc.
 
 ---
 
@@ -374,6 +404,7 @@ CREATE TABLE sensor_data (
 
 ```sql
 -- Feed logs
+-- NOTE: When syncing to Cloud, 'meal' maps to Cloud's 'session' field
 CREATE TABLE care_feeds (
     id SERIAL PRIMARY KEY,
     cycle_id INT REFERENCES cycles(id),
@@ -384,10 +415,9 @@ CREATE TABLE care_feeds (
     quantity DOUBLE PRECISION NOT NULL,  -- kg
     bags DOUBLE PRECISION,
     kg_actual DOUBLE PRECISION,
-    remaining_pct DOUBLE PRECISION,  -- trough check
+    remaining_pct DOUBLE PRECISION,  -- ước lượng lúc cho ăn (feed_trough_checks ghi sau)
     remaining DOUBLE PRECISION,
     warehouse_id INT REFERENCES warehouses(id),
-    session VARCHAR(20),           -- sync to cloud: meal→session
     notes TEXT,
     created_at TIMESTAMPTZ DEFAULT NOW()
 );
@@ -460,6 +490,57 @@ CREATE TABLE care_weights (
     created_at TIMESTAMPTZ DEFAULT NOW()
 );
 
+-- Feed trough checks (kiểm tra máng ăn sau bữa ăn) [NEW]
+-- Ghi nhận thủ công, KHÔNG phải từ sensor
+-- ref_feed_id FK về care_feeds để biết bữa ăn nào
+CREATE TABLE feed_trough_checks (
+    id SERIAL PRIMARY KEY,
+    cycle_id INT REFERENCES cycles(id),
+    barn_id VARCHAR(50) REFERENCES barns(id),
+    ref_feed_id INT REFERENCES care_feeds(id),  -- bữa ăn được kiểm tra
+    remaining_pct INT NOT NULL,  -- % còn lại (0-100)
+    checked_at TIMESTAMPTZ NOT NULL,
+    notes TEXT,
+    created_at TIMESTAMPTZ DEFAULT NOW()
+);
+
+-- Litter management (lên bạt/xuống bạt) [NEW]
+-- product_id = vật liệu lót (rơm, mùn cưa, trấu)
+-- Side-effect: trừ inventory_transactions (use_litter)
+CREATE TABLE care_litters (
+    id SERIAL PRIMARY KEY,
+    cycle_id INT REFERENCES cycles(id),
+    barn_id VARCHAR(50) REFERENCES barns(id),
+    litter_date DATE NOT NULL,
+    litter_type VARCHAR(20) NOT NULL,  -- 'new' | 'top_up' | 'change'
+    product_id INT REFERENCES products(id),  -- vật liệu lót
+    quantity_kg DECIMAL(10,2),         -- kg vật liệu tiêu hao
+    notes TEXT,
+    created_at TIMESTAMPTZ DEFAULT NOW()
+);
+
+-- Care expenses (chi phí hàng ngày) [NEW]
+-- expense_type: 'feed' | 'medication' | 'labor' | 'utility' | 'litter' | 'other'
+CREATE TABLE care_expenses (
+    id SERIAL PRIMARY KEY,
+    cycle_id INT REFERENCES cycles(id),
+    barn_id VARCHAR(50) REFERENCES barns(id),
+    expense_date DATE NOT NULL,
+    expense_type VARCHAR(50) NOT NULL,
+    amount DECIMAL(12,2) NOT NULL,
+    product_id INT REFERENCES products(id),  -- có thể null cho labor/utility
+    description TEXT,
+    created_at TIMESTAMPTZ DEFAULT NOW()
+);
+
+-- Weight samples (từng con một trong 1 phiên cân) [NEW]
+CREATE TABLE weight_samples (
+    id SERIAL PRIMARY KEY,
+    session_id INT REFERENCES care_weights(id),  -- FK về phiên cân
+    weight_g INT NOT NULL,  -- gram
+    created_at TIMESTAMPTZ DEFAULT NOW()
+);
+
 -- Weight reminders
 CREATE TABLE weight_reminders (
     id SERIAL PRIMARY KEY,
@@ -521,6 +602,51 @@ CREATE TABLE health_notes (
     resolved_at TIMESTAMPTZ,
     image_path VARCHAR(500),
     notes TEXT,
+    created_at TIMESTAMPTZ DEFAULT NOW()
+);
+
+-- Cycle feed programs (gán feed_brand cho cycle) [NEW]
+CREATE TABLE cycle_feed_programs (
+    id SERIAL PRIMARY KEY,
+    cycle_id INT REFERENCES cycles(id),
+    feed_brand_id INT REFERENCES feed_brands(id),
+    start_date DATE NOT NULL,
+    end_date DATE,  -- NULL = đang dùng
+    note TEXT,
+    created_at TIMESTAMPTZ DEFAULT NOW()
+);
+
+-- Cycle feed program items (items trong chương trình) [NEW]
+CREATE TABLE cycle_feed_program_items (
+    id SERIAL PRIMARY KEY,
+    cycle_feed_program_id INT REFERENCES cycle_feed_programs(id),
+    product_id INT REFERENCES products(id),  -- inventory_item_id trong cloud
+    stage VARCHAR(20) NOT NULL,  -- 'chick' | 'grower' | 'adult'
+    status VARCHAR(20) DEFAULT 'active',
+    created_at TIMESTAMPTZ DEFAULT NOW()
+);
+
+-- Cycle feed stages (stage feed chính + mix) [NEW]
+CREATE TABLE cycle_feed_stages (
+    id SERIAL PRIMARY KEY,
+    cycle_id INT REFERENCES cycles(id),
+    stage VARCHAR(20) NOT NULL,  -- 'chick' | 'grower' | 'adult'
+    primary_feed_type_id INT REFERENCES feed_types(id),  -- cám chính
+    mix_feed_type_id INT REFERENCES feed_types(id),    -- cám mix (NULL nếu không mix)
+    mix_ratio INT,  -- % của feed mới (10, 25, 50...)
+    effective_date DATE NOT NULL,
+    created_at TIMESTAMPTZ DEFAULT NOW()
+);
+
+-- Cycle splits (lịch sử tách cycle) [NEW]
+-- Khi tách 1 cycle thành 2 (tách đàn, tách theo giới tính)
+CREATE TABLE cycle_splits (
+    id SERIAL PRIMARY KEY,
+    from_cycle_id INT REFERENCES cycles(id),  -- cycle gốc
+    to_cycle_id INT REFERENCES cycles(id),    -- cycle mới được tách vào
+    quantity INT NOT NULL,  -- số con tách
+    split_date DATE NOT NULL,
+    note TEXT,
     created_at TIMESTAMPTZ DEFAULT NOW()
 );
 ```
@@ -674,20 +800,29 @@ CREATE TABLE sync_config (
 | devices | ✅ Push (heartbeat) | ✅ Pull | Auto-create from heartbeat |
 | device_channels | ✅ Push | ✅ Pull | |
 | device_states | ✅ Push | ✅ Pull | |
+| device_commands | ✅ Push | ✅ Pull | |
 | warehouses | ✅ Push | ✅ Pull | |
 | inventory | ✅ Push | ✅ Pull | |
-| inventory_transactions | ✅ Push | ✅ Pull | |
+| inventory_transactions | ✅ Push | ✅ Pull | Side-effect from care ops |
 | equipment | ✅ Push | ✅ Pull | New entity |
 | sensor_data | ✅ Push | ✅ Pull | All sensor types |
 | care_feeds | ✅ Push | ✅ Pull | meal→session mapping |
 | care_deaths | ✅ Push | ✅ Pull | count→quantity, cause→reason |
 | care_medications | ✅ Push | ✅ Pull | product_id→medication_id |
-| care_sales | ✅ Push | ✅ Pull | count→quantity, total_weight→weight_kg, unit_price→price_per_kg |
+| care_sales | ✅ Push | ✅ Pull | count→quantity, total_weight→weight_kg |
 | care_weights | ✅ Push | ✅ Pull | |
+| care_litters | ✅ Push | ✅ Pull | [NEW] product_id→use_litter |
+| care_expenses | ✅ Push | ✅ Pull | [NEW] |
+| feed_trough_checks | ✅ Push | ✅ Pull | [NEW] ref_feed_id |
+| weight_samples | ✅ Push | ✅ Pull | [NEW] |
 | weight_reminders | ✅ Push | ✅ Pull | |
 | cycle_daily_snapshots | ❌ Not synced | ❌ Not needed | Computed locally |
 | vaccine_schedules | ✅ Push | ✅ Pull | |
 | health_notes | ✅ Push | ✅ Pull | |
+| cycle_feed_programs | ✅ Push | ✅ Pull | [NEW] |
+| cycle_feed_program_items | ✅ Push | ✅ Pull | [NEW] |
+| cycle_feed_stages | ✅ Push | ✅ Pull | [NEW] |
+| cycle_splits | ✅ Push | ✅ Pull | [NEW] |
 | feed_brands | ❌ (cloud master) | ✅ Pull | Cloud is source |
 | feed_types | ❌ (cloud master) | ✅ Pull | |
 | medications | ❌ (cloud master) | ✅ Pull | |
@@ -695,6 +830,7 @@ CREATE TABLE sync_config (
 | vaccine_programs | ❌ (cloud master) | ✅ Pull | |
 | vaccine_program_items | ❌ (cloud master) | ✅ Pull | |
 | device_types | Seed data | Seed data | |
+| curtain_configs | ✅ Push | ✅ Pull | [NEW] |
 
 ---
 
