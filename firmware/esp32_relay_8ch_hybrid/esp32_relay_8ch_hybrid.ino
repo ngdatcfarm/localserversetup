@@ -8,7 +8,7 @@
  * - Supports OTA updates from local server
  *
  * Author: CFarm
- * Version: 1.0.0
+ * Version: 1.2.0
  */
 
 #include <WiFi.h>
@@ -17,26 +17,29 @@
 #include <Update.h>
 #include <HTTPClient.h>
 
+// Increase MQTT buffer size
+#define MQTT_MAX_PACKET_SIZE 512
+
 // ============================================
 // CONFIGURATION - Edit these values
 // ============================================
 
 // WiFi
-const char* WIFI_SSID = "Dat Lim";
+const char* WIFI_SSID = "Dat Lim TN";
 const char* WIFI_PASSWORD = "hoilamgi";
 
 // Device Identity
-const char* DEVICE_CODE = "esp-001";        // Must match device_code in local DB
-const char* DEVICE_TYPE = "relay_8ch";      // relay_4ch, relay_8ch, sensor, mixed
+const char* DEVICE_CODE = "esp32-01";
+const char* DEVICE_TYPE = "relay_8ch";
 
-// Local Server (where this firmware will check for OTA)
-const char* LOCAL_SERVER = "http://192.168.1.9:8000";  // Local server IP
+// Local Server
+const char* LOCAL_SERVER = "http://192.168.1.9:8000";
 
 // MQTT Brokers
-const char* LOCAL_MQTT_SERVER = "192.168.1.9";  // Local Mosquitto IP
+const char* LOCAL_MQTT_SERVER = "192.168.1.9";
 const int LOCAL_MQTT_PORT = 1883;
-const char* LOCAL_MQTT_USER = "cfarm";
-const char* LOCAL_MQTT_PASS = "cfarm_local";
+const char* LOCAL_MQTT_USER = "cfarm_device";
+const char* LOCAL_MQTT_PASS = "cfarm_device_2026";
 
 const char* CLOUD_MQTT_SERVER = "103.166.183.215";
 const int CLOUD_MQTT_PORT = 1883;
@@ -51,7 +54,6 @@ const char* FIRMWARE_NAME = "esp32_relay_8ch_hybrid";
 // GPIO Configuration
 // ============================================
 
-// Relay GPIO pins (common ESP32 safe pins)
 const int RELAY_PINS[8] = {18, 19, 21, 22, 23, 25, 26, 27};
 const char* RELAY_KEYS[8] = {
     "relay1", "relay2", "relay3", "relay4",
@@ -64,28 +66,28 @@ bool relayStates[8] = {false, false, false, false, false, false, false, false};
 // Timing Configuration
 // ============================================
 
-const unsigned long HEARTBEAT_INTERVAL = 30000;    // 30 seconds
-const unsigned long WIFI_RECONNECT_DELAY = 5000;   // 5 seconds
-const unsigned long OTA_CHECK_INTERVAL = 300000;  // 5 minutes
-
-// Local command lock duration (30 seconds priority)
+const unsigned long HEARTBEAT_INTERVAL = 30000;
+const unsigned long WIFI_RECONNECT_DELAY = 5000;
+const unsigned long OTA_CHECK_INTERVAL = 300000;
+const unsigned long MQTT_RECONNECT_DELAY = 5000;
 const unsigned long LOCAL_LOCK_MS = 30000;
 
 // ============================================
 // Global Variables
 // ============================================
 
-WiFiClient wifiClient;
-PubSubClient localMqttClient;
-PubSubClient cloudMqttClient;
+WiFiClient wifiClientLocal;
+WiFiClient wifiClientCloud;
+
+PubSubClient localMqttClient(wifiClientLocal);
+PubSubClient cloudMqttClient(wifiClientCloud);
 
 unsigned long lastHeartbeat = 0;
 unsigned long lastOtaCheck = 0;
 unsigned long lastLocalCommandTime = 0;
-
-// Connection state
-bool localConnected = false;
-bool cloudConnected = false;
+unsigned long lastWifiReconnectAttempt = 0;
+unsigned long lastLocalMqttReconnectAttempt = 0;
+unsigned long lastCloudMqttReconnectAttempt = 0;
 
 // ============================================
 // TOPIC NAMES
@@ -101,16 +103,30 @@ char CLOUD_HEARTBEAT_TOPIC[64];
 char CLOUD_ACK_TOPIC[64];
 
 void buildTopics() {
-    // Local topics: cfarm/{device_code}/...
     snprintf(LOCAL_CMD_TOPIC, sizeof(LOCAL_CMD_TOPIC), "cfarm/%s/cmd", DEVICE_CODE);
     snprintf(LOCAL_HEARTBEAT_TOPIC, sizeof(LOCAL_HEARTBEAT_TOPIC), "cfarm/%s/heartbeat", DEVICE_CODE);
     snprintf(LOCAL_ACK_TOPIC, sizeof(LOCAL_ACK_TOPIC), "cfarm/%s/ack", DEVICE_CODE);
     snprintf(LOCAL_OTA_TOPIC, sizeof(LOCAL_OTA_TOPIC), "cfarm/%s/ota", DEVICE_CODE);
 
-    // Cloud topics: cfarm.vn/{device_code}/...
     snprintf(CLOUD_CMD_TOPIC, sizeof(CLOUD_CMD_TOPIC), "cfarm.vn/%s/cmd", DEVICE_CODE);
     snprintf(CLOUD_HEARTBEAT_TOPIC, sizeof(CLOUD_HEARTBEAT_TOPIC), "cfarm.vn/%s/heartbeat", DEVICE_CODE);
     snprintf(CLOUD_ACK_TOPIC, sizeof(CLOUD_ACK_TOPIC), "cfarm.vn/%s/ack", DEVICE_CODE);
+}
+
+// ============================================
+// VERSION COMPARISON
+// ============================================
+
+bool isNewerVersion(const char* current, const char* latest) {
+    int currMaj = 0, currMin = 0, currPatch = 0;
+    int latMaj = 0, latMin = 0, latPatch = 0;
+    sscanf(current, "%d.%d.%d", &currMaj, &currMin, &currPatch);
+    sscanf(latest, "%d.%d.%d", &latMaj, &latMin, &latPatch);
+    if (latMaj > currMaj) return true;
+    if (latMaj < currMaj) return false;
+    if (latMin > currMin) return true;
+    if (latMin < currMin) return false;
+    return latPatch > currPatch;
 }
 
 // ============================================
@@ -126,30 +142,21 @@ void setup() {
     Serial.println("Device: " + String(DEVICE_CODE));
     Serial.println("===========================================");
 
-    // Initialize relay pins
     initRelays();
-
-    // Connect to WiFi
     connectWiFi();
-
-    // Build MQTT topic names
     buildTopics();
 
     // Setup local MQTT
-    localMqttClient.setClient(wifiClient);
     localMqttClient.setServer(LOCAL_MQTT_SERVER, LOCAL_MQTT_PORT);
     localMqttClient.setCallback(localMqttCallback);
     connectLocalMqtt();
 
     // Setup cloud MQTT
-    cloudMqttClient.setClient(wifiClient);
     cloudMqttClient.setServer(CLOUD_MQTT_SERVER, CLOUD_MQTT_PORT);
     cloudMqttClient.setCallback(cloudMqttCallback);
     connectCloudMqtt();
 
-    // Check for OTA on boot
     checkForOta();
-
     Serial.println("Setup complete!");
 }
 
@@ -160,38 +167,48 @@ void setup() {
 void loop() {
     unsigned long now = millis();
 
-    // Handle WiFi
+    // WiFi reconnect
     if (WiFi.status() != WL_CONNECTED) {
-        Serial.println("WiFi lost! Reconnecting...");
-        connectWiFi();
+        if (now - lastWifiReconnectAttempt >= WIFI_RECONNECT_DELAY) {
+            lastWifiReconnectAttempt = now;
+            Serial.println("WiFi lost! Reconnecting...");
+            connectWiFi();
+        }
     }
 
-    // Handle MQTT connections
-    if (!localMqttClient.connected()) {
-        connectLocalMqtt();
-    } else {
+    // Local MQTT - use state() for accurate status
+    if (localMqttClient.connected()) {
         localMqttClient.loop();
-    }
-
-    if (!cloudMqttClient.connected()) {
-        connectCloudMqtt();
     } else {
-        cloudMqttClient.loop();
+        if (now - lastLocalMqttReconnectAttempt >= MQTT_RECONNECT_DELAY) {
+            lastLocalMqttReconnectAttempt = now;
+            connectLocalMqtt();
+        }
     }
 
-    // Send heartbeat
+    // Cloud MQTT
+    if (cloudMqttClient.connected()) {
+        cloudMqttClient.loop();
+    } else {
+        if (now - lastCloudMqttReconnectAttempt >= MQTT_RECONNECT_DELAY) {
+            lastCloudMqttReconnectAttempt = now;
+            connectCloudMqtt();
+        }
+    }
+
+    // Heartbeat
     if (now - lastHeartbeat >= HEARTBEAT_INTERVAL) {
         sendHeartbeat();
         lastHeartbeat = now;
     }
 
-    // Check OTA periodically
+    // OTA check
     if (now - lastOtaCheck >= OTA_CHECK_INTERVAL) {
         checkForOta();
         lastOtaCheck = now;
     }
 
-    delay(10);
+    delay(5);
 }
 
 // ============================================
@@ -201,14 +218,12 @@ void loop() {
 void connectWiFi() {
     Serial.println("Connecting to WiFi: " + String(WIFI_SSID));
     WiFi.begin(WIFI_SSID, WIFI_PASSWORD);
-
     int attempts = 0;
-    while (WiFi.status() != WL_CONNECTED && attempts < 30) {
-        delay(500);
+    while (WiFi.status() != WL_CONNECTED && attempts < 20) {
+        delay(250);
         Serial.print(".");
         attempts++;
     }
-
     if (WiFi.status() == WL_CONNECTED) {
         Serial.println();
         Serial.println("WiFi Connected!");
@@ -220,80 +235,80 @@ void connectWiFi() {
 }
 
 // ============================================
-// MQTT - LOCAL (PRIMARY - 30s priority lock)
+// MQTT - LOCAL (PRIMARY)
 // ============================================
 
 void connectLocalMqtt() {
     Serial.print("Connecting to LOCAL MQTT... ");
 
-    if (localMqttClient.connect(DEVICE_CODE, LOCAL_MQTT_USER, LOCAL_MQTT_PASS)) {
-        Serial.println("OK");
+    if (localMqttClient.connected()) {
+        localMqttClient.disconnect();
+        delay(200);
+    }
+
+    bool connected = localMqttClient.connect(DEVICE_CODE, LOCAL_MQTT_USER, LOCAL_MQTT_PASS);
+    Serial.println(connected ? "OK" : "FAILED");
+
+    if (connected) {
+        // Wait briefly for CONNACK
+        delay(100);
+        localMqttClient.loop();
         localMqttClient.subscribe(LOCAL_CMD_TOPIC);
         Serial.println("Subscribed to: " + String(LOCAL_CMD_TOPIC));
-        localConnected = true;
-    } else {
-        Serial.print("FAILED rc=");
-        Serial.println(localMqttClient.state());
-        localConnected = false;
-    }
-}
-
-void localMqttCallback(char* topic, byte* payload, unsigned int length) {
-    Serial.println("LOCAL MQTT: " + String(topic));
-
-    // Parse JSON command
-    StaticJsonDocument<512> doc;
-    DeserializationError error = deserializeJson(doc, payload, length);
-
-    if (!error) {
-        handleCommand(doc, "LOCAL");
-        lastLocalCommandTime = millis();
-    } else {
-        Serial.println("JSON parse error!");
     }
 }
 
 // ============================================
-// MQTT - CLOUD (SECONDARY - fallback)
+// MQTT - CLOUD (SECONDARY)
 // ============================================
 
 void connectCloudMqtt() {
     Serial.print("Connecting to CLOUD MQTT... ");
 
-    // Use different client ID for cloud
     char cloudClientId[64];
     snprintf(cloudClientId, sizeof(cloudClientId), "%s_cloud", DEVICE_CODE);
 
-    if (cloudMqttClient.connect(cloudClientId, CLOUD_MQTT_USER, CLOUD_MQTT_PASS)) {
-        Serial.println("OK");
+    if (cloudMqttClient.connected()) {
+        cloudMqttClient.disconnect();
+        delay(200);
+    }
+
+    bool connected = cloudMqttClient.connect(cloudClientId, CLOUD_MQTT_USER, CLOUD_MQTT_PASS);
+    Serial.println(connected ? "OK" : "FAILED");
+
+    if (connected) {
+        delay(100);
+        cloudMqttClient.loop();
         cloudMqttClient.subscribe(CLOUD_CMD_TOPIC);
         Serial.println("Subscribed to: " + String(CLOUD_CMD_TOPIC));
-        cloudConnected = true;
-    } else {
-        Serial.print("FAILED rc=");
-        Serial.println(cloudMqttClient.state());
-        cloudConnected = false;
+    }
+}
+
+// ============================================
+// MQTT CALLBACKS
+// ============================================
+
+void localMqttCallback(char* topic, byte* payload, unsigned int length) {
+    Serial.println("LOCAL MQTT: " + String(topic));
+    StaticJsonDocument<512> doc;
+    DeserializationError error = deserializeJson(doc, payload, length);
+    if (!error) {
+        handleCommand(doc, "LOCAL");
+        lastLocalCommandTime = millis();
     }
 }
 
 void cloudMqttCallback(char* topic, byte* payload, unsigned int length) {
     Serial.println("CLOUD MQTT: " + String(topic));
-
-    // Check local priority lock
     unsigned long elapsed = millis() - lastLocalCommandTime;
     if (elapsed < LOCAL_LOCK_MS) {
-        Serial.println("CLOUD command REJECTED - Local priority lock active");
+        Serial.println("CLOUD command REJECTED - Local priority lock");
         return;
     }
-
-    // Parse JSON command
     StaticJsonDocument<512> doc;
     DeserializationError error = deserializeJson(doc, payload, length);
-
     if (!error) {
         handleCommand(doc, "CLOUD");
-    } else {
-        Serial.println("JSON parse error!");
     }
 }
 
@@ -302,22 +317,16 @@ void cloudMqttCallback(char* topic, byte* payload, unsigned int length) {
 // ============================================
 
 void handleCommand(JsonDocument& doc, const char* source) {
-    Serial.println("Handling command from: " + String(source));
-
+    Serial.println("Command from: " + String(source));
     const char* action = doc["action"] | "unknown";
 
     if (strcmp(action, "relay") == 0) {
         handleRelayCommand(doc);
-    } else if (strcmp(action, "ping") == 0) {
-        Serial.println("Ping received!");
-        sendAck("ping");
+    } else if (strcmp(action, "ping") == 0 || strcmp(action, "test") == 0) {
+        Serial.println("Ping/test received!");
+        sendAck("pong");
     } else if (strcmp(action, "ota") == 0) {
         handleOtaCommand(doc);
-    } else if (strcmp(action, "test") == 0) {
-        Serial.println("Test command received!");
-        sendAck("test");
-    } else {
-        Serial.println("Unknown action: " + String(action));
     }
 }
 
@@ -325,56 +334,37 @@ void handleRelayCommand(JsonDocument& doc) {
     int relayIndex = -1;
     bool state = false;
 
-    // Support both formats:
-    // 1. Cloud format: {"action": "relay", "channel": 1, "state": "on"}
-    // 2. Local format: {"action": "relay", "relay": "relay1", "state": true}
-
     if (doc.containsKey("channel")) {
-        // Cloud format - channel is 1-based
         int channel = doc["channel"] | 1;
-        relayIndex = channel - 1;  // Convert to 0-based index
-
-        // Support both "on"/"off" strings and boolean
+        relayIndex = channel - 1;
         const char* stateStr = doc["state"] | "off";
-        state = (strcmp(stateStr, "on") == 0 || strcmp(stateStr, "1") == 0 || strcmp(stateStr, "true") == 0);
+        state = (strcmp(stateStr, "on") == 0 || strcmp(stateStr, "1") == 0);
     } else if (doc.containsKey("relay")) {
-        // Local format - relay key like "relay1"
         const char* relayKey = doc["relay"] | "";
-
         for (int i = 0; i < 8; i++) {
             if (strcmp(relayKey, RELAY_KEYS[i]) == 0) {
                 relayIndex = i;
                 break;
             }
         }
-
         state = doc["state"] | false;
     }
 
-    if (relayIndex < 0 || relayIndex >= 8) {
-        Serial.println("Invalid relay index: " + String(relayIndex));
-        return;
+    if (relayIndex >= 0 && relayIndex < 8) {
+        setRelay(relayIndex, state);
+        Serial.printf("Relay %d => %s\n", relayIndex + 1, state ? "ON" : "OFF");
+        sendAck("relay");
     }
-
-    // Set relay state
-    setRelay(relayIndex, state);
-    Serial.printf("Relay %d => %s\n", relayIndex + 1, state ? "ON" : "OFF");
-
-    // Send ACK
-    sendAck("relay");
 }
 
 void setRelay(int index, bool state) {
     if (index < 0 || index >= 8) return;
-
     relayStates[index] = state;
     digitalWrite(RELAY_PINS[index], state ? LOW : HIGH);
 }
 
 void setAllRelays(bool state) {
-    for (int i = 0; i < 8; i++) {
-        setRelay(i, state);
-    }
+    for (int i = 0; i < 8; i++) setRelay(i, state);
 }
 
 // ============================================
@@ -386,16 +376,12 @@ void sendAck(const char* action) {
     ackDoc["action"] = action;
     ackDoc["status"] = "ok";
     ackDoc["timestamp"] = millis();
-
     char buffer[256];
     serializeJson(ackDoc, buffer);
 
-    // Send to local MQTT
     if (localMqttClient.connected()) {
         localMqttClient.publish(LOCAL_ACK_TOPIC, buffer);
     }
-
-    // Also send to cloud MQTT
     if (cloudMqttClient.connected()) {
         cloudMqttClient.publish(CLOUD_ACK_TOPIC, buffer);
     }
@@ -406,34 +392,32 @@ void sendAck(const char* action) {
 // ============================================
 
 void sendHeartbeat() {
-    StaticJsonDocument<512> doc;
-    doc["device_code"] = DEVICE_CODE;
-    doc["firmware_version"] = FIRMWARE_VERSION;
-    doc["firmware_name"] = FIRMWARE_NAME;
-    doc["device_type"] = DEVICE_TYPE;
-    doc["uptime_seconds"] = millis() / 1000;
-    doc["wifi_rssi"] = WiFi.RSSI();
-    doc["ip_address"] = WiFi.localIP().toString();
-    doc["free_heap"] = ESP.getFreeHeap();
-    doc["local_mqtt"] = localConnected;
-    doc["cloud_mqtt"] = cloudConnected;
+    Serial.println("--- HEARTBEAT ---");
+    Serial.println("WiFi RSSI: " + String(WiFi.RSSI()));
+    Serial.println("Local MQTT: " + String(localMqttClient.connected() ? "connected" : "disconnected"));
 
-    // Include relay states
-    JsonObject relays = doc.createNestedObject("relays");
-    for (int i = 0; i < 8; i++) {
-        relays[RELAY_KEYS[i]] = relayStates[i] ? "on" : "off";
-    }
+    // Call loop() first to ensure outgoing buffer is processed
+    localMqttClient.loop();
+    cloudMqttClient.loop();
+    delay(10);
 
-    char buffer[512];
-    serializeJson(doc, buffer);
+    // Simple compact JSON first
+    String payload = "{\"code\":\"" + String(DEVICE_CODE) + "\",";
+    payload += "\"rssi\":" + String(WiFi.RSSI()) + ",";
+    payload += "\"uptime\":" + String(millis() / 1000) + ",";
+    payload += "\"heap\":" + String(ESP.getFreeHeap()) + "}";
 
-    // Send to both brokers
+    Serial.println("Payload length: " + String(payload.length()));
+
     if (localMqttClient.connected()) {
-        localMqttClient.publish(LOCAL_HEARTBEAT_TOPIC, buffer);
+        localMqttClient.loop();  // Process more before publish
+        delay(5);
+        bool ok = localMqttClient.publish(LOCAL_HEARTBEAT_TOPIC, (uint8_t*)payload.c_str(), payload.length());
+        Serial.println("Local publish: " + String(ok ? "OK" : "FAILED"));
+        localMqttClient.loop();  // Process after publish
     }
-    if (cloudMqttClient.connected()) {
-        cloudMqttClient.publish(CLOUD_HEARTBEAT_TOPIC, buffer);
-    }
+
+    Serial.println("--- END ---");
 }
 
 // ============================================
@@ -442,42 +426,33 @@ void sendHeartbeat() {
 
 void checkForOta() {
     Serial.println("Checking for OTA updates...");
-
     char url[256];
     snprintf(url, sizeof(url), "%s/api/firmware/latest/%s", LOCAL_SERVER, DEVICE_TYPE);
 
     HTTPClient http;
     http.begin(url);
-
+    http.setTimeout(5000);
     int httpCode = http.GET();
 
     if (httpCode == 200) {
         String payload = http.getString();
-
         StaticJsonDocument<512> doc;
         DeserializationError error = deserializeJson(doc, payload);
-
         if (!error) {
             const char* latestVersion = doc["version"] | "";
-
-            Serial.printf("Current: %s, Latest: %s\n", FIRMWARE_VERSION, latestVersion);
-
-            // Compare versions (simple string comparison works for semver)
-            if (strcmp(FIRMWARE_VERSION, latestVersion) < 0) {
-                Serial.println("New firmware available! Starting OTA...");
-                // Build download URL
+            if (isNewerVersion(FIRMWARE_VERSION, latestVersion)) {
+                Serial.println("New firmware: " + String(latestVersion));
                 char downloadUrl[256];
                 snprintf(downloadUrl, sizeof(downloadUrl), "%s/api/firmware/download/%s",
                     LOCAL_SERVER, doc["id"] | "0");
                 performOta(downloadUrl);
             } else {
-                Serial.println("Firmware is up to date");
+                Serial.println("Firmware up to date");
             }
         }
     } else {
         Serial.printf("OTA check failed: HTTP %d\n", httpCode);
     }
-
     http.end();
 }
 
@@ -489,11 +464,9 @@ void handleOtaCommand(JsonDocument& doc) {
 }
 
 void performOta(const char* url) {
-    Serial.println("Starting OTA from: " + String(url));
-
+    Serial.println("Starting OTA: " + String(url));
     HTTPClient http;
     http.begin(url);
-
     int httpCode = http.GET();
 
     if (httpCode != 200) {
@@ -503,37 +476,40 @@ void performOta(const char* url) {
     }
 
     int contentLength = http.getSize();
-    Serial.printf("OTA size: %d bytes\n", contentLength);
-
     if (contentLength <= 0) {
         Serial.println("Invalid content length");
         http.end();
         return;
     }
 
-    // Start OTA update
     if (!Update.begin(contentLength)) {
         Serial.println("OTA begin failed");
         http.end();
         return;
     }
 
-    // Stream update
     WiFiClient* stream = http.getStreamPtr();
     size_t written = 0;
     uint8_t buffer[1024];
+    unsigned long startTime = millis();
 
     while (http.connected() && written < contentLength) {
+        if (millis() - startTime > 300000) {
+            Serial.println("OTA timeout!");
+            Update.abort();
+            break;
+        }
         size_t available = stream->available();
         if (available) {
-            int bytesRead = stream.readBytes(buffer, min(available, sizeof(buffer)));
-            written += Update.write(buffer, bytesRead);
-            Serial.printf("OTA progress: %d / %d bytes\r", written, contentLength);
+            int bytesRead = stream->readBytes(buffer, min(available, sizeof(buffer)));
+            if (bytesRead > 0) {
+                written += Update.write(buffer, bytesRead);
+                Serial.printf("OTA: %d / %d bytes\r", written, contentLength);
+            }
         }
         delay(1);
     }
     Serial.println();
-
     http.end();
 
     if (Update.end(true)) {
@@ -553,8 +529,8 @@ void initRelays() {
     Serial.println("Initializing relays...");
     for (int i = 0; i < 8; i++) {
         pinMode(RELAY_PINS[i], OUTPUT);
-        digitalWrite(RELAY_PINS[i], HIGH);  // OFF = HIGH (relay is active LOW)
+        digitalWrite(RELAY_PINS[i], HIGH);
         relayStates[i] = false;
-        Serial.printf("Relay %d (GPIO %d) initialized OFF\n", i + 1, RELAY_PINS[i]);
+        Serial.printf("Relay %d (GPIO %d) OFF\n", i + 1, RELAY_PINS[i]);
     }
 }

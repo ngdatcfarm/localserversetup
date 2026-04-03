@@ -1,0 +1,13 @@
+{
+  "permissions": {
+    "allow": [
+      "Bash(cat \"E:/Local-server/scripts/009_device_sync_alignment.sql\" | docker exec -i cfarm-db psql -U cfarm -d cfarm_local 2>&1)",
+      "Bash(psql -U cfarm -d cfarm_local -f scripts/010_hybrid_device_control.sql 2>&1)",
+      "Bash(find /c/dev/cfarm.vn -name \"*Sync*\" -o -name \"*sync*\" 2>/dev/null | head -20)",
+      "Bash(ls -la run_migration*.py 2>/dev/null || echo \"No run_migration.py found\")",
+      "Bash(python run_migration.py)",
+      "Bash(python -c \"\nimport asyncio\nimport asyncpg\n\nasync def check\\(\\):\n    conn = await asyncpg.connect\\(\n        host='localhost', port=5432, user='cfarm',\n        password='cfarm_local_2026', database='cfarm_local'\n    \\)\n    \n    devices = await conn.fetch\\('SELECT id, device_code, firmware_id FROM devices LIMIT 5'\\)\n    print\\('All devices:'\\)\n    for d in devices:\n        print\\(f'  id={d[\\\\\"id\\\\\"]}, code={d[\\\\\"device_code\\\\\"]}, firmware_id={d[\\\\\"firmware_id\\\\\"]}'\\)\n    \n    firmwares = await conn.fetch\\('SELECT id, device_type_code, version FROM firmwares LIMIT 5'\\)\n    print\\('Firmwares:'\\)\n    for f in firmwares:\n        print\\(f'  id={f[\\\\\"id\\\\\"]}, type={f[\\\\\"device_type_code\\\\\"]}, version={f[\\\\\"version\\\\\"]}'\\)\n    \n    await conn.close\\(\\)\n\nasyncio.run\\(check\\(\\)\\)\n\")",
+      "Bash(git add:*)"
+    ]
+  }
+}

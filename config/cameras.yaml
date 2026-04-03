@@ -1,16 +1,12 @@
 server:
   host: 0.0.0.0
   port: 8000
-
-# ── Local MQTT Broker (Mosquitto Docker) ──
 mqtt:
   host: localhost
   port: 1883
-  username: cfarm_server
-  password: cfarm_server_2026
+  username: ""
+  password: ""
   client_id: cfarm_local_server
-
-# ── TimescaleDB (Docker) ──
 database:
   host: localhost
   port: 5432
@@ -21,6 +17,15 @@ cameras:
 - id: cam_001
   name: Camera c?ng
   ip: 192.168.1.72
+  port: 554
+  username: admin
+  password: Abc@@1234
+  rtsp_path: /unicast/c1/s0/live
+  enabled: true
+  stream_type: main
+- id: cam_002
+  name: Camera 02
+  ip: 192.168.1.96
   port: 554
   username: admin
   password: Abc@@1234

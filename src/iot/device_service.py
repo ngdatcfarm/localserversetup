@@ -15,18 +15,23 @@ class DeviceService:
     # ── CRUD ──────────────────────────────────────────
 
     async def create(self, data: dict) -> dict:
-        """Register a new device."""
+        """Register a new device.
+
+        Firmware is auto-assigned by DB trigger (trg_devices_auto_firmware).
+        It prefers is_mother firmware, falls back to is_latest.
+        """
         row = await db.fetchrow(
-            """INSERT INTO devices (device_code, name, device_type_id, barn_id, mqtt_topic)
-            VALUES ($1, $2, $3, $4, $5)
+            """INSERT INTO devices (device_code, name, device_type_id, barn_id, mqtt_topic, cycle_id)
+            VALUES ($1, $2, $3, $4, $5, $6)
             RETURNING id, device_code, name, device_type_id, barn_id, mqtt_topic,
-                      is_online, created_at""",
+                      firmware_id, cycle_id, is_online, created_at""",
             data["device_code"], data["name"],
             data.get("device_type_id"), data.get("barn_id"),
-            data["mqtt_topic"],
+            data["mqtt_topic"], data.get("cycle_id"),
         )
         if not row:
             return {"ok": False, "message": "Failed to create device"}
+
         return {"ok": True, "device": dict(row)}
 
     async def get(self, device_id: int) -> Optional[dict]:

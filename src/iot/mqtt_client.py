@@ -173,6 +173,9 @@ class MqttClient:
         """Register a callback for a topic pattern."""
         with self._lock:
             self._callbacks.setdefault(topic_pattern, []).append(callback)
+        # Actually subscribe to the MQTT broker
+        if self.client and self.connected:
+            self.client.subscribe(topic_pattern, qos=1)
         logger.info(f"MQTT: Registered handler for {topic_pattern}")
 
     def publish(self, topic: str, payload: dict, qos: int = 1, retain: bool = False) -> bool:
@@ -189,14 +192,34 @@ class MqttClient:
             logger.error(f"MQTT: Publish failed - {e}")
             return False
 
-    def send_relay_command(self, mqtt_topic: str, channel: int, state: str) -> bool:
-        """Send relay on/off command. Topic format: cfarm/{device_topic}/cmd"""
+    def send_relay_command(
+        self,
+        mqtt_topic: str,
+        channel: int,
+        state: str,
+        seq: int = None,
+        cmd_id: int = None,
+    ) -> bool:
+        """Send relay on/off command. Topic format: cfarm/{device_topic}/cmd
+
+        Args:
+            mqtt_topic: Device MQTT topic
+            channel: Relay channel number
+            state: Command state (on/off/timed)
+            seq: Optional sequence number for acknowledgment tracking
+            cmd_id: Optional command ID for acknowledgment tracking
+        """
         topic = f"{mqtt_topic}/cmd" if not mqtt_topic.endswith("/cmd") else mqtt_topic
-        return self.publish(topic, {
+        payload = {
             "action": "relay",
             "channel": channel,
             "state": state,
-        })
+        }
+        if seq is not None:
+            payload["seq"] = seq
+        if cmd_id is not None:
+            payload["cmd_id"] = cmd_id
+        return self.publish(topic, payload)
 
     def get_stats(self) -> dict:
         """Get MQTT connection stats."""
@@ -210,16 +233,26 @@ class MqttClient:
 
     @staticmethod
     def _topic_matches(pattern: str, topic: str) -> bool:
-        """Simple MQTT topic matching with # wildcard."""
+        """MQTT topic matching with # and + wildcards."""
         if pattern == topic:
             return True
-        if pattern.endswith("/#"):
-            prefix = pattern[:-2]
-            return topic.startswith(prefix + "/") or topic == prefix
-        if "#" in pattern:
-            prefix = pattern.split("#")[0]
-            return topic.startswith(prefix)
-        return False
+
+        # Split into levels
+        pattern_parts = pattern.split("/")
+        topic_parts = topic.split("/")
+
+        # Check each part
+        for i, p in enumerate(pattern_parts):
+            if i >= len(topic_parts):
+                return False
+            if p == "#":
+                return True  # # matches rest
+            if p == "+":
+                continue  # + matches any single level
+            if p != topic_parts[i]:
+                return False
+
+        return len(pattern_parts) == len(topic_parts)
 
 
 # Module-level singleton

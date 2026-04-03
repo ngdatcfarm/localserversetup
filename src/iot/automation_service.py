@@ -79,10 +79,24 @@ class AutomationService:
 
     async def _fire_schedule(self, rule):
         """Execute a scheduled automation rule."""
+        from src.iot.command_coordinator import command_coordinator
+
         topic = rule["mqtt_topic"]
         channel = rule["channel_number"]
         state = rule["action_state"] or "on"
         duration = rule["duration_seconds"]
+
+        # Check for active local/manual lock (priority 1-2 blocks automation priority 4)
+        device_id = rule["device_id"]
+        channel_id = await db.fetchval(
+            "SELECT id FROM device_channels WHERE device_id = $1 AND channel_number = $2",
+            device_id, channel,
+        )
+        if channel_id:
+            has_local = await command_coordinator.check_pending_local(device_id, channel_id)
+            if has_local:
+                logger.info(f"Automation #{rule['id']} SKIPPED - local control active")
+                return
 
         logger.info(
             f"Automation #{rule['id']} '{rule['name']}': "
@@ -97,8 +111,8 @@ class AutomationService:
         if db.pool:
             import json
             await db.execute(
-                """INSERT INTO device_commands (device_id, command_type, payload, source, status)
-                VALUES ($1, 'relay', $2, 'automation', $3)""",
+                """INSERT INTO device_commands (device_id, command_type, payload, source, source_priority, status)
+                VALUES ($1, 'relay', $2, 'automation', 4, $3)""",
                 rule["device_id"],
                 json.dumps({"channel": channel, "state": state, "rule_id": rule["id"]}),
                 "sent" if sent else "failed",
@@ -176,9 +190,23 @@ class AutomationService:
 
     async def _fire_condition(self, rule, sensor_value: float):
         """Execute a condition-triggered rule."""
+        from src.iot.command_coordinator import command_coordinator
+
         topic = rule["mqtt_topic"]
         channel = rule["channel_number"]
         state = rule["condition_action"] or "on"
+
+        # Check for active local/manual lock (priority 1-2 blocks automation priority 4)
+        device_id = rule["device_id"]
+        channel_id = await db.fetchval(
+            "SELECT id FROM device_channels WHERE device_id = $1 AND channel_number = $2",
+            device_id, channel,
+        )
+        if channel_id:
+            has_local = await command_coordinator.check_pending_local(device_id, channel_id)
+            if has_local:
+                logger.info(f"Automation #{rule['id']} SKIPPED - local control active")
+                return
 
         logger.info(
             f"Automation #{rule['id']} '{rule['name']}' triggered: "
@@ -191,8 +219,8 @@ class AutomationService:
         if db.pool:
             import json
             await db.execute(
-                """INSERT INTO device_commands (device_id, command_type, payload, source, status)
-                VALUES ($1, 'relay', $2, 'automation', $3)""",
+                """INSERT INTO device_commands (device_id, command_type, payload, source, source_priority, status)
+                VALUES ($1, 'relay', $2, 'automation', 4, $3)""",
                 rule["device_id"],
                 json.dumps({
                     "channel": channel, "state": state, "rule_id": rule["id"],

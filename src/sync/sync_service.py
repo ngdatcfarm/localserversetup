@@ -319,6 +319,7 @@ class SyncService:
             "care_sales": self._sync_care_sales,
             "health_notes": self._sync_health_notes,
             "devices": self._sync_devices,
+            "firmwares": self._sync_firmwares,
             "notification_rules": self._sync_notification_rules,
         }
 
@@ -624,21 +625,40 @@ class SyncService:
         if action in ("insert", "update"):
             await db.execute(
                 """INSERT INTO devices (id, device_code, name, device_type_id, barn_id,
-                    mqtt_topic, is_online, firmware_version, ip_address, last_heartbeat_at,
+                    mqtt_topic, is_online, firmware_version, firmware_id, ip_address, last_heartbeat_at,
                     notes, created_at)
-                VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10, $11, COALESCE($12, NOW()))
+                VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10, $11, $12, COALESCE($13, NOW()))
                 ON CONFLICT (id) DO UPDATE SET device_code=$2, name=$3, device_type_id=$4,
                     barn_id=$5, mqtt_topic=$6, is_online=$7, firmware_version=$8,
-                    ip_address=$9, last_heartbeat_at=$10, notes=$11""",
+                    firmware_id=$9, ip_address=$10, last_heartbeat_at=$11, notes=$12""",
                 self._to_int(p["id"]), p["device_code"], p.get("name"),
                 self._to_int(p.get("device_type_id")), p.get("barn_id"),
                 p.get("mqtt_topic", ""), self._to_bool(p.get("is_online", False)),
-                p.get("firmware_version"), p.get("ip_address"),
+                p.get("firmware_version"), self._to_int(p.get("firmware_id")),
+                p.get("ip_address"),
                 self._to_dt(p.get("last_heartbeat_at") or p.get("last_seen")),
                 p.get("notes"), self._to_dt(p.get("created_at")),
             )
         elif action == "delete":
             await db.execute("DELETE FROM devices WHERE id = $1", self._to_int(p["id"]))
+
+    async def _sync_firmwares(self, action: str, p: dict):
+        if action in ("insert", "update"):
+            await db.execute(
+                """INSERT INTO firmwares (id, device_type_code, version, filename,
+                    file_size, checksum, changelog, is_latest, created_at)
+                VALUES ($1, $2, $3, $4, $5, $6, $7, $8, COALESCE($9, NOW()))
+                ON CONFLICT (id) DO UPDATE SET
+                    device_type_code=$2, version=$3, filename=$4,
+                    file_size=$5, checksum=$6, changelog=$7, is_latest=$8""",
+                self._to_int(p["id"]), p["device_type_code"], p["version"],
+                p["filename"], self._to_int(p["file_size"]),
+                p["checksum"], p.get("changelog", ""),
+                self._to_bool(p.get("is_latest", False)),
+                self._to_dt(p.get("created_at")),
+            )
+        elif action == "delete":
+            await db.execute("DELETE FROM firmwares WHERE id = $1", self._to_int(p["id"]))
 
     # ── Sync Log ─────────────────────────────────────
 
@@ -669,24 +689,62 @@ class SyncService:
             - curtain: Control curtain (position)
             - automation: Toggle automation rule
             - ping: Ping device
+
+        Cloud commands (priority 3) are rejected if a LOCAL/MANUAL command
+        (priority 1-2) has an active lock on the device/channel.
         """
         cmd_type = command.get("type")
         payload = command.get("payload", {})
 
         if cmd_type == "relay":
             from src.iot.mqtt_client import mqtt_client
+            from src.iot.command_coordinator import command_coordinator, CommandRequest
+
             device_code = payload.get("device_code")
             channel = payload.get("channel")
             state = payload.get("state")  # "on" or "off"
             duration = payload.get("duration")
 
-            topic = f"cfarm/{device_code}/cmd"
-            cmd_payload = {"ch": channel, "state": state}
-            if duration:
-                cmd_payload["duration"] = duration
+            # Look up device to get device_id and channel_id
+            device = await db.fetchrow(
+                "SELECT id, mqtt_topic FROM devices WHERE device_code = $1", device_code
+            )
+            if not device:
+                return {"ok": False, "reason": "device_not_found", "message": f"Unknown device: {device_code}"}
 
-            mqtt_client.publish(topic, cmd_payload)
-            return {"ok": True, "executed": "relay", "device": device_code}
+            channel_row = await db.fetchrow(
+                "SELECT id FROM device_channels WHERE device_id = $1 AND channel_number = $2",
+                device["id"], channel,
+            )
+            if not channel_row:
+                return {"ok": False, "reason": "channel_not_found", "message": f"Unknown channel: {channel}"}
+
+            # Check for active local/manual lock
+            has_local = await command_coordinator.check_pending_local(
+                device["id"], channel_row["id"]
+            )
+            if has_local:
+                return {
+                    "ok": False,
+                    "reason": "local_control_active",
+                    "message": "Local command in progress, cloud command rejected",
+                }
+
+            # Execute via command coordinator
+            req = CommandRequest(
+                device_id=device["id"],
+                channel_id=channel_row["id"],
+                command_type=state,
+                payload={"ch": channel, "state": state, "duration": duration} if duration else {"ch": channel, "state": state},
+                source="cloud",
+                requires_ack=True,
+            )
+            result = await command_coordinator.execute(req)
+
+            if result.ok:
+                return {"ok": True, "executed": "relay", "device": device_code, "command_id": result.command_id}
+            else:
+                return {"ok": False, "reason": result.reason, "message": result.message}
 
         elif cmd_type == "curtain":
             from src.iot.mqtt_client import mqtt_client

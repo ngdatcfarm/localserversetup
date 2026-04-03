@@ -95,6 +95,7 @@ async def startup_event():
 
     # 3. Start MQTT listener (processes ESP32 messages → DB)
     mqtt_listener.start()
+    mqtt_listener.start_queue_processor()
 
     # 4. Start background services
     _offline_check_task = asyncio.create_task(_offline_check_loop())
@@ -201,6 +202,12 @@ async def recordings_page():
 async def database_page():
     """Serve database manager page."""
     return templates.TemplateResponse("database.html", {"request": {}})
+
+
+@app.get("/iot", response_class=HTMLResponse)
+async def iot_page():
+    """Serve IoT manager page (firmware, devices, types)."""
+    return templates.TemplateResponse("iot.html", {"request": {}})
 
 
 @app.get("/health")

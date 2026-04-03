@@ -320,3 +320,70 @@ pip install -r requirements.txt
 python -m uvicorn src.server.main:app --host 0.0.0.0 --port 8000
 ```
 Truy cập: http://localhost:8000
+
+---
+
+# CFarm Local Server - IoT Project
+
+## ESP32 Device Connection Issues (2026-04-02)
+
+### Vấn đề ban đầu
+ESP32 hiển thị:
+```
+[HEARTBEAT] Local MQTT not connected!
+[HEARTBEAT] Cloud publish: FAILED
+Connecting to LOCAL MQTT... FAILED rc=-2
+```
+
+### Root Causes
+1. **Mosquitto chỉ bind localhost**: Windows Mosquitto service mặc định bind 127.0.0.1:1883, không thể truy cập từ LAN (192.168.1.x)
+2. **Thiếu password file**: ESP32 firmware dùng username `cfarm_device` nhưng Windows Mosquitto không có password file
+
+### Giải pháp
+
+**Bước 1:** Tạo config file mới với bind all interfaces
+```conf
+# mosquitto_fixed.conf
+listener 1883 0.0.0.0
+allow_anonymous true
+acl_file E:\Local-server\docker\mosquitto\config\acl
+password_file E:\Local-server\docker\mosquitto\config\passwd
+```
+
+**Bước 2:** Tạo password file cho ESP32 devices
+```bash
+"C:\Program Files\Mosquitto\mosquitto_passwd.exe" -c -b "E:\Local-server\docker\mosquitto\config\passwd" cfarm_device cfarm_device_2026
+```
+
+**Bước 3:** Restart Mosquitto service với config mới
+
+### Files đã tạo/sửa
+- `E:\Local-server\docker\mosquitto\config\mosquitto_fixed.conf` - Config mới
+- `E:\Local-server\docker\mosquitto\config\passwd` - Password file (user: cfarm_device)
+- `E:\Local-server\fix_mosquitto.bat` - Script fix nhanh
+
+### Kết quả sau fix
+```
+Connecting to LOCAL MQTT... OK
+Subscribed to: cfarm/esp32-01/cmd
+[HEARTBEAT] Local publish: OK hoặc FAILED (còn tùy)
+[HEARTBEAT] Cloud publish: FAILED (cloud broker credentials có thể sai)
+```
+
+### Cloud MQTT
+- Cloud broker: 103.166.183.215:1883 (port open)
+- Credentials trong firmware: cfarm_server / Abc@@123
+- Có thể password không đúng → cần xác nhận
+
+### ESP32 Firmware
+- File: `firmware/esp32_relay_8ch_hybrid/esp32_relay_8ch_hybrid.ino`
+- Device code: esp32-01
+- LOCAL_MQTT_SERVER: 192.168.1.9
+- CLOUD_MQTT_SERVER: 103.166.183.215
+
+## Database Device
+```sql
+-- Device esp32-01 đã tồn tại trong DB
+SELECT * FROM devices WHERE device_code = 'esp32-01';
+-- id=4, type=relay_8ch, barn_id=6, is_online=FALSE
+```

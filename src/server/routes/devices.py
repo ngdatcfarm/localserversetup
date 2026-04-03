@@ -146,6 +146,18 @@ async def test_device(device_id: int):
     return result
 
 
+@router.post("/ping/{device_code}")
+async def ping_device(device_code: str):
+    """Send ping command to device by device_code."""
+    device = await device_service.get_by_code(device_code)
+    if not device:
+        raise HTTPException(status_code=404, detail="Device not found")
+    result = await device_service.send_test(device["id"])
+    if not result["ok"]:
+        raise HTTPException(status_code=400, detail=result["message"])
+    return result
+
+
 # ── Channels ────────────────────────────────────────
 
 @router.get("/{device_id}/channels")

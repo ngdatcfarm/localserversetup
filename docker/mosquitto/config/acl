@@ -2,12 +2,11 @@
 # Mosquitto ACL - CFarm Local
 # ============================================
 
-# --- Local Server (full access) ---
-user cfarm_server
+# --- Anonymous (no user) ---
+user anonymous
 topic readwrite cfarm/#
 
-# --- ESP32 Devices ---
-# Devices can publish their data and subscribe to commands
+# --- ESP32 Devices (username: cfarm_device) ---
 user cfarm_device
 topic write cfarm/+/heartbeat
 topic write cfarm/+/status
@@ -15,6 +14,10 @@ topic write cfarm/+/data
 topic write cfarm/+/sensor
 topic read cfarm/+/cmd
 topic read cfarm/+/ota
+
+# --- Local Server (full access) ---
+user cfarm_server
+topic readwrite cfarm/#
 
 # --- Cloud Sync User (read-only mirror) ---
 user cfarm_cloud
