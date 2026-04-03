@@ -400,6 +400,8 @@ CREATE TABLE care_deaths (
     death_date DATE NOT NULL,
     count INT NOT NULL,
     cause VARCHAR(200),            -- sync to cloud: cause→reason
+    death_category VARCHAR(20),    -- 'disease' | 'accident' | 'weak' | 'unknown' (from cloud)
+    image_path VARCHAR(500),       -- path to death image (from cloud)
     symptoms TEXT,
     notes TEXT,
     created_at TIMESTAMPTZ DEFAULT NOW()
