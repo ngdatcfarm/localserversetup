@@ -1,0 +1,426 @@
+<!DOCTYPE html>
+<html lang="vi">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0, viewport-fit=cover">
+    <meta name="apple-mobile-web-app-capable" content="yes">
+    <meta name="apple-mobile-web-app-status-bar-style" content="black-translucent">
+    <meta name="theme-color" content="#14532d">
+    <title>Database - CFarm</title>
+    <script src="https://cdn.tailwindcss.com"></script>
+    <link rel="stylesheet" href="https://cdnjs.cloudflare.com/ajax/libs/font-awesome/6.5.1/css/all.min.css">
+    <style>
+        :root {
+            --primary: #16a34a;
+            --primary-dark: #15803d;
+            --primary-light: #22c55e;
+        }
+        * { -webkit-tap-highlight-color: transparent; }
+        body { padding-top: env(safe-area-inset-top); padding-bottom: env(safe-area-inset-bottom); background: #f3f4f6; color: #111827; }
+        ::-webkit-scrollbar { width: 4px; height: 4px; }
+        ::-webkit-scrollbar-thumb { background: #9ca3af; border-radius: 4px; }
+        .toast-in { animation: toastIn 0.3s ease-out; }
+        @keyframes toastIn { from { transform: translateY(100%); opacity:0; } to { transform: translateY(0); opacity:1; } }
+        input:focus, textarea:focus { outline: none; border-color: var(--primary); box-shadow: 0 0 0 2px rgba(22,163,74,0.25); }
+        .table-cell { max-width: 200px; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+    </style>
+</head>
+<body class="bg-gray-100 text-gray-900 min-h-screen">
+
+    <!-- Header -->
+    <header class="sticky top-0 z-40 bg-white/80 backdrop-blur-lg border-b border-gray-200 shadow-sm">
+        <div class="px-4 sm:px-6 lg:px-8 max-w-7xl mx-auto">
+            <div class="flex items-center justify-between h-14 sm:h-16">
+                <div class="flex items-center gap-2.5">
+                    <div class="w-8 h-8 rounded-lg bg-green-600 flex items-center justify-center">
+                        <i class="fas fa-database text-sm text-white"></i>
+                    </div>
+                    <span class="font-bold text-lg text-gray-900">Database</span>
+                </div>
+                <div class="flex items-center gap-3">
+                    <a href="/" class="text-gray-600 hover:text-green-600 text-sm">
+                        <i class="fas fa-arrow-left mr-1"></i> Quay lại
+                    </a>
+                    <button onclick="loadStatus()" class="px-3 py-2 rounded-xl bg-gray-100 hover:bg-gray-200 text-sm text-gray-700">
+                        <i class="fas fa-rotate-right mr-1"></i>Làm mới
+                    </button>
+                </div>
+            </div>
+        </div>
+    </header>
+
+    <main class="px-4 sm:px-6 lg:px-8 max-w-7xl mx-auto pb-8">
+
+        <!-- Stats -->
+        <div class="grid grid-cols-2 sm:grid-cols-4 gap-3 py-4">
+            <div class="bg-white rounded-xl p-4 border border-gray-200">
+                <div class="text-gray-500 text-xs uppercase">Connected</div>
+                <div id="dbStatus" class="text-xl font-bold text-emerald-400">-</div>
+            </div>
+            <div class="bg-white rounded-xl p-4 border border-gray-200">
+                <div class="text-gray-500 text-xs uppercase">Size</div>
+                <div id="dbSize" class="text-xl font-bold">-</div>
+            </div>
+            <div class="bg-white rounded-xl p-4 border border-gray-200">
+                <div class="text-gray-500 text-xs uppercase">Tables</div>
+                <div id="dbTables" class="text-xl font-bold">-</div>
+            </div>
+            <div class="bg-white rounded-xl p-4 border border-gray-200">
+                <div class="text-gray-500 text-xs uppercase">Total Rows</div>
+                <div id="dbRows" class="text-xl font-bold">-</div>
+            </div>
+        </div>
+
+        <!-- Tabs -->
+        <div class="flex gap-2 mb-4 border-b border-gray-200 pb-2">
+            <button onclick="switchTab('tables')" id="tab-tables" class="px-4 py-2 rounded-t-lg bg-green-600 text-white text-sm font-medium">
+                <i class="fas fa-table mr-1"></i>Tables
+            </button>
+            <button onclick="switchTab('query')" id="tab-query" class="px-4 py-2 rounded-t-lg bg-gray-100 text-gray-700 text-sm font-medium hover:bg-gray-600">
+                <i class="fas fa-code mr-1"></i>SQL Query
+            </button>
+        </div>
+
+        <!-- Tables Tab -->
+        <div id="panel-tables" class="space-y-4">
+            <!-- Groups -->
+            <div id="groupsList" class="space-y-3"></div>
+
+            <!-- All Tables (collapsed by default) -->
+            <div class="flex items-center justify-between">
+                <button onclick="toggleAllTables()" class="text-sm text-gray-600 hover:text-green-600">
+                    <i class="fas fa-list mr-1"></i>Tất cả tables
+                </button>
+            </div>
+            <div id="allTablesList" class="grid grid-cols-2 sm:grid-cols-3 lg:grid-cols-4 gap-2 hidden"></div>
+
+            <!-- Table Detail -->
+            <div id="tableDetail" class="hidden space-y-4">
+                <div class="flex items-center justify-between">
+                    <button onclick="closeTableDetail()" class="text-gray-600 hover:text-green-600 text-sm">
+                        <i class="fas fa-arrow-left mr-1"></i>Quay lại
+                    </button>
+                    <div class="flex gap-2">
+                        <button onclick="loadTableSchema()" class="px-3 py-1.5 rounded-lg bg-gray-100 hover:bg-gray-600 text-sm">
+                            <i class="fas fa-info-circle mr-1"></i>Schema
+                        </button>
+                        <input type="number" id="tableLimit" value="50" min="1" max="1000" class="w-16 bg-white border border-gray-200 rounded-lg px-2 py-1.5 text-sm text-center">
+                        <button onclick="loadTableData()" class="px-3 py-1.5 rounded-lg bg-blue-600 hover:bg-blue-500 text-sm">
+                            <i class="fas fa-rotate mr-1"></i>Load
+                        </button>
+                    </div>
+                </div>
+
+                <!-- Table Info -->
+                <div class="bg-white rounded-xl p-4 border border-gray-200">
+                    <div class="flex items-center justify-between">
+                        <h3 id="tableName" class="text-lg font-bold text-green-400">-</h3>
+                        <span id="tableCount" class="text-sm text-gray-600">- rows</span>
+                    </div>
+                </div>
+
+                <!-- Columns -->
+                <div class="bg-white rounded-xl p-4 border border-gray-200 overflow-x-auto">
+                    <h4 class="text-sm font-medium text-gray-600 mb-2">Columns</h4>
+                    <table class="w-full text-sm">
+                        <thead>
+                            <tr class="text-gray-500 border-b border-gray-200">
+                                <th class="text-left py-2 pr-4">Column</th>
+                                <th class="text-left py-2 pr-4">Type</th>
+                                <th class="text-left py-2 pr-4">Nullable</th>
+                                <th class="text-left py-2">Default</th>
+                            </tr>
+                        </thead>
+                        <tbody id="tableColumns"></tbody>
+                    </table>
+                </div>
+
+                <!-- Data -->
+                <div class="bg-white rounded-xl p-4 border border-gray-200 overflow-x-auto">
+                    <h4 class="text-sm font-medium text-gray-600 mb-2">Data</h4>
+                    <div class="overflow-x-auto">
+                        <table class="w-full text-sm" id="tableData">
+                            <thead><tr id="tableHeader" class="text-gray-500 border-b border-gray-200"></tr></thead>
+                            <tbody id="tableRows"></tbody>
+                        </table>
+                    </div>
+                </div>
+            </div>
+        </div>
+
+        <!-- Query Tab -->
+        <div id="panel-query" class="hidden space-y-4">
+            <div class="bg-white rounded-xl p-4 border border-gray-200">
+                <h3 class="text-sm font-medium text-gray-600 mb-2">SQL Query</h3>
+                <textarea id="sqlInput" rows="6" class="w-full bg-gray-900 border border-gray-200 rounded-xl px-4 py-3 text-sm font-mono" placeholder="SELECT * FROM devices LIMIT 10"></textarea>
+                <div class="flex justify-between mt-3">
+                    <div class="text-xs text-gray-500">
+                        Examples: <button onclick="insertExample('SELECT * FROM devices LIMIT 10')" class="text-green-400 hover:underline mx-1">devices</button>
+                        <button onclick="insertExample('SELECT * FROM sensors ORDER BY created_at DESC LIMIT 20')" class="text-green-400 hover:underline mx-1">sensors</button>
+                    </div>
+                    <button onclick="runQuery()" class="px-4 py-2 rounded-xl bg-green-600 hover:bg-green-500 text-sm font-medium">
+                        <i class="fas fa-play mr-1"></i>Run Query
+                    </button>
+                </div>
+            </div>
+
+            <div class="bg-white rounded-xl p-4 border border-gray-200">
+                <h3 class="text-sm font-medium text-gray-600 mb-2">Results</h3>
+                <div id="queryResults" class="overflow-x-auto text-sm">
+                    <p class="text-gray-500">Run a query to see results</p>
+                </div>
+            </div>
+        </div>
+
+    </main>
+
+    <!-- Toast -->
+    <div id="toast" class="fixed bottom-6 left-4 right-4 sm:left-auto sm:right-6 sm:w-80 z-50 hidden">
+        <div id="toastInner" class="flex items-center gap-3 px-4 py-3 rounded-2xl shadow-lg text-sm font-medium toast-in">
+            <i id="toastIcon" class="fas fa-check-circle"></i>
+            <span id="toastMessage"></span>
+        </div>
+    </div>
+
+    <script>
+        let currentTable = null;
+        let currentTab = 'tables';
+
+        document.addEventListener('DOMContentLoaded', () => {
+            loadStatus();
+            loadTables();
+        });
+
+        function switchTab(tab) {
+            currentTab = tab;
+            document.getElementById('panel-tables').classList.toggle('hidden', tab !== 'tables');
+            document.getElementById('panel-query').classList.toggle('hidden', tab !== 'query');
+            document.getElementById('tab-tables').className = tab === 'tables' ? 'px-4 py-2 rounded-t-lg bg-green-600 text-white text-sm font-medium' : 'px-4 py-2 rounded-t-lg bg-gray-100 text-gray-700 text-sm font-medium hover:bg-gray-600';
+            document.getElementById('tab-query').className = tab === 'query' ? 'px-4 py-2 rounded-t-lg bg-green-600 text-white text-sm font-medium' : 'px-4 py-2 rounded-t-lg bg-gray-100 text-gray-700 text-sm font-medium hover:bg-gray-600';
+        }
+
+        async function loadStatus() {
+            try {
+                const res = await fetch('/api/db/status');
+                const data = await res.json();
+                document.getElementById('dbStatus').textContent = data.connected ? '✓' : '✗';
+                document.getElementById('dbStatus').className = data.connected ? 'text-xl font-bold text-emerald-400' : 'text-xl font-bold text-red-400';
+                document.getElementById('dbSize').textContent = data.size || '-';
+                document.getElementById('dbTables').textContent = data.tables || 0;
+                document.getElementById('dbRows').textContent = data.total_rows?.toLocaleString() || 0;
+            } catch (e) {
+                showToast('Lỗi kết nối database', 'error');
+            }
+        }
+
+        async function loadTables() {
+            try {
+                // Load grouped tables
+                const res = await fetch('/api/db/tables/grouped');
+                const data = await res.json();
+
+                const groupsList = document.getElementById('groupsList');
+                const groupIcons = {
+                    devices: 'fa-microchip',
+                    farm: 'fa-house-chimney',
+                    feed: 'fa-bowl-rice',
+                    care: 'fa-hand-holding-heart',
+                    inventory: 'fa-boxes-stacked',
+                    health: 'fa-syringe',
+                    weights: 'fa-scale-balanced',
+                    automation: 'fa-robot',
+                    sync: 'fa-sync',
+                    system: 'fa-gear'
+                };
+
+                groupsList.innerHTML = data.groups.map(g => `
+                    <div class="bg-white rounded-xl border border-gray-200 overflow-hidden">
+                        <button onclick="toggleGroup('${g.key}')" class="w-full flex items-center justify-between p-4 hover:bg-gray-100/50">
+                            <div class="flex items-center gap-3">
+                                <i class="fas ${groupIcons[g.key] || 'fa-folder'} text-green-400"></i>
+                                <span class="font-medium">${g.label}</span>
+                                <span class="text-xs text-gray-500">(${g.table_count} tables)</span>
+                            </div>
+                            <i id="icon-${g.key}" class="fas fa-chevron-down text-gray-600"></i>
+                        </button>
+                        <div id="group-${g.key}" class="grid grid-cols-2 sm:grid-cols-3 lg:grid-cols-4 gap-2 p-4 pt-0">
+                            ${g.tables.map(t => `
+                                <button onclick="openTable('${t.table_name}')" class="bg-gray-100 hover:bg-gray-600 rounded-lg p-2 text-left border border-gray-600 hover:border-green-500 transition-colors">
+                                    <div class="text-sm font-medium text-green-400">${t.table_name}</div>
+                                    <div class="text-xs text-gray-500">${t.column_count} cols</div>
+                                </button>
+                            `).join('')}
+                        </div>
+                    </div>
+                `).join('');
+
+                // Also load all tables for "all tables" view
+                const allRes = await fetch('/api/db/tables');
+                const allData = await allRes.json();
+                const allList = document.getElementById('allTablesList');
+                allList.innerHTML = allData.tables.map(t => `
+                    <button onclick="openTable('${t.table_name}')" class="bg-white hover:bg-gray-100 rounded-lg p-3 text-left border border-gray-200 hover:border-green-500 transition-colors">
+                        <div class="text-sm font-medium text-green-400">${t.table_name}</div>
+                        <div class="text-xs text-gray-500">${t.column_count} columns</div>
+                    </button>
+                `).join('');
+            } catch (e) {
+                showToast('Lỗi tải tables', 'error');
+            }
+        }
+
+        function toggleGroup(key) {
+            const el = document.getElementById(`group-${key}`);
+            const icon = document.getElementById(`icon-${key}`);
+            el.classList.toggle('hidden');
+            icon.classList.toggle('fa-chevron-down');
+            icon.classList.toggle('fa-chevron-right');
+        }
+
+        function toggleAllTables() {
+            const el = document.getElementById('allTablesList');
+            el.classList.toggle('hidden');
+        }
+
+        async function openTable(name) {
+            currentTable = name;
+            document.getElementById('groupsList').classList.add('hidden');
+            document.getElementById('allTablesList').classList.add('hidden');
+            document.getElementById('tableDetail').classList.remove('hidden');
+            document.getElementById('tableName').textContent = name;
+            loadTableData();
+            loadTableColumns();
+        }
+
+        function closeTableDetail() {
+            currentTable = null;
+            document.getElementById('tableDetail').classList.add('hidden');
+            document.getElementById('groupsList').classList.remove('hidden');
+        }
+
+        async function loadTableColumns() {
+            try {
+                const res = await fetch(`/api/db/tables/${currentTable}`);
+                const data = await res.json();
+                document.getElementById('tableColumns').innerHTML = data.columns.map(c => `
+                    <tr class="border-b border-gray-200">
+                        <td class="py-2 pr-4 text-green-400">${c.column_name}</td>
+                        <td class="py-2 pr-4 text-gray-700">${c.data_type}</td>
+                        <td class="py-2 pr-4 text-gray-500">${c.is_nullable}</td>
+                        <td class="py-2 text-gray-500">${c.column_default || '-'}</td>
+                    </tr>
+                `).join('');
+            } catch (e) {
+                console.error(e);
+            }
+        }
+
+        async function loadTableData() {
+            if (!currentTable) return;
+            const limit = document.getElementById('tableLimit').value || 50;
+            try {
+                const res = await fetch(`/api/db/tables/${currentTable}?limit=${limit}`);
+                const data = await res.json();
+
+                document.getElementById('tableCount').textContent = `${data.count.toLocaleString()} rows`;
+
+                if (data.columns.length === 0) {
+                    document.getElementById('tableRows').innerHTML = '<tr><td class="py-4 text-gray-500">No data</td></tr>';
+                    return;
+                }
+
+                // Header
+                document.getElementById('tableHeader').innerHTML = data.columns.map(c => `<th class="text-left py-2 px-3 text-gray-500 font-medium">${c.column_name}</th>`).join('');
+
+                // Rows
+                document.getElementById('tableRows').innerHTML = data.rows.map(row => `
+                    <tr class="border-b border-gray-200 hover:bg-gray-100/50">
+                        ${data.columns.map(c => `<td class="py-2 px-3 table-cell" title="${row[c.column_name]}">${row[c.column_name] ?? '-'}</td>`).join('')}
+                    </tr>
+                `).join('');
+            } catch (e) {
+                showToast('Lỗi tải dữ liệu', 'error');
+            }
+        }
+
+        async function loadTableSchema() {
+            if (!currentTable) return;
+            try {
+                const res = await fetch(`/api/db/tables/${currentTable}/schema`);
+                const data = await res.json();
+                let msg = `Schema: ${data.columns.length} columns, ${data.indexes.length} indexes`;
+                if (data.foreign_keys.length > 0) {
+                    msg += `\nFKs: ${data.foreign_keys.length}`;
+                }
+                showToast(msg, 'info');
+            } catch (e) {
+                showToast('Lỗi tải schema', 'error');
+            }
+        }
+
+        function insertExample(sql) {
+            document.getElementById('sqlInput').value = sql;
+        }
+
+        async function runQuery() {
+            const sql = document.getElementById('sqlInput').value.trim();
+            if (!sql) {
+                showToast('Nhập SQL query', 'error');
+                return;
+            }
+
+            try {
+                const res = await fetch('/api/db/query', {
+                    method: 'POST',
+                    headers: { 'Content-Type': 'application/json' },
+                    body: JSON.stringify({ sql, limit: 100 })
+                });
+                const data = await res.json();
+
+                const results = document.getElementById('queryResults');
+
+                if (!data.ok) {
+                    results.innerHTML = `<div class="text-yellow-400">⚠️ ${data.warning}</div>`;
+                    return;
+                }
+
+                if (data.rows.length === 0) {
+                    results.innerHTML = '<div class="text-gray-500">No results</div>';
+                    return;
+                }
+
+                const columns = Object.keys(data.rows[0]);
+                let html = `<table class="w-full text-sm"><thead><tr>`;
+                html += columns.map(c => `<th class="text-left py-2 px-2 text-gray-500 font-medium">${c}</th>`).join('');
+                html += `</tr></thead><tbody>`;
+                html += data.rows.map(row => `<tr class="border-b border-gray-200 hover:bg-gray-100/50">` +
+                    columns.map(c => `<td class="py-1 px-2">${row[c] ?? '-'}</td>`).join('') + `</tr>`);
+                html += `</tbody></table>`;
+                html += `<div class="mt-2 text-gray-500">${data.count} rows</div>`;
+
+                results.innerHTML = html;
+            } catch (e) {
+                showToast('Lỗi chạy query: ' + e.message, 'error');
+            }
+        }
+
+        function showToast(msg, type = 'success') {
+            const toast = document.getElementById('toast');
+            const inner = document.getElementById('toastInner');
+            const icon = document.getElementById('toastIcon');
+            const styles = {
+                success: { bg: 'bg-emerald-600/90 text-white', icon: 'fa-check-circle' },
+                error: { bg: 'bg-red-600/90 text-white', icon: 'fa-circle-exclamation' },
+                info: { bg: 'bg-blue-600/90 text-white', icon: 'fa-circle-info' }
+            };
+            const s = styles[type] || styles.success;
+            inner.className = `flex items-center gap-3 px-4 py-3 rounded-2xl shadow-lg text-sm font-medium toast-in backdrop-blur ${s.bg}`;
+            icon.className = `fas ${s.icon}`;
+            document.getElementById('toastMessage').textContent = msg;
+            toast.classList.remove('hidden');
+            clearTimeout(toast._timer);
+            toast._timer = setTimeout(() => toast.classList.add('hidden'), 3000);
+        }
+    </script>
+</body>
+</html>

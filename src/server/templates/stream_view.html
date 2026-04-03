@@ -83,7 +83,7 @@
             background: rgba(255,255,255,0.1); outline: none;
         }
         .speed-track::-webkit-slider-thumb {
-            -webkit-appearance: none; width: 20px; height: 20px;
+            -webkit-appp-fince: none; width: 20px; height: 20px;
             border-radius: 50%; background: #3b82f6; border: 2px solid #1e3a5f;
             cursor: pointer;
         }
@@ -98,6 +98,36 @@
         }
         .action-btn:active { background: rgba(255,255,255,0.2); }
         .action-btn.active { background: #3b82f6; color: white; }
+
+        /* Preset buttons */
+        .preset-bar {
+            display: flex; gap: 8px; flex-wrap: wrap; justify-content: center;
+        }
+        .preset-btn {
+            padding: 6px 16px; border-radius: 20px; border: 1px solid rgba(255,255,255,0.12);
+            background: rgba(255,255,255,0.06); color: #d1d5db;
+            font-size: 13px; cursor: pointer; transition: all 0.15s;
+            backdrop-filter: blur(8px); text-transform: capitalize;
+            user-select: none; white-space: nowrap;
+        }
+        .preset-btn:active { background: #3b82f6; color: white; border-color: #3b82f6; transform: scale(0.95); }
+        .preset-btn.saving { border-color: #f59e0b; color: #f59e0b; animation: pulse-border 1s infinite; }
+        @keyframes pulse-border { 50% { border-color: transparent; } }
+        .preset-save-hint {
+            font-size: 11px; color: #6b7280; text-align: center;
+        }
+
+        /* Toast notification */
+        .toast {
+            position: fixed; top: 60px; left: 50%; transform: translateX(-50%);
+            padding: 8px 20px; border-radius: 20px; font-size: 13px;
+            color: white; z-index: 9999; opacity: 0;
+            transition: opacity 0.3s; pointer-events: none;
+            backdrop-filter: blur(12px);
+        }
+        .toast.show { opacity: 1; }
+        .toast.success { background: rgba(34,197,94,0.85); }
+        .toast.error { background: rgba(239,68,68,0.85); }
 
         /* Landscape optimization */
         @media (orientation: landscape) and (max-height: 500px) {
@@ -120,6 +150,7 @@
     </style>
 </head>
 <body>
+<div id="toast" class="toast"></div>
     <!-- Tap zone to toggle UI -->
     <div class="stream-wrap" id="streamWrap" onclick="toggleUI()">
         <img src="/stream/{{ camera_id }}/mjpeg" alt="Stream" id="streamImg">
@@ -147,6 +178,12 @@
                 </div>
             </div>
             <div class="flex items-center gap-2">
+                <button class="action-btn" onclick="getPosition()" title="Xem vị trí">
+                    <i class="fas fa-crosshairs text-sm"></i>
+                </button>
+                <button class="action-btn" onclick="tarePosition()" title="Đặt làm gốc tọa độ">
+                    <i class="fas fa-target text-sm"></i>
+                </button>
                 <button class="action-btn" id="fullscreenBtn" onclick="toggleFullscreen()" title="Toàn màn hình">
                     <i class="fas fa-expand text-sm"></i>
                 </button>
@@ -158,6 +195,14 @@
     <div class="bottom-tray ui-layer" id="bottomTray">
         <div class="bottom-inner">
             <div class="bottom-layout flex flex-col items-center gap-4">
+                <!-- Presets -->
+                <div class="w-full max-w-[340px]">
+                    <div class="preset-bar" id="presetBar">
+                        <!-- Rendered by JS -->
+                    </div>
+                    <div class="preset-save-hint mt-2" id="presetHint">Nhấn giữ 2s để lưu vị trí hiện tại</div>
+                </div>
+
                 <!-- PTZ Ring -->
                 <div class="ptz-ring" id="ptzRing">
                     <button class="ptz-dir up" data-dir="up"><i class="fas fa-chevron-up"></i></button>
@@ -223,18 +268,30 @@
 
         function getSpeed() { return parseInt(speedSlider.value); }
 
-        /* PTZ Controls */
+        /* PTZ Controls - Send continuously while holding */
+        let ptzInterval = null;
+        let ptzDirection = null;
+
         async function ptzMove(dir) {
-            try {
-                await fetch(`/api/cameras/${CAMERA_ID}/ptz/move`, {
-                    method: 'POST',
-                    headers: { 'Content-Type': 'application/json' },
-                    body: JSON.stringify({ direction: dir, speed: getSpeed() })
-                });
-            } catch (e) { console.error('PTZ:', e); }
+            ptzDirection = dir;
+            // Gửi move liên tục mỗi 0.5s để đếm số giây
+            if (ptzInterval) return;
+            ptzInterval = setInterval(async () => {
+                try {
+                    await fetch(`/api/cameras/${CAMERA_ID}/ptz/move`, {
+                        method: 'POST',
+                        headers: { 'Content-Type': 'application/json' },
+                        body: JSON.stringify({ direction: ptzDirection, speed: getSpeed() })
+                    });
+                } catch (e) {}
+            }, 500);
         }
 
         async function ptzStop(dir) {
+            if (ptzInterval) {
+                clearInterval(ptzInterval);
+                ptzInterval = null;
+            }
             try {
                 await fetch(`/api/cameras/${CAMERA_ID}/ptz/stop`, {
                     method: 'POST',
@@ -242,6 +299,7 @@
                     body: JSON.stringify({ direction: dir, speed: getSpeed() })
                 });
             } catch (e) { console.error('PTZ:', e); }
+            ptzDirection = null;
         }
 
         // Bind PTZ buttons (mouse + touch)
@@ -306,6 +364,160 @@
                 btn.classList.remove('active');
             }
         });
+
+        /* ── Presets ── */
+        let presets = [];
+        let longPressTimer = null;
+
+        async function loadPresets() {
+            try {
+                const res = await fetch(`/api/cameras/${CAMERA_ID}/ptz/presets`);
+                const data = await res.json();
+                // API returns {local: [...], hardware: [...]} or just array
+                presets = data.local || data;
+                renderPresets();
+            } catch (e) { console.error('Load presets:', e); }
+        }
+
+        function renderPresets() {
+            const bar = document.getElementById('presetBar');
+            if (!presets || !presets.length) {
+                bar.innerHTML = '<span class="text-gray-600 text-xs">Chưa có preset</span>';
+                return;
+            }
+            bar.innerHTML = presets.map(p => `
+                <button class="preset-btn" data-number="${p.number}" data-name="${p.name}">
+                    <i class="fas fa-location-dot mr-1" style="font-size:11px"></i>${p.name}
+                </button>
+            `).join('');
+
+            // Bind: tap = goto, long press = save
+            bar.querySelectorAll('.preset-btn').forEach(btn => {
+                const num = parseInt(btn.dataset.number);
+                const name = btn.dataset.name;
+
+                // Mouse
+                btn.addEventListener('mousedown', e => { e.preventDefault(); startLongPress(btn, num, name); });
+                btn.addEventListener('mouseup', () => endLongPress(btn, num));
+                btn.addEventListener('mouseleave', () => cancelLongPress(btn));
+
+                // Touch
+                btn.addEventListener('touchstart', e => { e.preventDefault(); startLongPress(btn, num, name); }, { passive: false });
+                btn.addEventListener('touchend', e => { e.preventDefault(); endLongPress(btn, num); });
+                btn.addEventListener('touchcancel', () => cancelLongPress(btn));
+
+                btn.addEventListener('click', e => e.stopPropagation());
+            });
+        }
+
+        function startLongPress(btn, num, name) {
+            btn._longPressed = false;
+            longPressTimer = setTimeout(() => {
+                btn._longPressed = true;
+                btn.classList.add('saving');
+                savePreset(num, name, btn);
+            }, 2000);
+        }
+
+        function endLongPress(btn, num) {
+            clearTimeout(longPressTimer);
+            if (!btn._longPressed) {
+                gotoPreset(num, btn);
+            }
+        }
+
+        function cancelLongPress(btn) {
+            clearTimeout(longPressTimer);
+            btn.classList.remove('saving');
+        }
+
+        function showToast(msg, type = 'success') {
+            const t = document.getElementById('toast');
+            t.textContent = msg;
+            t.className = `toast ${type} show`;
+            clearTimeout(t._tid);
+            t._tid = setTimeout(() => t.classList.remove('show'), 2000);
+        }
+
+        async function gotoPreset(num, btn) {
+            const name = btn.dataset.name || `preset ${num}`;
+            try {
+                btn.style.background = '#3b82f6'; btn.style.color = 'white';
+                const res = await fetch(`/api/cameras/${CAMERA_ID}/ptz/presets/${num}/goto`, { method: 'POST' });
+                const data = await res.json();
+                if (data.success) {
+                    showToast(`→ ${name}`, 'success');
+                } else {
+                    showToast(`Lỗi: ${data.detail || 'Không thể quay'}`, 'error');
+                    console.error('Goto preset failed:', data);
+                }
+            } catch (e) {
+                showToast(`Lỗi kết nối camera`, 'error');
+                console.error('Goto preset:', e);
+            } finally {
+                setTimeout(() => { btn.style.background = ''; btn.style.color = ''; }, 500);
+            }
+        }
+
+        async function savePreset(num, name, btn) {
+            try {
+                const res = await fetch(`/api/cameras/${CAMERA_ID}/ptz/presets/${num}/set`, {
+                    method: 'POST',
+                    headers: { 'Content-Type': 'application/json' },
+                    body: JSON.stringify({ name })
+                });
+                const data = await res.json();
+                if (data.success) {
+                    showToast(`"${name}" đã lưu vị trí!`, 'success');
+                } else {
+                    showToast(`Lỗi lưu preset`, 'error');
+                }
+            } catch (e) {
+                showToast(`Lỗi kết nối`, 'error');
+                console.error('Save preset:', e);
+            }
+            finally { btn.classList.remove('saving'); }
+        }
+
+        // Load presets on page load
+        loadPresets();
+
+        /* Get Position - Debug */
+        async function getPosition() {
+            try {
+                const res = await fetch(`/api/cameras/${CAMERA_ID}/ptz/position`);
+                const data = await res.json();
+                if (data.success) {
+                    const pos = `Vị trí: Pan=${data.pan} | Tilt=${data.tilt}`;
+                    document.getElementById('presetHint').textContent = pos;
+                    setTimeout(() => {
+                        document.getElementById('presetHint').textContent = 'Nhấn giữ 2s để lưu vị trí hiện tại';
+                    }, 5000);
+                } else {
+                    alert('Lỗi: ' + (data.message || 'Unknown'));
+                }
+            } catch (e) {
+                alert('Lỗi kết nối: ' + e.message);
+            }
+        }
+
+        /* Tare - Set current position as origin */
+        async function tarePosition() {
+            try {
+                const res = await fetch(`/api/cameras/${CAMERA_ID}/ptz/tare`, { method: 'POST' });
+                const data = await res.json();
+                if (data.success) {
+                    document.getElementById('presetHint').textContent = '✓ Đã đặt làm gốc tọa độ!';
+                    setTimeout(() => {
+                        document.getElementById('presetHint').textContent = 'Nhấn giữ 2s để lưu vị trí hiện tại';
+                    }, 3000);
+                } else {
+                    alert('Lỗi: ' + (data.message || 'Unknown'));
+                }
+            } catch (e) {
+                alert('Lỗi kết nối: ' + e.message);
+            }
+        }
 
         /* Stream error */
         document.getElementById('streamImg').addEventListener('error', () => {

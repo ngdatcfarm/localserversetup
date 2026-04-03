@@ -120,3 +120,64 @@ class ConfigService:
         """Get stream configuration."""
         config = self.load_config()
         return config.get('stream', {})
+
+    # ── Recording Configuration ─────────────────────────────
+
+    def get_recording_config(self) -> dict:
+        """Get recording configuration."""
+        config = self.load_config()
+        return config.get('recording', {
+            "enabled": False,
+            "recording_dir": "F:\\Camera",
+            "segment_duration": 600,
+            "auto_record_cameras": []
+        })
+
+    def update_recording_config(self, recording_config: dict) -> dict:
+        """Update recording configuration."""
+        config = self.load_config()
+        current = config.get('recording', {})
+        current.update(recording_config)
+        config['recording'] = current
+        self.save_config(config)
+        return current
+
+    # ── Preset Management ──────────────────────────────────
+
+    def get_presets(self, camera_id: str) -> list:
+        """Get presets for a camera."""
+        config = self.load_config()
+        return config.get('presets', {}).get(camera_id, [])
+
+    def set_preset(self, camera_id: str, number: int, name: str, pan: int = 0, tilt: int = 0) -> dict:
+        """Add or update a preset for a camera with relative position."""
+        config = self.load_config()
+        config.setdefault('presets', {})
+        config['presets'].setdefault(camera_id, [])
+
+        # Update existing or add new
+        for preset in config['presets'][camera_id]:
+            if preset['number'] == number:
+                preset['name'] = name
+                preset['pan'] = pan
+                preset['tilt'] = tilt
+                self.save_config(config)
+                return preset
+
+        new_preset = {"number": number, "name": name, "pan": pan, "tilt": tilt}
+        config['presets'][camera_id].append(new_preset)
+        self.save_config(config)
+        return new_preset
+
+    def delete_preset(self, camera_id: str, number: int) -> bool:
+        """Delete a preset."""
+        config = self.load_config()
+        presets = config.get('presets', {}).get(camera_id, [])
+        original_len = len(presets)
+        config['presets'][camera_id] = [p for p in presets if p['number'] != number]
+
+        if len(config['presets'][camera_id]) == original_len:
+            return False
+
+        self.save_config(config)
+        return True

@@ -1,20 +1,64 @@
 server:
   host: 0.0.0.0
   port: 8000
+mqtt:
+  host: localhost
+  port: 1883
+  username: ""
+  password: ""
+  client_id: cfarm_local_server
+database:
+  host: localhost
+  port: 5432
+  database: cfarm_local
+  user: cfarm
+  password: cfarm_local_2026
 cameras:
 - id: cam_001
   name: Camera c?ng
-  ip: 192.168.1.27
+  ip: 192.168.1.72
   port: 554
   username: admin
   password: Abc@@1234
   rtsp_path: /unicast/c1/s0/live
   enabled: true
   stream_type: main
+- id: cam_002
+  name: Camera 02
+  ip: 192.168.1.96
+  port: 554
+  username: admin
+  password: Abc@@1234
+  rtsp_path: /unicast/c1/s0/live
+  enabled: true
+  stream_type: main
+presets:
+  cam_001:
+  - number: 1
+    name: window
+    pan: -2
+    tilt: 0
+  - number: 2
+    name: feed
+    pan: 4
+    tilt: 1
+  - number: 3
+    name: chicken
+    pan: 7
+    tilt: -2
+  - number: 4
+    name: daly
+    pan: 1
+    tilt: 2
 storage:
   snapshot_dir: data/snapshots
   recording_dir: data/recordings
   export_dir: data/exports
+recording:
+  enabled: false
+  recording_dir: F:\Camera
+  segment_duration: 600
+  auto_record_cameras: []
 stream:
   hls_dir: data/hls
   segment_duration: 2

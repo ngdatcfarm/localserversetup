@@ -65,9 +65,16 @@
                     <span class="font-bold text-lg hidden sm:inline">Camera Server</span>
                 </div>
                 <div class="flex items-center gap-3">
+                    <a href="#/" class="text-gray-400 hover:text-white text-sm" id="navDashboard">Dashboard</a>
+                    <a href="#/sync" class="text-gray-400 hover:text-white text-sm" id="navSync">Sync DB</a>
+                    <a href="/database" class="text-gray-400 hover:text-white text-sm">
+                        <i class="fas fa-database mr-1"></i>DB
+                    </a>
                     <span id="cameraCount" class="text-gray-500 text-sm hidden sm:inline">0 cameras</span>
-                    <!-- Desktop add button -->
-                    <button onclick="openAddModal()" class="hidden sm:flex items-center gap-2 bg-blue-600 hover:bg-blue-500 active:bg-blue-700 px-4 py-2 rounded-xl text-sm font-medium transition-colors">
+                    <a href="/recordings" class="flex items-center gap-2 bg-gray-700 hover:bg-gray-600 active:bg-gray-800 px-3 py-2 rounded-xl text-sm font-medium transition-colors">
+                        <i class="fas fa-circle-dot text-red-400 text-xs"></i> <span class="hidden sm:inline">Ban ghi</span>
+                    </a>
+                    <button id="desktopAddBtn" onclick="openAddModal()" class="hidden sm:flex items-center gap-2 bg-blue-600 hover:bg-blue-500 active:bg-blue-700 px-4 py-2 rounded-xl text-sm font-medium transition-colors">
                         <i class="fas fa-plus text-xs"></i> Thêm Camera
                     </button>
                 </div>
@@ -77,41 +84,83 @@
 
     <main class="px-4 sm:px-6 lg:px-8 max-w-7xl mx-auto pb-24 sm:pb-8">
 
-        <!-- Stats Row -->
-        <div class="flex gap-3 py-4 overflow-x-auto no-scrollbar">
-            <div class="flex-shrink-0 bg-card rounded-2xl px-4 py-3 min-w-[120px] border border-border">
-                <div class="text-gray-500 text-xs font-medium uppercase tracking-wide">Tổng</div>
-                <div class="text-2xl font-bold mt-0.5" id="totalCameras">0</div>
+        <section id="dashboardSection">
+            <!-- Stats Row -->
+            <div class="flex gap-3 py-4 overflow-x-auto no-scrollbar">
+                <div class="flex-shrink-0 bg-card rounded-2xl px-4 py-3 min-w-[120px] border border-border">
+                    <div class="text-gray-500 text-xs font-medium uppercase tracking-wide">Tổng</div>
+                    <div class="text-2xl font-bold mt-0.5" id="totalCameras">0</div>
+                </div>
+                <div class="flex-shrink-0 bg-card rounded-2xl px-4 py-3 min-w-[120px] border border-border">
+                    <div class="text-gray-500 text-xs font-medium uppercase tracking-wide">Online</div>
+                    <div class="text-2xl font-bold mt-0.5 text-emerald-400" id="onlineCameras">0</div>
+                </div>
+                <div class="flex-shrink-0 bg-card rounded-2xl px-4 py-3 min-w-[120px] border border-border">
+                    <div class="text-gray-500 text-xs font-medium uppercase tracking-wide">Offline</div>
+                    <div class="text-2xl font-bold mt-0.5 text-red-400" id="offlineCameras">0</div>
+                </div>
             </div>
-            <div class="flex-shrink-0 bg-card rounded-2xl px-4 py-3 min-w-[120px] border border-border">
-                <div class="text-gray-500 text-xs font-medium uppercase tracking-wide">Online</div>
-                <div class="text-2xl font-bold mt-0.5 text-emerald-400" id="onlineCameras">0</div>
-            </div>
-            <div class="flex-shrink-0 bg-card rounded-2xl px-4 py-3 min-w-[120px] border border-border">
-                <div class="text-gray-500 text-xs font-medium uppercase tracking-wide">Offline</div>
-                <div class="text-2xl font-bold mt-0.5 text-red-400" id="offlineCameras">0</div>
-            </div>
-        </div>
 
-        <!-- Camera Grid -->
-        <div id="cameraGrid" class="grid grid-cols-1 sm:grid-cols-2 lg:grid-cols-3 gap-3 sm:gap-4">
-        </div>
+            <!-- Camera Grid -->
+            <div id="cameraGrid" class="grid grid-cols-1 sm:grid-cols-2 lg:grid-cols-3 gap-3 sm:gap-4"></div>
 
-        <!-- Empty State -->
-        <div id="emptyState" class="flex flex-col items-center justify-center py-20 hidden">
-            <div class="w-20 h-20 rounded-full bg-gray-800 flex items-center justify-center mb-5">
-                <i class="fas fa-video text-gray-600 text-3xl"></i>
+            <!-- Empty State -->
+            <div id="emptyState" class="flex flex-col items-center justify-center py-20 hidden">
+                <div class="w-20 h-20 rounded-full bg-gray-800 flex items-center justify-center mb-5">
+                    <i class="fas fa-video text-gray-600 text-3xl"></i>
+                </div>
+                <h3 class="text-lg font-semibold text-gray-300 mb-1">Chưa có camera nào</h3>
+                <p class="text-gray-500 text-sm mb-6">Thêm camera đầu tiên để bắt đầu</p>
+                <button onclick="openAddModal()" class="bg-blue-600 hover:bg-blue-500 active:bg-blue-700 px-6 py-3 rounded-xl font-medium transition-colors">
+                    <i class="fas fa-plus mr-2"></i>Thêm Camera
+                </button>
             </div>
-            <h3 class="text-lg font-semibold text-gray-300 mb-1">Chưa có camera nào</h3>
-            <p class="text-gray-500 text-sm mb-6">Thêm camera đầu tiên để bắt đầu</p>
-            <button onclick="openAddModal()" class="bg-blue-600 hover:bg-blue-500 active:bg-blue-700 px-6 py-3 rounded-xl font-medium transition-colors">
-                <i class="fas fa-plus mr-2"></i>Thêm Camera
-            </button>
-        </div>
+        </section>
+
+        <section id="syncSection" class="hidden py-4 space-y-4">
+            <div class="bg-card border border-border rounded-2xl p-4">
+                <div class="flex items-center justify-between gap-3 mb-3">
+                    <h2 class="text-lg font-semibold">Kiểm tra Database</h2>
+                    <button onclick="loadSyncStatus(true)" class="px-3 py-2 rounded-xl bg-blue-600 hover:bg-blue-500 text-sm font-medium">
+                        <i class="fas fa-rotate-right mr-1"></i>Làm mới
+                    </button>
+                </div>
+                <p class="text-gray-400 text-sm">Trang này lấy dữ liệu từ <code>/api/sync/check</code> để so khớp cấu hình và runtime.</p>
+            </div>
+
+            <div class="grid grid-cols-1 sm:grid-cols-3 gap-3">
+                <div class="bg-card border border-border rounded-2xl p-4">
+                    <div class="text-xs text-gray-500 uppercase">Configured</div>
+                    <div id="syncConfiguredCount" class="text-2xl font-bold mt-1">0</div>
+                </div>
+                <div class="bg-card border border-border rounded-2xl p-4">
+                    <div class="text-xs text-gray-500 uppercase">Enabled</div>
+                    <div id="syncEnabledCount" class="text-2xl font-bold mt-1 text-emerald-400">0</div>
+                </div>
+                <div class="bg-card border border-border rounded-2xl p-4">
+                    <div class="text-xs text-gray-500 uppercase">Runtime</div>
+                    <div id="syncRuntimeCount" class="text-2xl font-bold mt-1 text-blue-400">0</div>
+                </div>
+            </div>
+
+            <div class="bg-card border border-border rounded-2xl p-4 space-y-2 text-sm">
+                <div><span class="text-gray-400">DB path:</span> <span id="syncDbPath" class="font-mono text-xs break-all"></span></div>
+                <div><span class="text-gray-400">DB exists:</span> <span id="syncDbExists"></span></div>
+                <div><span class="text-gray-400">DB size:</span> <span id="syncDbSize"></span></div>
+            </div>
+
+            <div class="bg-card border border-border rounded-2xl p-4">
+                <h3 class="font-medium mb-2">Camera IDs</h3>
+                <div class="text-sm text-gray-400 mb-1">Configured</div>
+                <div id="syncConfiguredIds" class="text-sm font-mono break-all"></div>
+                <div class="text-sm text-gray-400 mt-3 mb-1">Runtime</div>
+                <div id="syncRuntimeIds" class="text-sm font-mono break-all"></div>
+            </div>
+        </section>
     </main>
 
     <!-- FAB - Mobile only -->
-    <button onclick="openAddModal()" class="sm:hidden fixed bottom-6 right-4 w-14 h-14 bg-blue-600 hover:bg-blue-500 active:bg-blue-700 rounded-2xl shadow-lg shadow-blue-600/30 flex items-center justify-center z-30 transition-transform active:scale-90">
+    <button id="mobileAddBtn" onclick="openAddModal()" class="sm:hidden fixed bottom-6 right-4 w-14 h-14 bg-blue-600 hover:bg-blue-500 active:bg-blue-700 rounded-2xl shadow-lg shadow-blue-600/30 flex items-center justify-center z-30 transition-transform active:scale-90">
         <i class="fas fa-plus text-lg"></i>
     </button>
 
@@ -199,7 +248,51 @@
     <script>
         let cameras = [];
 
-        document.addEventListener('DOMContentLoaded', loadCameras);
+        document.addEventListener('DOMContentLoaded', () => {
+            loadCameras();
+            handleRoute();
+        });
+        window.addEventListener('hashchange', handleRoute);
+
+
+        function handleRoute() {
+            const route = (location.hash || '#/').replace('#', '');
+            const dashboardVisible = route !== '/sync';
+
+            document.getElementById('dashboardSection').classList.toggle('hidden', !dashboardVisible);
+            document.getElementById('syncSection').classList.toggle('hidden', dashboardVisible);
+            document.getElementById('desktopAddBtn').classList.toggle('hidden', !dashboardVisible);
+            document.getElementById('mobileAddBtn').classList.toggle('hidden', !dashboardVisible);
+
+            document.getElementById('navDashboard').classList.toggle('text-white', dashboardVisible);
+            document.getElementById('navSync').classList.toggle('text-white', !dashboardVisible);
+
+            if (!dashboardVisible) {
+                loadSyncStatus();
+            }
+        }
+
+        async function loadSyncStatus(showRefreshToast = false) {
+            try {
+                const res = await fetch('/api/sync/check');
+                if (!res.ok) throw new Error('Không tải được trạng thái sync');
+                const data = await res.json();
+
+                document.getElementById('syncConfiguredCount').textContent = data.counts.configured_cameras;
+                document.getElementById('syncEnabledCount').textContent = data.counts.enabled_cameras;
+                document.getElementById('syncRuntimeCount').textContent = data.counts.runtime_cameras;
+
+                document.getElementById('syncDbPath').textContent = data.database.path;
+                document.getElementById('syncDbExists').textContent = data.database.exists ? 'Yes' : 'No';
+                document.getElementById('syncDbSize').textContent = `${data.database.size_bytes} bytes`;
+                document.getElementById('syncConfiguredIds').textContent = data.camera_ids.configured.join(', ') || '(empty)';
+                document.getElementById('syncRuntimeIds').textContent = data.camera_ids.runtime.join(', ') || '(empty)';
+
+                if (showRefreshToast) showToast('Đã làm mới trạng thái database', 'info');
+            } catch (err) {
+                showToast(err.message, 'error');
+            }
+        }
 
         async function loadCameras() {
             try {
@@ -268,14 +361,19 @@
                                 <p class="text-gray-500 text-xs mt-0.5 truncate">${cam.ip}:${cam.port}</p>
                             </div>
                             <div class="flex items-center gap-1 ml-2 flex-shrink-0">
+                                <button onclick="event.stopPropagation();toggleRecording('${cam.id}')" id="rec-btn-${cam.id}"
+                                        class="w-8 h-8 rounded-lg flex items-center justify-center text-gray-500 hover:text-red-400 hover:bg-red-400/10 transition-colors"
+                                        title="Ghi hinh">
+                                    <i class="fas fa-circle text-xs"></i>
+                                </button>
                                 <button onclick="event.stopPropagation();editCamera('${cam.id}')"
                                         class="w-8 h-8 rounded-lg flex items-center justify-center text-gray-500 hover:text-white hover:bg-gray-700 transition-colors"
-                                        title="Chỉnh sửa">
+                                        title="Chinh sua">
                                     <i class="fas fa-pen text-xs"></i>
                                 </button>
                                 <button onclick="event.stopPropagation();deleteCamera('${cam.id}')"
                                         class="w-8 h-8 rounded-lg flex items-center justify-center text-gray-500 hover:text-red-400 hover:bg-red-400/10 transition-colors"
-                                        title="Xóa">
+                                        title="Xoa">
                                     <i class="fas fa-trash-can text-xs"></i>
                                 </button>
                             </div>
@@ -397,6 +495,46 @@
             toast._timer = setTimeout(() => toast.classList.add('hidden'), 3000);
         }
 
+        /* Recording toggle */
+        let recStatus = {};
+
+        async function toggleRecording(cameraId) {
+            const isRec = recStatus[cameraId];
+            const action = isRec ? 'stop' : 'start';
+            try {
+                await fetch(`/api/recording/${action}/${cameraId}`, { method: 'POST' });
+                showToast(isRec ? 'Da dung ghi' : 'Bat dau ghi hinh');
+                setTimeout(pollRecStatus, 300);
+            } catch (e) {
+                showToast('Loi ghi hinh', 'error');
+            }
+        }
+
+        async function pollRecStatus() {
+            try {
+                const res = await fetch('/api/recording/status');
+                const data = await res.json();
+                recStatus = {};
+                for (const [cid, st] of Object.entries(data)) {
+                    recStatus[cid] = st.recording;
+                    const btn = document.getElementById(`rec-btn-${cid}`);
+                    if (btn) {
+                        if (st.recording) {
+                            btn.classList.remove('text-gray-500');
+                            btn.classList.add('text-red-500');
+                            btn.innerHTML = '<i class="fas fa-circle text-xs animate-pulse"></i>';
+                            btn.title = 'Dung ghi';
+                        } else {
+                            btn.classList.remove('text-red-500');
+                            btn.classList.add('text-gray-500');
+                            btn.innerHTML = '<i class="fas fa-circle text-xs"></i>';
+                            btn.title = 'Ghi hinh';
+                        }
+                    }
+                }
+            } catch (e) {}
+        }
+
         /* Poll status */
         setInterval(async () => {
             try {
@@ -412,7 +550,11 @@
                 document.getElementById('onlineCameras').textContent = online;
                 document.getElementById('offlineCameras').textContent = cameras.length - online;
             } catch (e) {}
+            pollRecStatus();
         }, 3000);
+
+        // Initial recording status
+        setTimeout(pollRecStatus, 1000);
     </script>
 </body>
 </html>

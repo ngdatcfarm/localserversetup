@@ -1,0 +1,1342 @@
+<!DOCTYPE html>
+<html lang="vi">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <meta name="theme-color" content="#1e3a5f">
+    <title>IoT - Firmware & Devices</title>
+    <script src="https://cdn.tailwindcss.com"></script>
+    <link rel="stylesheet" href="https://cdnjs.cloudflare.com/ajax/libs/font-awesome/6.5.1/css/all.min.css">
+    <style>
+        :root { --primary: #2563eb; --primary-dark: #1d4ed8; }
+        * { -webkit-tap-highlight-color: transparent; }
+        body { background: #0f172a; color: #e2e8f0; }
+        input, select, textarea { background: #1e293b; border: 1px solid #334155; color: #e2e8f0; }
+        input:focus, select:focus { border-color: var(--primary); box-shadow: 0 0 0 2px rgba(37,99,235,0.25); outline: none; }
+        .toast-in { animation: toastIn 0.3s ease-out; }
+        @keyframes toastIn { from { transform: translateY(100%); opacity:0; } to { transform: translateY(0); opacity:1; } }
+        .card { background: #1e293b; border: 1px solid #334155; border-radius: 12px; }
+        .btn-primary { background: var(--primary); }
+        .btn-primary:hover { background: var(--primary-dark); }
+        .btn-success { background: #16a34a; }
+        .btn-success:hover { background: #15803d; }
+        .btn-danger { background: #dc2626; }
+        .btn-danger:hover { background: #b91c1c; }
+        .badge { padding: 2px 8px; border-radius: 9999px; font-size: 11px; font-weight: 600; }
+        .badge-green { background: #166534; color: #4ade80; }
+        .badge-yellow { background: #854d0e; color: #fbbf24; }
+        .badge-red { background: #991b1b; color: #f87171; }
+        .badge-blue { background: #1e40af; color: #60a5fa; }
+        .input-valid { border-color: #16a34a !important; }
+        .input-invalid { border-color: #dc2626 !important; }
+        .input-checking { border-color: #fbbf24 !important; }
+        .validation-msg { font-size: 11px; margin-top: 2px; }
+        .validation-ok { color: #4ade80; }
+        .validation-error { color: #f87171; }
+        .validation-loading { color: #fbbf24; }
+    </style>
+</head>
+<body class="min-h-screen">
+
+    <!-- Header -->
+    <header class="sticky top-0 z-40 bg-slate-900/80 backdrop-blur-lg border-b border-slate-700">
+        <div class="px-4 sm:px-6 max-w-7xl mx-auto">
+            <div class="flex items-center justify-between h-14">
+                <div class="flex items-center gap-3">
+                    <div class="w-8 h-8 rounded-lg bg-blue-600 flex items-center justify-center">
+                        <i class="fas fa-microchip text-sm"></i>
+                    </div>
+                    <span class="font-bold text-lg">IoT Manager</span>
+                </div>
+                <div class="flex items-center gap-3">
+                    <a href="/" class="text-slate-400 hover:text-white text-sm">
+                        <i class="fas fa-arrow-left mr-1"></i>Quay lại
+                    </a>
+                    <div class="w-px h-4 bg-slate-600"></div>
+                    <a href="/database" class="text-slate-400 hover:text-white text-sm">
+                        <i class="fas fa-database mr-1"></i>Database
+                    </a>
+                    <button onclick="location.reload()" class="px-3 py-1.5 rounded-lg bg-slate-700 hover:bg-slate-600 text-sm">
+                        <i class="fas fa-rotate mr-1"></i>Refresh
+                    </button>
+                </div>
+            </div>
+        </div>
+    </header>
+
+    <main class="px-4 sm:px-6 max-w-7xl mx-auto pb-8">
+
+        <!-- Tabs -->
+        <div class="flex gap-2 py-4 border-b border-slate-700">
+            <button onclick="switchTab('devices')" id="tab-devices" class="px-4 py-2 rounded-lg bg-blue-600 text-white text-sm font-medium">
+                <i class="fas fa-microchip mr-1"></i>Devices
+            </button>
+            <button onclick="switchTab('relays')" id="tab-relays" class="px-4 py-2 rounded-lg bg-slate-700 text-slate-300 text-sm font-medium hover:bg-slate-600">
+                <i class="fas fa-toggle-on mr-1"></i>Quản lý bạt
+            </button>
+            <button onclick="switchTab('firmwares')" id="tab-firmwares" class="px-4 py-2 rounded-lg bg-slate-700 text-slate-300 text-sm font-medium hover:bg-slate-600">
+                <i class="fas fa-file-code mr-1"></i>Firmwares
+            </button>
+            <button onclick="switchTab('types')" id="tab-types" class="px-4 py-2 rounded-lg bg-slate-700 text-slate-300 text-sm font-medium hover:bg-slate-600">
+                <i class="fas fa-layer-group mr-1"></i>Device Types
+            </button>
+            <button onclick="switchTab('test')" id="tab-test" class="px-4 py-2 rounded-lg bg-slate-700 text-slate-300 text-sm font-medium hover:bg-slate-600">
+                <i class="fas fa-flask mr-1"></i>Test
+            </button>
+        </div>
+
+        <!-- Devices Tab -->
+        <div id="panel-devices" class="space-y-4 pt-4">
+            <div class="flex items-center justify-between">
+                <h2 class="text-lg font-semibold">Devices</h2>
+                <button onclick="openAddDeviceModal()" class="btn-primary px-4 py-2 rounded-lg text-sm font-medium">
+                    <i class="fas fa-plus mr-1"></i>Add Device
+                </button>
+            </div>
+
+            <div id="devicesList" class="space-y-3"></div>
+            <div id="devicesEmpty" class="card p-8 text-center hidden">
+                <i class="fas fa-microchip text-4xl text-slate-600 mb-3"></i>
+                <p class="text-slate-400">Chưa có thiết bị nào</p>
+                <button onclick="openAddDeviceModal()" class="btn-primary px-4 py-2 rounded-lg mt-3 text-sm">Thêm thiết bị đầu tiên</button>
+            </div>
+        </div>
+
+        <!-- Relay Management Tab -->
+        <div id="panel-relays" class="space-y-4 pt-4 hidden">
+            <div class="flex items-center justify-between">
+                <h2 class="text-lg font-semibold">Quản lý bạt ESP32</h2>
+                <button onclick="openAddRelayModal()" class="btn-primary px-4 py-2 rounded-lg text-sm font-medium">
+                    <i class="fas fa-plus mr-1"></i>Thêm thiết bị bạt
+                </button>
+            </div>
+
+            <div id="relaysList" class="space-y-4"></div>
+            <div id="relaysEmpty" class="card p-8 text-center hidden">
+                <i class="fas fa-toggle-on text-4xl text-slate-600 mb-3"></i>
+                <p class="text-slate-400">Chưa có thiết bị bạt nào</p>
+                <button onclick="openAddRelayModal()" class="btn-primary px-4 py-2 rounded-lg mt-3 text-sm">Thêm thiết bị bạt đầu tiên</button>
+            </div>
+        </div>
+
+        <!-- Firmwares Tab -->
+        <div id="panel-firmwares" class="space-y-4 pt-4 hidden">
+            <div class="flex items-center justify-between">
+                <h2 class="text-lg font-semibold">Firmwares</h2>
+                <button onclick="openUploadFirmwareModal()" class="btn-success px-4 py-2 rounded-lg text-sm font-medium">
+                    <i class="fas fa-upload mr-1"></i>Upload Firmware
+                </button>
+            </div>
+
+            <div id="firmwaresList" class="grid grid-cols-1 md:grid-cols-2 gap-4"></div>
+            <div id="firmwaresEmpty" class="card p-8 text-center hidden">
+                <i class="fas fa-file-code text-4xl text-slate-600 mb-3"></i>
+                <p class="text-slate-400">Chưa có firmware nào</p>
+                <button onclick="openUploadFirmwareModal()" class="btn-success px-4 py-2 rounded-lg mt-3 text-sm">Upload firmware đầu tiên</button>
+            </div>
+        </div>
+
+        <!-- Device Types Tab -->
+        <div id="panel-types" class="space-y-4 pt-4 hidden">
+            <div class="flex items-center justify-between">
+                <h2 class="text-lg font-semibold">Device Types</h2>
+                <button onclick="openAddTypeModal()" class="btn-primary px-4 py-2 rounded-lg text-sm font-medium">
+                    <i class="fas fa-plus mr-1"></i>Add Type
+                </button>
+            </div>
+
+            <div id="typesList" class="grid grid-cols-1 sm:grid-cols-2 md:grid-cols-4 gap-4"></div>
+        </div>
+
+        <!-- Test Tab -->
+        <div id="panel-test" class="space-y-4 pt-4 hidden">
+            <h2 class="text-lg font-semibold">Test Firmware Upload</h2>
+
+            <div class="card p-4 space-y-4">
+                <h3 class="font-medium text-blue-400">Upload Firmware</h3>
+                <div class="grid grid-cols-2 gap-4">
+                    <div>
+                        <label class="block text-xs text-slate-400 mb-1">Device Type</label>
+                        <select id="test-device-type" class="w-full rounded-lg px-3 py-2 text-sm"></select>
+                    </div>
+                    <div>
+                        <label class="block text-xs text-slate-400 mb-1">Version</label>
+                        <input type="text" id="test-version" class="w-full rounded-lg px-3 py-2 text-sm" placeholder="1.0.0" value="1.0.0">
+                    </div>
+                </div>
+                <div>
+                    <label class="flex items-center gap-2">
+                        <input type="checkbox" id="test-is-mother" class="w-4 h-4 rounded">
+                        <span class="text-sm">Set as Mother Firmware (default)</span>
+                    </label>
+                </div>
+                <div>
+                    <label class="block text-xs text-slate-400 mb-1">Changelog</label>
+                    <textarea id="test-changelog" rows="2" class="w-full rounded-lg px-3 py-2 text-sm" placeholder="What's new..."></textarea>
+                </div>
+                <div>
+                    <label class="block text-xs text-slate-400 mb-1">Firmware File (binary)</label>
+                    <input type="file" id="test-file" class="w-full rounded-lg px-3 py-2 text-sm bg-slate-800 border border-slate-600">
+                </div>
+                <button onclick="testUploadFirmware()" class="btn-success px-4 py-2 rounded-lg text-sm font-medium w-full">
+                    <i class="fas fa-upload mr-1"></i>Upload
+                </button>
+                <div id="test-result" class="hidden p-3 rounded-lg text-sm font-mono"></div>
+            </div>
+
+            <div class="card p-4 space-y-4">
+                <h3 class="font-medium text-blue-400">Create Device</h3>
+                <div class="grid grid-cols-2 gap-4">
+                    <div>
+                        <label class="block text-xs text-slate-400 mb-1">Device Code</label>
+                        <input type="text" id="test-device-code" class="w-full rounded-lg px-3 py-2 text-sm" placeholder="esp-001">
+                    </div>
+                    <div>
+                        <label class="block text-xs text-slate-400 mb-1">Name</label>
+                        <input type="text" id="test-device-name" class="w-full rounded-lg px-3 py-2 text-sm" placeholder="ESP Device 1">
+                    </div>
+                </div>
+                <div class="grid grid-cols-2 gap-4">
+                    <div>
+                        <label class="block text-xs text-slate-400 mb-1">Type</label>
+                        <select id="test-device-type-select" class="w-full rounded-lg px-3 py-2 text-sm"></select>
+                    </div>
+                    <div>
+                        <label class="block text-xs text-slate-400 mb-1">Barn</label>
+                        <select id="test-barn-id" class="w-full rounded-lg px-3 py-2 text-sm"></select>
+                    </div>
+                </div>
+                <div>
+                    <label class="block text-xs text-slate-400 mb-1">MQTT Topic</label>
+                    <input type="text" id="test-mqtt-topic" class="w-full rounded-lg px-3 py-2 text-sm" placeholder="cfarm/test-001">
+                </div>
+                <button onclick="testCreateDevice()" class="btn-primary px-4 py-2 rounded-lg text-sm font-medium w-full">
+                    <i class="fas fa-plus mr-1"></i>Create Device
+                </button>
+                <div id="test-device-result" class="hidden p-3 rounded-lg text-sm font-mono"></div>
+            </div>
+        </div>
+    </main>
+
+    <!-- Add Device Modal -->
+    <div id="deviceModal" class="fixed inset-0 z-50 hidden bg-black/60 flex items-center justify-center p-4">
+        <div class="card w-full max-w-md p-6 space-y-4 max-h-[90vh] overflow-y-auto">
+            <div class="flex justify-between items-center">
+                <h3 id="deviceModalTitle" class="text-lg font-bold">Add Device</h3>
+                <button onclick="closeDeviceModal()" class="w-8 h-8 rounded-full bg-slate-700 flex items-center justify-center">
+                    <i class="fas fa-xmark text-sm"></i>
+                </button>
+            </div>
+            <form id="deviceForm" class="space-y-3">
+                <input type="hidden" id="device-id">
+
+                <!-- Device Code -->
+                <div>
+                    <label class="block text-xs text-slate-400 mb-1">Device Code *</label>
+                    <input type="text" id="device-code" class="w-full rounded-lg px-3 py-2 text-sm" placeholder="esp-001" required>
+                    <div id="device-code-feedback" class="validation-msg"></div>
+                </div>
+
+                <!-- Name -->
+                <div>
+                    <label class="block text-xs text-slate-400 mb-1">Name *</label>
+                    <input type="text" id="device-name" class="w-full rounded-lg px-3 py-2 text-sm" placeholder="ESP Device 1" required>
+                    <div id="device-name-feedback" class="validation-msg"></div>
+                </div>
+
+                <!-- Type & Barn -->
+                <div class="grid grid-cols-2 gap-3">
+                    <div>
+                        <label class="block text-xs text-slate-400 mb-1">Type *</label>
+                        <select id="device-type" class="w-full rounded-lg px-3 py-2 text-sm" required>
+                            <option value="">-- Select Type --</option>
+                        </select>
+                    </div>
+                    <div>
+                        <label class="block text-xs text-slate-400 mb-1">Barn</label>
+                        <div class="flex gap-1">
+                            <select id="device-barn" class="flex-1 rounded-lg px-3 py-2 text-sm">
+                                <option value="">-- Select Barn --</option>
+                            </select>
+                            <button type="button" onclick="toggleNewBarnInput()" class="px-2 py-1 rounded bg-slate-700 hover:bg-slate-600 text-xs" title="Add new barn">
+                                <i class="fas fa-plus"></i>
+                            </button>
+                        </div>
+                        <input type="text" id="device-barn-new" class="w-full rounded-lg px-3 py-2 text-sm mt-1 hidden" placeholder="New barn name...">
+                    </div>
+                </div>
+
+                <!-- MQTT Topic -->
+                <div>
+                    <label class="block text-xs text-slate-400 mb-1">MQTT Topic *</label>
+                    <input type="text" id="device-mqtt" class="w-full rounded-lg px-3 py-2 text-sm" placeholder="cfarm/esp-001" required>
+                    <div id="device-mqtt-feedback" class="validation-msg"></div>
+                </div>
+
+                <!-- Form status -->
+                <div id="device-form-status" class="text-center text-sm"></div>
+
+                <!-- Buttons -->
+                <div class="flex gap-3 pt-2">
+                    <button type="button" onclick="closeDeviceModal()" class="flex-1 py-2.5 bg-slate-700 hover:bg-slate-600 rounded-lg text-sm font-medium">Cancel</button>
+                    <button type="submit" id="device-submit-btn" class="flex-1 py-2.5 btn-primary rounded-lg text-sm font-medium">Save</button>
+                </div>
+            </form>
+        </div>
+    </div>
+
+    <!-- Add Relay Device Modal -->
+    <div id="relayModal" class="fixed inset-0 z-50 hidden bg-black/60 flex items-center justify-center p-4">
+        <div class="card w-full max-w-md p-6 space-y-4 max-h-[90vh] overflow-y-auto">
+            <div class="flex justify-between items-center">
+                <h3 id="relayModalTitle" class="text-lg font-bold">Thêm thiết bị bạt ESP32</h3>
+                <button onclick="closeRelayModal()" class="w-8 h-8 rounded-full bg-slate-700 flex items-center justify-center">
+                    <i class="fas fa-xmark text-sm"></i>
+                </button>
+            </div>
+            <form class="space-y-3">
+                <input type="hidden" id="relay-device-id">
+
+                <!-- Device Code -->
+                <div>
+                    <label class="block text-xs text-slate-400 mb-1">Device Code *</label>
+                    <input type="text" id="relay-device-code" class="w-full rounded-lg px-3 py-2 text-sm" placeholder="esp32-01">
+                    <p class="text-xs text-slate-500 mt-1">Dùng trong firmware ESP32 (DEVICE_CODE)</p>
+                </div>
+
+                <!-- Name -->
+                <div>
+                    <label class="block text-xs text-slate-400 mb-1">Tên thiết bị *</label>
+                    <input type="text" id="relay-device-name" class="w-full rounded-lg px-3 py-2 text-sm" placeholder="Bạt chuồng 1">
+                </div>
+
+                <!-- Type -->
+                <div>
+                    <label class="block text-xs text-slate-400 mb-1">Loại relay *</label>
+                    <select id="relay-device-type" class="w-full rounded-lg px-3 py-2 text-sm">
+                        <option value="">-- Chọn loại --</option>
+                    </select>
+                </div>
+
+                <!-- Barn -->
+                <div>
+                    <label class="block text-xs text-slate-400 mb-1">Chuồng</label>
+                    <select id="relay-barn" class="w-full rounded-lg px-3 py-2 text-sm">
+                        <option value="">-- Chọn chuồng --</option>
+                    </select>
+                </div>
+
+                <!-- MQTT Topic (auto-generated) -->
+                <div>
+                    <label class="block text-xs text-slate-400 mb-1">MQTT Topic *</label>
+                    <input type="text" id="relay-mqtt-topic" class="w-full rounded-lg px-3 py-2 text-sm" placeholder="cfarm/esp32-01">
+                    <p class="text-xs text-slate-500 mt-1">Auto: cfarm/[device_code]</p>
+                </div>
+
+                <!-- Buttons -->
+                <div class="flex gap-3 pt-2">
+                    <button type="button" onclick="closeRelayModal()" class="flex-1 py-2.5 bg-slate-700 hover:bg-slate-600 rounded-lg text-sm font-medium">Huỷ</button>
+                    <button type="button" onclick="saveRelayDevice()" class="flex-1 py-2.5 btn-primary rounded-lg text-sm font-medium">Lưu</button>
+                </div>
+            </form>
+        </div>
+    </div>
+
+    <!-- Upload Firmware Modal -->
+    <div id="firmwareModal" class="fixed inset-0 z-50 hidden bg-black/60 flex items-center justify-center p-4">
+        <div class="card w-full max-w-md p-6 space-y-4">
+            <div class="flex justify-between items-center">
+                <h3 class="text-lg font-bold">Upload Firmware</h3>
+                <button onclick="closeFirmwareModal()" class="w-8 h-8 rounded-full bg-slate-700 flex items-center justify-center">
+                    <i class="fas fa-xmark text-sm"></i>
+                </button>
+            </div>
+            <form id="firmwareForm" class="space-y-3">
+                <div class="grid grid-cols-2 gap-3">
+                    <div>
+                        <label class="block text-xs text-slate-400 mb-1">Device Type *</label>
+                        <select id="fw-device-type" class="w-full rounded-lg px-3 py-2 text-sm" required>
+                            <option value="">-- Select Type --</option>
+                        </select>
+                    </div>
+                    <div>
+                        <label class="block text-xs text-slate-400 mb-1">Version *</label>
+                        <input type="text" id="fw-version" class="w-full rounded-lg px-3 py-2 text-sm" placeholder="1.0.0" required>
+                    </div>
+                </div>
+                <div>
+                    <label class="flex items-center gap-2">
+                        <input type="checkbox" id="fw-is-mother" class="w-4 h-4 rounded">
+                        <span class="text-sm">Set as Mother Firmware (default)</span>
+                    </label>
+                </div>
+                <div>
+                    <label class="block text-xs text-slate-400 mb-1">Changelog</label>
+                    <textarea id="fw-changelog" rows="2" class="w-full rounded-lg px-3 py-2 text-sm" placeholder="What's new..."></textarea>
+                </div>
+                <div>
+                    <label class="block text-xs text-slate-400 mb-1">Firmware File *</label>
+                    <input type="file" id="fw-file" class="w-full rounded-lg px-3 py-2 text-sm bg-slate-800 border border-slate-600" required>
+                </div>
+                <div class="flex gap-3 pt-2">
+                    <button type="button" onclick="closeFirmwareModal()" class="flex-1 py-2.5 bg-slate-700 hover:bg-slate-600 rounded-lg text-sm font-medium">Cancel</button>
+                    <button type="submit" class="flex-1 py-2.5 btn-success rounded-lg text-sm font-medium">Upload</button>
+                </div>
+            </form>
+        </div>
+    </div>
+
+    <!-- View Device Code Modal -->
+    <div id="codeModal" class="fixed inset-0 z-50 hidden bg-black/60 flex items-center justify-center p-4">
+        <div class="card w-full max-w-3xl max-h-[90vh] flex flex-col">
+            <div class="flex justify-between items-center p-4 border-b border-slate-700">
+                <div>
+                    <h3 class="text-lg font-bold">Firmware Code</h3>
+                    <p id="codeModalSubtitle" class="text-sm text-slate-400 mt-1"></p>
+                </div>
+                <div class="flex gap-2">
+                    <button onclick="copyCode()" class="px-3 py-1.5 rounded-lg bg-blue-600 hover:bg-blue-500 text-sm" title="Copy code">
+                        <i class="fas fa-copy mr-1"></i>Copy
+                    </button>
+                    <button onclick="closeCodeModal()" class="w-8 h-8 rounded-full bg-slate-700 flex items-center justify-center">
+                        <i class="fas fa-xmark text-sm"></i>
+                    </button>
+                </div>
+            </div>
+            <div class="flex-1 overflow-auto p-4">
+                <pre id="codeContent" class="text-xs font-mono bg-slate-900 rounded-lg p-4 whitespace-pre-wrap overflow-x-auto" style="max-height: 60vh;"></pre>
+            </div>
+            <div class="p-4 border-t border-slate-700">
+                <p class="text-xs text-slate-500 text-center">
+                    Copy code → Open in Arduino IDE → Compile → Flash to ESP32
+                </p>
+            </div>
+        </div>
+    </div>
+
+    <!-- Toast -->
+    <div id="toast" class="fixed bottom-6 left-4 right-4 sm:left-auto sm:right-6 sm:w-96 z-50 hidden">
+        <div id="toastInner" class="flex items-center gap-3 px-4 py-3 rounded-2xl shadow-lg text-sm font-medium toast-in">
+            <i id="toastIcon" class="fas fa-check-circle"></i>
+            <span id="toastMessage"></span>
+        </div>
+    </div>
+
+    <script>
+        let currentTab = 'devices';
+        let deviceTypes = [];
+        let devices = [];
+        let firmwares = [];
+        let barns = [];
+        let validationState = { deviceCode: null, deviceName: null, deviceMqtt: null };
+
+        document.addEventListener('DOMContentLoaded', () => {
+            loadAll();
+        });
+
+        async function loadAll() {
+            await Promise.all([loadDeviceTypes(), loadDevices(), loadFirmwares(), loadBarns()]);
+            initTestTab();
+        }
+
+        function switchTab(tab) {
+            currentTab = tab;
+            ['devices', 'relays', 'firmwares', 'types', 'test'].forEach(t => {
+                document.getElementById(`panel-${t}`).classList.toggle('hidden', t !== tab);
+                document.getElementById(`tab-${t}`).className = t === tab
+                    ? 'px-4 py-2 rounded-lg bg-blue-600 text-white text-sm font-medium'
+                    : 'px-4 py-2 rounded-lg bg-slate-700 text-slate-300 text-sm font-medium hover:bg-slate-600';
+            });
+            if (tab === 'test') initTestTab();
+            if (tab === 'relays') loadRelays();
+        }
+
+        function initTestTab() {
+            populateTypeSelects();
+            populateBarnSelects();
+        }
+
+        // ================== DATA LOADING ==================
+
+        async function loadDeviceTypes() {
+            try {
+                const res = await fetch('/api/devices/types');
+                deviceTypes = await res.json();
+                renderDeviceTypes();
+                populateTypeSelects();
+            } catch (e) {
+                showToast('Lỗi tải device types: ' + e.message, 'error');
+            }
+        }
+
+        async function loadDevices() {
+            try {
+                const res = await fetch('/api/devices');
+                devices = await res.json();
+                renderDevices();
+            } catch (e) {
+                showToast('Lỗi tải devices: ' + e.message, 'error');
+            }
+        }
+
+        async function loadFirmwares() {
+            try {
+                const res = await fetch('/api/firmware');
+                firmwares = await res.json();
+                renderFirmwares();
+            } catch (e) {
+                showToast('Lỗi tải firmwares: ' + e.message, 'error');
+            }
+        }
+
+        async function loadBarns() {
+            try {
+                const res = await fetch('/api/farm/barns');
+                barns = await res.json();
+                populateBarnSelects();
+            } catch (e) {
+                console.log('No barns API or error:', e.message);
+                barns = [];
+            }
+        }
+
+        // ================== POPULATE DROPDOWNS ==================
+
+        function populateTypeSelects() {
+            const options = deviceTypes.map(t => `<option value="${t.id}">${t.code} - ${t.name}</option>`).join('');
+            document.getElementById('device-type').innerHTML = '<option value="">-- Select Type --</option>' + options;
+            document.getElementById('test-device-type').innerHTML = options;
+            document.getElementById('test-device-type-select').innerHTML = '<option value="">-- Select Type --</option>' + options;
+            document.getElementById('fw-device-type').innerHTML = '<option value="">-- Select Type --</option>' + options;
+        }
+
+        function populateBarnSelects() {
+            const options = barns.map(b => `<option value="${b.id}">${b.name || b.id} (#${b.number || b.id})</option>`).join('');
+            document.getElementById('device-barn').innerHTML = '<option value="">-- Select Barn --</option>' + options;
+            document.getElementById('test-barn-id').innerHTML = '<option value="">-- No Barn --</option>' + options;
+        }
+
+        // ================== VALIDATION ==================
+
+        function validateDeviceCode(code) {
+            if (!code || code.length < 2) return { valid: false, msg: 'Ít nhất 2 ký tự' };
+
+            const exists = devices.some(d => d.device_code === code);
+            if (exists) return { valid: false, msg: 'Đã tồn tại' };
+
+            if (!/^[a-zA-Z0-9_-]+$/.test(code)) {
+                return { valid: false, msg: 'Chỉ a-z, 0-9, -, _' };
+            }
+
+            return { valid: true, msg: 'OK' };
+        }
+
+        function validateDeviceName(name) {
+            if (!name || name.length < 2) return { valid: false, msg: 'Ít nhất 2 ký tự' };
+
+            const exists = devices.some(d => d.name === name);
+            if (exists) return { valid: false, msg: 'Đã tồn tại' };
+
+            return { valid: true, msg: 'OK' };
+        }
+
+        function validateMqttTopic(topic) {
+            if (!topic || topic.length < 3) return { valid: false, msg: 'Ít nhất 3 ký tự' };
+
+            const exists = devices.some(d => d.mqtt_topic === topic);
+            if (exists) return { valid: false, msg: 'Đã tồn tại' };
+
+            if (!/^[a-zA-Z0-9_/.-]+$/.test(topic)) {
+                return { valid: false, msg: 'Ký tự không hợp lệ' };
+            }
+
+            return { valid: true, msg: 'OK' };
+        }
+
+        function updateValidationUI(inputId, feedbackId, result) {
+            const input = document.getElementById(inputId);
+            const feedback = document.getElementById(feedbackId);
+
+            input.classList.remove('input-valid', 'input-invalid', 'input-checking');
+
+            if (!result) {
+                feedback.textContent = '';
+                return;
+            }
+
+            if (result.valid) {
+                input.classList.add('input-valid');
+                feedback.className = 'validation-msg validation-ok';
+                feedback.innerHTML = `<i class="fas fa-check-circle mr-1"></i>${result.msg}`;
+            } else {
+                input.classList.add('input-invalid');
+                feedback.className = 'validation-msg validation-error';
+                feedback.innerHTML = `<i class="fas fa-exclamation-circle mr-1"></i>${result.msg}`;
+            }
+        }
+
+        function checkAllValid() {
+            const codeValid = validationState.deviceCode?.valid === true;
+            const nameValid = validationState.deviceName?.valid === true;
+            const mqttValid = validationState.deviceMqtt?.valid === true;
+            const typeSelected = document.getElementById('device-type').value !== '';
+
+            document.getElementById('device-submit-btn').disabled = !(codeValid && nameValid && mqttValid && typeSelected);
+        }
+
+        // ================== DEVICE MODAL ==================
+
+        function openAddDeviceModal() {
+            document.getElementById('deviceModalTitle').textContent = 'Add Device';
+            document.getElementById('device-id').value = '';
+            document.getElementById('device-code').value = '';
+            document.getElementById('device-code').disabled = false;
+            document.getElementById('device-name').value = '';
+            document.getElementById('device-barn').value = '';
+            document.getElementById('device-barn-new').value = '';
+            document.getElementById('device-barn-new').classList.add('hidden');
+            document.getElementById('device-mqtt').value = '';
+            document.getElementById('device-type').value = '';
+
+            // Clear validation
+            validationState = { deviceCode: null, deviceName: null, deviceMqtt: null };
+            updateValidationUI('device-code', 'device-code-feedback', null);
+            updateValidationUI('device-name', 'device-name-feedback', null);
+            updateValidationUI('device-mqtt', 'device-mqtt-feedback', null);
+            checkAllValid();
+
+            // Refresh data
+            loadDeviceTypes();
+            loadBarns();
+            loadDevices();
+
+            document.getElementById('deviceModal').classList.remove('hidden');
+        }
+
+        function closeDeviceModal() {
+            document.getElementById('deviceModal').classList.add('hidden');
+        }
+
+        function toggleNewBarnInput() {
+            const select = document.getElementById('device-barn');
+            const input = document.getElementById('device-barn-new');
+
+            if (select.classList.contains('hidden')) {
+                // Switch back to select
+                select.classList.remove('hidden');
+                input.classList.add('hidden');
+                input.value = '';
+            } else {
+                // Switch to new barn input
+                select.classList.add('hidden');
+                input.classList.remove('hidden');
+                input.focus();
+            }
+        }
+
+        // Live validation listeners
+        document.getElementById('device-code').addEventListener('input', async (e) => {
+            const code = e.target.value.trim();
+            if (code.length < 2) {
+                updateValidationUI('device-code', 'device-code-feedback', { valid: false, msg: 'Ít nhất 2 ký tự' });
+                validationState.deviceCode = null;
+            } else {
+                updateValidationUI('device-code', 'device-code-feedback', { valid: false, msg: 'Đang kiểm tra...' });
+                const result = validateDeviceCode(code);
+                validationState.deviceCode = result;
+                updateValidationUI('device-code', 'device-code-feedback', result);
+            }
+            checkAllValid();
+        });
+
+        document.getElementById('device-name').addEventListener('input', (e) => {
+            const name = e.target.value.trim();
+            if (name.length < 2) {
+                validationState.deviceName = null;
+            } else {
+                validationState.deviceName = validateDeviceName(name);
+                updateValidationUI('device-name', 'device-name-feedback', validationState.deviceName);
+            }
+            checkAllValid();
+        });
+
+        document.getElementById('device-mqtt').addEventListener('input', (e) => {
+            const topic = e.target.value.trim();
+            if (topic.length < 3) {
+                validationState.deviceMqtt = null;
+            } else {
+                validationState.deviceMqtt = validateMqttTopic(topic);
+                updateValidationUI('device-mqtt', 'device-mqtt-feedback', validationState.deviceMqtt);
+            }
+            checkAllValid();
+        });
+
+        document.getElementById('device-type').addEventListener('change', checkAllValid);
+
+        // Device form submit
+        document.getElementById('deviceForm').addEventListener('submit', async (e) => {
+            e.preventDefault();
+
+            const code = document.getElementById('device-code').value.trim();
+            const name = document.getElementById('device-name').value.trim();
+            const typeId = document.getElementById('device-type').value;
+            const barnSelect = document.getElementById('device-barn');
+            const barnNew = document.getElementById('device-barn-new');
+            const mqtt = document.getElementById('device-mqtt').value.trim();
+
+            // Determine barn_id
+            let barnId = null;
+            if (!barnSelect.classList.contains('hidden') && barnSelect.value) {
+                barnId = barnSelect.value;
+            } else if (barnNew.value.trim()) {
+                // Create new barn first
+                try {
+                    const res = await fetch('/api/farm/barns', {
+                        method: 'POST',
+                        headers: { 'Content-Type': 'application/json' },
+                        body: JSON.stringify({ name: barnNew.value.trim(), number: barnNew.value.trim() })
+                    });
+                    if (res.ok) {
+                        const newBarn = await res.json();
+                        barnId = newBarn.id || newBarn.number || newBarn.name;
+                        await loadBarns();
+                        showToast(`Đã tạo barn mới: ${barnNew.value.trim()}`, 'success');
+                    }
+                } catch (err) {
+                    showToast('Lỗi tạo barn mới: ' + err.message, 'error');
+                    return;
+                }
+            }
+
+            const data = {
+                device_code: code,
+                name: name,
+                device_type_id: parseInt(typeId),
+                barn_id: barnId,
+                mqtt_topic: mqtt,
+            };
+
+            try {
+                const res = await fetch('/api/devices', {
+                    method: 'POST',
+                    headers: { 'Content-Type': 'application/json' },
+                    body: JSON.stringify(data)
+                });
+                const result = await res.json();
+                if (!res.ok) throw new Error(result.message || 'Failed to create device');
+
+                closeDeviceModal();
+                await loadDevices();
+                showToast(`Đã tạo device: ${code}`);
+            } catch (err) {
+                showToast(err.message, 'error');
+            }
+        });
+
+        // ================== RENDER FUNCTIONS ==================
+
+        function renderDevices() {
+            const list = document.getElementById('devicesList');
+            const empty = document.getElementById('devicesEmpty');
+
+            if (devices.length === 0) {
+                list.classList.add('hidden');
+                empty.classList.remove('hidden');
+                return;
+            }
+
+            list.classList.remove('hidden');
+            empty.classList.add('hidden');
+
+            list.innerHTML = devices.map(d => {
+                const type = deviceTypes.find(t => t.id === d.device_type_id) || {};
+                const fw = firmwares.find(f => f.id === d.firmware_id);
+                return `
+                <div class="card p-4">
+                    <div class="flex items-start justify-between">
+                        <div class="flex-1">
+                            <div class="flex items-center gap-2">
+                                <h3 class="font-semibold">${escapeHtml(d.name)}</h3>
+                                <span class="badge ${d.is_online ? 'badge-green' : 'badge-red'}">${d.is_online ? 'ONLINE' : 'OFFLINE'}</span>
+                                ${fw ? `<span class="badge badge-blue">${fw.version}</span>` : ''}
+                            </div>
+                            <p class="text-sm text-slate-400 mt-1">${escapeHtml(d.device_code)} • ${type.code || 'Unknown type'}</p>
+                            <p class="text-xs text-slate-500 mt-1 font-mono">${escapeHtml(d.mqtt_topic)}</p>
+                            ${fw ? `<p class="text-xs text-slate-500 mt-1">Firmware: ${fw.version} (${fw.is_mother ? 'Mother' : 'Latest'})</p>` : ''}
+                        </div>
+                        <div class="flex gap-2">
+                            <button onclick="testPingDevice('${escapeHtml(d.device_code)}')" class="px-3 py-1.5 rounded-lg bg-slate-700 hover:bg-slate-600 text-sm" title="Ping">
+                                <i class="fas fa-wifi"></i>
+                            </button>
+                            <button onclick="viewDeviceCode(${d.id})" class="px-3 py-1.5 rounded-lg bg-blue-700 hover:bg-blue-600 text-sm" title="Xem mã firmware">
+                                <i class="fas fa-code"></i>
+                            </button>
+                            <button onclick="deleteDevice('${d.id}')" class="px-3 py-1.5 rounded-lg bg-red-900/50 hover:bg-red-800 text-red-400 text-sm" title="Delete">
+                                <i class="fas fa-trash"></i>
+                            </button>
+                        </div>
+                    </div>
+                </div>
+            `}).join('');
+        }
+
+        function renderFirmwares() {
+            const list = document.getElementById('firmwaresList');
+            const empty = document.getElementById('firmwaresEmpty');
+
+            if (firmwares.length === 0) {
+                list.classList.add('hidden');
+                empty.classList.remove('hidden');
+                return;
+            }
+
+            list.classList.remove('hidden');
+            empty.classList.add('hidden');
+
+            const grouped = {};
+            firmwares.forEach(fw => {
+                if (!grouped[fw.device_type_code]) grouped[fw.device_type_code] = [];
+                grouped[fw.device_type_code].push(fw);
+            });
+
+            list.innerHTML = Object.entries(grouped).map(([type, fws]) => `
+                <div class="card p-4">
+                    <h3 class="font-semibold text-blue-400 mb-3">${type}</h3>
+                    <div class="space-y-2">
+                        ${fws.map(fw => `
+                            <div class="flex items-center justify-between bg-slate-800 rounded-lg p-3">
+                                <div>
+                                    <div class="flex items-center gap-2">
+                                        <span class="font-medium">v${fw.version}</span>
+                                        ${fw.is_mother ? '<span class="badge badge-green">MOTHER</span>' : ''}
+                                        ${fw.is_latest && !fw.is_mother ? '<span class="badge badge-yellow">LATEST</span>' : ''}
+                                    </div>
+                                    <p class="text-xs text-slate-500 mt-1">${escapeHtml(fw.filename)}</p>
+                                    <p class="text-xs text-slate-500">${((fw.file_size || 0) / 1024).toFixed(1)} KB</p>
+                                </div>
+                                <div class="flex gap-2">
+                                    ${!fw.is_mother ? `
+                                        <button onclick="setMotherFirmware(${fw.id})" class="px-3 py-1.5 rounded-lg bg-green-900/50 hover:bg-green-800 text-green-400 text-xs" title="Set as Mother">
+                                            <i class="fas fa-star"></i>
+                                        </button>
+                                    ` : ''}
+                                    <button onclick="deleteFirmware(${fw.id})" class="px-3 py-1.5 rounded-lg bg-red-900/50 hover:bg-red-800 text-red-400 text-xs" title="Delete">
+                                        <i class="fas fa-trash"></i>
+                                    </button>
+                                </div>
+                            </div>
+                        `).join('')}
+                    </div>
+                </div>
+            `).join('');
+        }
+
+        function renderDeviceTypes() {
+            const list = document.getElementById('typesList');
+            list.innerHTML = deviceTypes.map(t => `
+                <div class="card p-4">
+                    <div class="flex items-center justify-between mb-2">
+                        <h3 class="font-semibold text-blue-400">${escapeHtml(t.code)}</h3>
+                        <span class="badge badge-blue">${t.channel_count} ch</span>
+                    </div>
+                    <p class="text-sm text-slate-400">${escapeHtml(t.name)}</p>
+                    ${t.description ? `<p class="text-xs text-slate-500 mt-2">${escapeHtml(t.description)}</p>` : ''}
+                </div>
+            `).join('');
+        }
+
+        // ================== ACTIONS ==================
+
+        async function deleteDevice(id) {
+            if (!confirm('Xóa thiết bị này?')) return;
+            try {
+                const res = await fetch(`/api/devices/${id}`, { method: 'DELETE' });
+                if (!res.ok) throw new Error('Failed to delete');
+                await loadDevices();
+                showToast('Đã xóa thiết bị');
+            } catch (e) {
+                showToast(e.message, 'error');
+            }
+        }
+
+        async function setMotherFirmware(id) {
+            try {
+                const res = await fetch(`/api/firmware/set-mother/${id}`, { method: 'POST' });
+                if (!res.ok) throw new Error('Failed to set mother');
+                await loadFirmwares();
+                showToast('Đã set mother firmware');
+            } catch (e) {
+                showToast(e.message, 'error');
+            }
+        }
+
+        async function deleteFirmware(id) {
+            if (!confirm('Xóa firmware này?')) return;
+            try {
+                const res = await fetch(`/api/firmware/${id}`, { method: 'DELETE' });
+                if (!res.ok) throw new Error('Failed to delete');
+                await loadFirmwares();
+                showToast('Đã xóa firmware');
+            } catch (e) {
+                showToast(e.message, 'error');
+            }
+        }
+
+        async function testPingDevice(deviceCode) {
+            try {
+                const res = await fetch(`/api/devices/ping/${deviceCode}`, { method: 'POST' });
+                const data = await res.json();
+                showToast(data.ok ? `Ping sent to ${deviceCode}` : data.message || 'Ping failed', data.ok ? 'info' : 'error');
+            } catch (e) {
+                showToast(e.message, 'error');
+            }
+        }
+
+        // ================== FIRMWARE MODAL ==================
+
+        function openUploadFirmwareModal() {
+            document.getElementById('fw-version').value = '';
+            document.getElementById('fw-changelog').value = '';
+            document.getElementById('fw-is-mother').checked = true;
+            document.getElementById('fw-file').value = '';
+            loadDeviceTypes();
+            document.getElementById('firmwareModal').classList.remove('hidden');
+        }
+
+        function closeFirmwareModal() {
+            document.getElementById('firmwareModal').classList.add('hidden');
+        }
+
+        // ================== DEVICE CODE MODAL ==================
+
+        function closeCodeModal() {
+            document.getElementById('codeModal').classList.add('hidden');
+        }
+
+        async function viewDeviceCode(deviceId) {
+            try {
+                const res = await fetch(`/api/firmware/generate/${deviceId}`);
+                if (!res.ok) {
+                    const err = await res.json();
+                    throw new Error(err.detail || 'Failed to generate code');
+                }
+                const data = await res.json();
+
+                document.getElementById('codeModalSubtitle').textContent =
+                    `${data.device_code} • ${data.device_type} • ${data.mqtt_topic}`;
+                document.getElementById('codeContent').textContent = data.code;
+                document.getElementById('codeModal').classList.remove('hidden');
+            } catch (e) {
+                showToast(e.message, 'error');
+            }
+        }
+
+        function copyCode() {
+            const code = document.getElementById('codeContent').textContent;
+            if (navigator.clipboard && navigator.clipboard.writeText) {
+                navigator.clipboard.writeText(code).then(() => {
+                    showToast('Đã copy code!', 'success');
+                }).catch(() => {
+                    fallbackCopy(code);
+                });
+            } else {
+                fallbackCopy(code);
+            }
+        }
+
+        function fallbackCopy(text) {
+            const textarea = document.createElement('textarea');
+            textarea.value = text;
+            textarea.style.position = 'fixed';
+            textarea.style.opacity = '0';
+            document.body.appendChild(textarea);
+            textarea.select();
+            try {
+                document.execCommand('copy');
+                showToast('Đã copy code!', 'success');
+            } catch (e) {
+                showToast('Copy thất bại - hãy copy thủ công', 'error');
+            }
+            document.body.removeChild(textarea);
+        }
+
+        document.getElementById('firmwareForm').addEventListener('submit', async (e) => {
+            e.preventDefault();
+            const formData = new FormData();
+            formData.append('device_type_code', document.getElementById('fw-device-type').value);
+            formData.append('version', document.getElementById('fw-version').value);
+            formData.append('changelog', document.getElementById('fw-changelog').value);
+            formData.append('is_mother', document.getElementById('fw-is-mother').checked);
+            formData.append('file', document.getElementById('fw-file').files[0]);
+
+            try {
+                const res = await fetch('/api/firmware/upload', { method: 'POST', body: formData });
+                if (!res.ok) {
+                    const err = await res.json();
+                    throw new Error(err.detail || 'Upload failed');
+                }
+                closeFirmwareModal();
+                await loadFirmwares();
+                showToast('Đã upload firmware');
+            } catch (e) {
+                showToast(e.message, 'error');
+            }
+        });
+
+        // ================== TEST TAB ==================
+
+        async function testUploadFirmware() {
+            const typeCode = document.getElementById('test-device-type').value;
+            const version = document.getElementById('test-version').value;
+            const isMother = document.getElementById('test-is-mother').checked;
+            const changelog = document.getElementById('test-changelog').value;
+            const fileInput = document.getElementById('test-file');
+            const result = document.getElementById('test-result');
+
+            if (!fileInput.files[0]) {
+                showToast('Chọn file firmware', 'error');
+                return;
+            }
+
+            const formData = new FormData();
+            formData.append('device_type_code', typeCode);
+            formData.append('version', version);
+            formData.append('changelog', changelog);
+            formData.append('is_mother', isMother);
+            formData.append('file', fileInput.files[0]);
+
+            result.classList.remove('hidden');
+            result.className = 'p-3 rounded-lg text-sm font-mono bg-slate-800';
+            result.textContent = 'Uploading...';
+
+            try {
+                const res = await fetch('/api/firmware/upload', { method: 'POST', body: formData });
+                const data = await res.json();
+
+                if (!res.ok) throw new Error(data.detail || 'Upload failed');
+
+                result.className = 'p-3 rounded-lg text-sm font-mono bg-green-900/50 text-green-400';
+                result.textContent = JSON.stringify(data, null, 2);
+                await loadFirmwares();
+                showToast('Upload thành công!');
+            } catch (e) {
+                result.className = 'p-3 rounded-lg text-sm font-mono bg-red-900/50 text-red-400';
+                result.textContent = 'Error: ' + e.message;
+                showToast(e.message, 'error');
+            }
+        }
+
+        async function testCreateDevice() {
+            const deviceCode = document.getElementById('test-device-code').value.trim();
+            const name = document.getElementById('test-device-name').value.trim();
+            const typeId = document.getElementById('test-device-type-select').value;
+            const barnId = document.getElementById('test-barn-id').value || null;
+            const mqttTopic = document.getElementById('test-mqtt-topic').value.trim();
+            const result = document.getElementById('test-device-result');
+
+            if (!deviceCode || !name || !typeId || !mqttTopic) {
+                showToast('Điền đầy đủ thông tin', 'error');
+                return;
+            }
+
+            const data = {
+                device_code: deviceCode,
+                name: name,
+                device_type_id: parseInt(typeId),
+                barn_id: barnId,
+                mqtt_topic: mqttTopic,
+            };
+
+            result.classList.remove('hidden');
+            result.className = 'p-3 rounded-lg text-sm font-mono bg-slate-800';
+            result.textContent = 'Creating...';
+
+            try {
+                const res = await fetch('/api/devices', {
+                    method: 'POST',
+                    headers: { 'Content-Type': 'application/json' },
+                    body: JSON.stringify(data)
+                });
+                const response = await res.json();
+
+                if (!res.ok) throw new Error(response.message || 'Create failed');
+
+                result.className = 'p-3 rounded-lg text-sm font-mono bg-green-900/50 text-green-400';
+                result.textContent = JSON.stringify(response, null, 2);
+                await loadDevices();
+                showToast('Tạo device thành công!');
+            } catch (e) {
+                result.className = 'p-3 rounded-lg text-sm font-mono bg-red-900/50 text-red-400';
+                result.textContent = 'Error: ' + e.message;
+                showToast(e.message, 'error');
+            }
+        }
+
+        // ================== RELAY MANAGEMENT ==================
+
+        let relayStates = {};  // device_id -> { channel: state }
+
+        async function loadRelays() {
+            try {
+                const res = await fetch('/api/devices');
+                const allDevices = await res.json();
+
+                // Filter only relay-type devices (relay_4ch, relay_8ch, relay)
+                const relayDevices = allDevices.filter(d =>
+                    d.type_code && d.type_code.includes('relay')
+                );
+
+                // Load states for all relay devices
+                for (const dev of relayDevices) {
+                    try {
+                        const stateRes = await fetch(`/api/devices/${dev.id}/states`);
+                        if (stateRes.ok) {
+                            const states = await stateRes.json();
+                            relayStates[dev.id] = {};
+                            states.forEach(s => {
+                                relayStates[dev.id][s.channel_number] = s.state;
+                            });
+                        }
+                    } catch (e) {
+                        console.error('Failed to load states for device', dev.id, e);
+                    }
+                }
+
+                renderRelays(relayDevices);
+            } catch (e) {
+                showToast('Lỗi tải thiết bị bạt: ' + e.message, 'error');
+            }
+        }
+
+        function renderRelays(relayDevices) {
+            const list = document.getElementById('relaysList');
+            const empty = document.getElementById('relaysEmpty');
+
+            if (relayDevices.length === 0) {
+                list.classList.add('hidden');
+                empty.classList.remove('hidden');
+                return;
+            }
+
+            list.classList.remove('hidden');
+            empty.classList.add('hidden');
+
+            list.innerHTML = relayDevices.map(d => {
+                const states = relayStates[d.id] || {};
+                const channelCount = d.type_name && d.type_name.includes('8') ? 8 :
+                                    d.type_name && d.type_name.includes('4') ? 4 : 4;
+                const online = d.is_online;
+
+                return `
+                <div class="card p-4">
+                    <div class="flex items-start justify-between mb-4">
+                        <div>
+                            <div class="flex items-center gap-2">
+                                <h3 class="font-semibold">${escapeHtml(d.name)}</h3>
+                                <span class="badge ${online ? 'badge-green' : 'badge-red'}">${online ? 'ONLINE' : 'OFFLINE'}</span>
+                            </div>
+                            <p class="text-sm text-slate-400 mt-1">${escapeHtml(d.device_code)}</p>
+                            <p class="text-xs text-slate-500 mt-1 font-mono">${escapeHtml(d.mqtt_topic)}</p>
+                        </div>
+                        <div class="text-right">
+                            <div class="text-xs text-slate-500">Last heartbeat</div>
+                            <div class="text-sm text-slate-300">${d.last_heartbeat_at ? new Date(d.last_heartbeat_at).toLocaleTimeString() : 'N/A'}</div>
+                        </div>
+                    </div>
+
+                    <!-- Relay Channels -->
+                    <div class="grid grid-cols-4 gap-2 mb-4">
+                        ${Array.from({length: channelCount}, (_, i) => {
+                            const ch = i + 1;
+                            const state = states[ch] || 'off';
+                            const isOn = state === 'on';
+                            return `
+                            <div class="relative">
+                                <button
+                                    onclick="toggleRelay(${d.id}, '${d.mqtt_topic}', ${ch}, '${state}')"
+                                    class="w-full py-3 px-2 rounded-lg font-medium text-sm transition-all ${
+                                        isOn
+                                            ? 'bg-emerald-600 hover:bg-emerald-500 text-white shadow-lg shadow-emerald-900/30'
+                                            : 'bg-slate-700 hover:bg-slate-600 text-slate-300'
+                                    }"
+                                    ${!online ? 'disabled class="opacity-50 cursor-not-allowed"' : ''}
+                                >
+                                    <div class="text-lg font-bold">${ch}</div>
+                                    <div class="text-xs">${isOn ? 'ON' : 'OFF'}</div>
+                                </button>
+                                ${isOn ? '<div class="absolute inset-0 rounded-lg border-2 border-emerald-400 animate-pulse pointer-events-none"></div>' : ''}
+                            </div>
+                            `;
+                        }).join('')}
+                    </div>
+
+                    <!-- All ON / All OFF buttons -->
+                    <div class="flex gap-2">
+                        <button onclick="setAllRelays('${d.mqtt_topic}', true)" class="flex-1 py-2 rounded-lg bg-emerald-700 hover:bg-emerald-600 text-sm font-medium" ${!online ? 'disabled' : ''}>
+                            <i class="fas fa-power-off mr-1"></i>Tất cả BẬT
+                        </button>
+                        <button onclick="setAllRelays('${d.mqtt_topic}', false)" class="flex-1 py-2 rounded-lg bg-slate-700 hover:bg-slate-600 text-sm font-medium" ${!online ? 'disabled' : ''}>
+                            <i class="fas fa-power-off mr-1"></i>Tất cả TẮT
+                        </button>
+                    </div>
+                </div>
+                `;
+            }).join('');
+        }
+
+        async function toggleRelay(deviceId, mqttTopic, channel, currentState) {
+            const newState = currentState === 'on' ? 'off' : 'on';
+
+            try {
+                const res = await fetch('/api/iot/relay', {
+                    method: 'POST',
+                    headers: { 'Content-Type': 'application/json' },
+                    body: JSON.stringify({
+                        device_topic: mqttTopic,
+                        channel: channel,
+                        state: newState
+                    })
+                });
+
+                if (!res.ok) {
+                    const err = await res.json();
+                    throw new Error(err.detail || 'Failed to send command');
+                }
+
+                // Update local state
+                if (!relayStates[deviceId]) relayStates[deviceId] = {};
+                relayStates[deviceId][channel] = newState;
+
+                // Re-render
+                const res2 = await fetch('/api/devices');
+                const allDevices = await res2.json();
+                const relayDevices = allDevices.filter(d =>
+                    d.type_code && d.type_code.includes('relay')
+                );
+                renderRelays(relayDevices);
+
+                showToast(`Bạt ${channel} đã ${newState === 'on' ? 'BẬT' : 'TẮT'}`);
+            } catch (e) {
+                showToast('Lỗi: ' + e.message, 'error');
+            }
+        }
+
+        async function setAllRelays(mqttTopic, turnOn) {
+            const state = turnOn ? 'on' : 'off';
+            const allChannels = [1, 2, 3, 4, 5, 6, 7, 8];
+
+            for (const ch of allChannels) {
+                try {
+                    await fetch('/api/iot/relay', {
+                        method: 'POST',
+                        headers: { 'Content-Type': 'application/json' },
+                        body: JSON.stringify({
+                            device_topic: mqttTopic,
+                            channel: ch,
+                            state: state
+                        })
+                    });
+                } catch (e) {
+                    console.error('Failed to set channel', ch, e);
+                }
+            }
+
+            // Reload to get fresh states
+            await loadRelays();
+            showToast(`Tất cả bạt đã ${turnOn ? 'BẬT' : 'TẮT'}`);
+        }
+
+        // ================== ADD RELAY MODAL ==================
+
+        function openAddRelayModal() {
+            document.getElementById('relayModalTitle').textContent = 'Thêm thiết bị bạt ESP32';
+            document.getElementById('relay-device-id').value = '';
+            document.getElementById('relay-device-code').value = '';
+            document.getElementById('relay-device-code').disabled = false;
+            document.getElementById('relay-device-name').value = '';
+            document.getElementById('relay-device-type').value = '';
+            document.getElementById('relay-barn').value = '';
+
+            // Auto-generate MQTT topic based on device code
+            document.getElementById('relay-device-code').addEventListener('input', function(e) {
+                const code = e.target.value.trim();
+                document.getElementById('relay-mqtt-topic').value = code ? 'cfarm/' + code : '';
+            });
+
+            loadDeviceTypes();
+            loadBarns();
+
+            document.getElementById('relayModal').classList.remove('hidden');
+        }
+
+        function closeRelayModal() {
+            document.getElementById('relayModal').classList.add('hidden');
+        }
+
+        async function saveRelayDevice() {
+            const deviceCode = document.getElementById('relay-device-code').value.trim();
+            const name = document.getElementById('relay-device-name').value.trim();
+            const typeId = document.getElementById('relay-device-type').value;
+            const barnId = document.getElementById('relay-barn').value;
+            const mqttTopic = document.getElementById('relay-mqtt-topic').value.trim();
+
+            if (!deviceCode || !name || !typeId || !mqttTopic) {
+                showToast('Vui lòng điền đầy đủ thông tin', 'error');
+                return;
+            }
+
+            try {
+                const res = await fetch('/api/devices', {
+                    method: 'POST',
+                    headers: { 'Content-Type': 'application/json' },
+                    body: JSON.stringify({
+                        device_code: deviceCode,
+                        name: name,
+                        device_type_id: parseInt(typeId),
+                        barn_id: barnId || null,
+                        mqtt_topic: mqttTopic
+                    })
+                });
+
+                if (!res.ok) {
+                    const err = await res.json();
+                    throw new Error(err.detail || 'Failed to create device');
+                }
+
+                closeRelayModal();
+                await loadRelays();
+                showToast('Đã thêm thiết bị bạt!');
+            } catch (e) {
+                showToast('Lỗi: ' + e.message, 'error');
+            }
+        }
+
+        // ================== UTILITY ==================
+
+        function escapeHtml(text) {
+            if (!text) return '';
+            const div = document.createElement('div');
+            div.textContent = text;
+            return div.innerHTML;
+        }
+
+        function showToast(msg, type = 'success') {
+            const toast = document.getElementById('toast');
+            const inner = document.getElementById('toastInner');
+            const icon = document.getElementById('toastIcon');
+            const styles = {
+                success: { bg: 'bg-emerald-600/90 text-white', icon: 'fa-check-circle' },
+                error: { bg: 'bg-red-600/90 text-white', icon: 'fa-circle-exclamation' },
+                info: { bg: 'bg-blue-600/90 text-white', icon: 'fa-circle-info' }
+            };
+            const s = styles[type] || styles.success;
+            inner.className = `flex items-center gap-3 px-4 py-3 rounded-2xl shadow-lg text-sm font-medium toast-in backdrop-blur ${s.bg}`;
+            icon.className = `fas ${s.icon}`;
+            document.getElementById('toastMessage').textContent = msg;
+            toast.classList.remove('hidden');
+            clearTimeout(toast._timer);
+            toast._timer = setTimeout(() => toast.classList.add('hidden'), 4000);
+        }
+    </script>
+</body>
+</html>
