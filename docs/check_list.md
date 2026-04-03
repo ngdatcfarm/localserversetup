@@ -131,6 +131,18 @@ CREATE TABLE equipment (
 | `parent_cycle_id` | INT FK | ❌ Missing | ✅ | Add to Local (cycle splitting) |
 | `split_date` | DATE | ❌ Missing | ✅ | Add to Local |
 | `barn_id` | FK | ✅ | ❌ Missing | Add to Cloud (critical!) |
+| `season` | VARCHAR(20) | ❌ Missing | ✅ | Add to Local (spring/summer/autumn/winter) |
+| `vaccine_program_id` | INT FK | ❌ Missing | ✅ | Add to Local |
+| `final_quantity` | INT | ❌ Missing | ✅ | Add to Local |
+| `total_sold_weight_kg` | DECIMAL(10,2) | ❌ Missing | ✅ | Add to Local |
+| `total_revenue` | DECIMAL(15,2) | ❌ Missing | ✅ | Add to Local |
+| `close_reason` | VARCHAR(20) | ❌ Missing | ✅ | Add to Local (sold/mortality/other) |
+| `code` | VARCHAR(50) | ❌ Missing | ✅ | Add to Local (cycle code) |
+
+**Rename existing fields for consistency**:
+- `initial_count` → `initial_quantity` (match Cloud)
+- `current_count` → `current_quantity` (match Cloud)
+- `actual_end_date` → `end_date` (match Cloud)
 
 **Migration script** (`scripts/017_add_cycle_gender_finance.sql`):
 ```sql
@@ -141,6 +153,17 @@ ALTER TABLE cycles ADD COLUMN IF NOT EXISTS stage VARCHAR(20) DEFAULT 'chick';
 ALTER TABLE cycles ADD COLUMN IF NOT EXISTS flock_source VARCHAR(20);
 ALTER TABLE cycles ADD COLUMN IF NOT EXISTS parent_cycle_id INT REFERENCES cycles(id);
 ALTER TABLE cycles ADD COLUMN IF NOT EXISTS split_date DATE;
+ALTER TABLE cycles ADD COLUMN IF NOT EXISTS season VARCHAR(20);
+ALTER TABLE cycles ADD COLUMN IF NOT EXISTS vaccine_program_id INT REFERENCES vaccine_programs(id);
+ALTER TABLE cycles ADD COLUMN IF NOT EXISTS final_quantity INT;
+ALTER TABLE cycles ADD COLUMN IF NOT EXISTS total_sold_weight_kg DECIMAL(10,2);
+ALTER TABLE cycles ADD COLUMN IF NOT EXISTS total_revenue DECIMAL(15,2);
+ALTER TABLE cycles ADD COLUMN IF NOT EXISTS close_reason VARCHAR(20);
+ALTER TABLE cycles ADD COLUMN IF NOT EXISTS code VARCHAR(50);
+-- Rename for Cloud consistency
+ALTER TABLE cycles RENAME COLUMN initial_count TO initial_quantity;
+ALTER TABLE cycles RENAME COLUMN current_count TO current_quantity;
+ALTER TABLE cycles RENAME COLUMN actual_end_date TO end_date;
 ```
 
 ### 4.2 Care Tables Schema Gaps
@@ -209,6 +232,58 @@ CREATE TABLE care_litters (
 );
 ```
 
+**cycle_feed_programs** (cloud has, local doesn't) — gán feed_brand cho cycle:
+```sql
+CREATE TABLE cycle_feed_programs (
+    id SERIAL PRIMARY KEY,
+    cycle_id INT REFERENCES cycles(id),
+    feed_brand_id INT REFERENCES feed_brands(id),
+    start_date DATE NOT NULL,
+    end_date DATE,  -- NULL = đang dùng
+    note TEXT,
+    created_at TIMESTAMPTZ DEFAULT NOW()
+);
+```
+
+**cycle_feed_program_items** (cloud has, local doesn't) — items trong chương trình:
+```sql
+CREATE TABLE cycle_feed_program_items (
+    id SERIAL PRIMARY KEY,
+    cycle_feed_program_id INT REFERENCES cycle_feed_programs(id),
+    inventory_item_id INT REFERENCES products(id),
+    stage VARCHAR(20) NOT NULL,  -- 'chick' | 'grower' | 'adult'
+    status VARCHAR(20) DEFAULT 'active',
+    created_at TIMESTAMPTZ DEFAULT NOW()
+);
+```
+
+**cycle_feed_stages** (cloud has, local doesn't) — stage feed chính + mix:
+```sql
+CREATE TABLE cycle_feed_stages (
+    id SERIAL PRIMARY KEY,
+    cycle_id INT REFERENCES cycles(id),
+    stage VARCHAR(20) NOT NULL,  -- 'chick' | 'grower' | 'adult'
+    primary_feed_type_id INT REFERENCES feed_types(id),
+    mix_feed_type_id INT REFERENCES feed_types(id),  -- NULL nếu không mix
+    mix_ratio INT,  -- % của feed mới (10, 25, 50...)
+    effective_date DATE NOT NULL,
+    created_at TIMESTAMPTZ DEFAULT NOW()
+);
+```
+
+**cycle_splits** (cloud has, local doesn't) — lịch sử tách cycle:
+```sql
+CREATE TABLE cycle_splits (
+    id SERIAL PRIMARY KEY,
+    from_cycle_id INT REFERENCES cycles(id),  -- cycle gốc
+    to_cycle_id INT REFERENCES cycles(id),   -- cycle mới được tách vào
+    quantity INT NOT NULL,  -- số con tách
+    split_date DATE NOT NULL,
+    note TEXT,
+    created_at TIMESTAMPTZ DEFAULT NOW()
+);
+```
+
 ### 4.4 Sync Handlers to Add
 
 | Handler | Status | Notes |
@@ -218,12 +293,16 @@ CREATE TABLE care_litters (
 | `_sync_care_expenses` | ⬜ TODO | Push care_expenses to cloud |
 | `_sync_care_litters` | ⬜ TODO | Push care_litters to cloud |
 | `_sync_weight_samples` | ⬜ TODO | Push weight_samples to cloud |
+| `_sync_cycle_feed_programs` | ⬜ TODO | Push cycle_feed_programs to cloud |
+| `_sync_cycle_feed_program_items` | ⬜ TODO | Push cycle_feed_program_items to cloud |
+| `_sync_cycle_feed_stages` | ⬜ TODO | Push cycle_feed_stages to cloud |
+| `_sync_cycle_splits` | ⬜ TODO | Push cycle_splits to cloud |
 
 ### 4.5 Full Cycle Children Summary
 
 | Table | Local | Cloud | Sync | Priority |
 |-------|-------|-------|------|----------|
-| `cycles` | ✅ | ⬜ Reset | ✅ Handler exists | HIGH |
+| `cycles` | ✅ (gap) | ⬜ Reset | ✅ Handler exists | HIGH |
 | `care_feeds` | ✅ | ⬜ Reset | ✅ Queue added | HIGH |
 | `care_deaths` | ✅ (gap) | ⬜ Reset | ✅ Queue added | MEDIUM |
 | `care_medications` | ✅ (gap) | ⬜ Reset | ✅ Queue added | MEDIUM |
@@ -236,6 +315,10 @@ CREATE TABLE care_litters (
 | `health_notes` | ✅ | ⬜ Reset | ⬜ Need handler | MEDIUM |
 | `care_expenses` | ❌ | ✅ | ⬜ TODO | LOW |
 | `care_litters` | ❌ | ✅ | ⬜ TODO | LOW |
+| `cycle_feed_programs` | ❌ | ✅ | ⬜ TODO | LOW |
+| `cycle_feed_program_items` | ❌ | ✅ | ⬜ TODO | LOW |
+| `cycle_feed_stages` | ❌ | ✅ | ⬜ TODO | LOW |
+| `cycle_splits` | ❌ | ✅ | ⬜ TODO | LOW |
 
 ---
 
