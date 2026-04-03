@@ -4,6 +4,7 @@ from datetime import date
 from typing import Optional
 from src.services.database.db import db
 from src.farm.inventory_service import inventory_service
+from src.sync.sync_service import sync_service
 
 
 class CareService:
@@ -34,6 +35,26 @@ class CareService:
             data["quantity"], data.get("remaining"),
             data.get("warehouse_id"), data.get("notes"),
         )
+
+        # Queue sync to cloud - map local field names to cloud schema
+        payload = {
+            "id": row["id"],
+            "cycle_id": row["cycle_id"],
+            "barn_id": row["barn_id"],
+            "feed_date": row["feed_date"].isoformat() if row.get("feed_date") else None,
+            "session": row["meal"],  # local 'meal' -> cloud 'session'
+            "product_id": row["product_id"],
+            "feed_type_id": row.get("feed_type_id"),
+            "quantity": row["quantity"],
+            "bags": row.get("bags"),
+            "kg_actual": row.get("kg_actual"),
+            "remaining_pct": row.get("remaining_pct"),
+            "remaining": row.get("remaining"),
+            "warehouse_id": row.get("warehouse_id"),
+            "notes": row.get("notes"),
+        }
+        await sync_service.queue_change("care_feeds", row["id"], "insert", payload)
+
         return {"ok": True, "feed": dict(row)}
 
     async def get_feeds(self, cycle_id: int, days: int = 30) -> list[dict]:
@@ -77,6 +98,19 @@ class CareService:
             "UPDATE cycles SET current_count = current_count - $1, updated_at = NOW() WHERE id = $2",
             data["count"], data["cycle_id"],
         )
+
+        # Queue sync to cloud - map local field names to cloud schema
+        payload = {
+            "id": row["id"],
+            "cycle_id": row["cycle_id"],
+            "barn_id": row["barn_id"],
+            "death_date": row["death_date"].isoformat() if row.get("death_date") else None,
+            "quantity": row["count"],  # local 'count' -> cloud 'quantity'
+            "reason": row["cause"],     # local 'cause' -> cloud 'reason'
+            "symptoms": row.get("symptoms"),
+            "notes": row.get("notes"),
+        }
+        await sync_service.queue_change("care_deaths", row["id"], "insert", payload)
 
         return {"ok": True, "death": dict(row)}
 
@@ -124,6 +158,26 @@ class CareService:
             data.get("method"), data.get("warehouse_id"),
             data.get("purpose"), data.get("notes"),
         )
+
+        # Queue sync to cloud - map local field names to cloud schema
+        payload = {
+            "id": row["id"],
+            "cycle_id": row["cycle_id"],
+            "barn_id": row["barn_id"],
+            "med_date": row["med_date"].isoformat() if row.get("med_date") else None,
+            "med_type": row["med_type"],
+            "medication_id": row.get("product_id"),  # local product_id -> cloud medication_id
+            "medication_name": row.get("medication_name"),
+            "quantity": row["quantity"],
+            "dosage": row.get("dosage"),
+            "unit": row.get("unit"),
+            "method": row.get("method"),
+            "warehouse_id": row.get("warehouse_id"),
+            "purpose": row.get("purpose"),
+            "notes": row.get("notes"),
+        }
+        await sync_service.queue_change("care_medications", row["id"], "insert", payload)
+
         return {"ok": True, "medication": dict(row)}
 
     async def get_medications(self, cycle_id: int) -> list[dict]:
@@ -170,6 +224,22 @@ class CareService:
                 "UPDATE weight_reminders SET next_remind_date = $1 WHERE id = $2",
                 next_date, reminder["id"],
             )
+
+        # Queue sync to cloud
+        payload = {
+            "id": row["id"],
+            "cycle_id": row["cycle_id"],
+            "barn_id": row["barn_id"],
+            "weigh_date": row["weigh_date"].isoformat() if row.get("weigh_date") else None,
+            "day_age": row["day_age"],
+            "sample_count": row["sample_count"],
+            "total_weight": row["total_weight"],
+            "min_weight": row.get("min_weight"),
+            "max_weight": row.get("max_weight"),
+            "uniformity": row.get("uniformity"),
+            "notes": row.get("notes"),
+        }
+        await sync_service.queue_change("weight_sessions", row["id"], "insert", payload)
 
         return {"ok": True, "weight": dict(row)}
 
@@ -232,6 +302,24 @@ class CareService:
             "UPDATE cycles SET current_count = current_count - $1, updated_at = NOW() WHERE id = $2",
             data["count"], data["cycle_id"],
         )
+
+        # Queue sync to cloud - map local field names to cloud schema
+        payload = {
+            "id": row["id"],
+            "cycle_id": row["cycle_id"],
+            "barn_id": row["barn_id"],
+            "sale_date": row["sale_date"].isoformat() if row.get("sale_date") else None,
+            "quantity": row["count"],       # local 'count' -> cloud 'quantity'
+            "weight_kg": row["total_weight"],  # local 'total_weight' -> cloud 'weight_kg'
+            "price_per_kg": row["unit_price"],  # local 'unit_price' -> cloud 'price_per_kg'
+            "total_amount": row.get("total_amount"),
+            "gender": row.get("gender"),
+            "avg_weight": row.get("avg_weight"),
+            "buyer": row.get("buyer"),
+            "sale_type": row.get("sale_type"),
+            "notes": row.get("notes"),
+        }
+        await sync_service.queue_change("care_sales", row["id"], "insert", payload)
 
         return {"ok": True, "sale": dict(row)}
 

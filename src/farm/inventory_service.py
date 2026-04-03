@@ -2,6 +2,7 @@
 
 from typing import Optional
 from src.services.database.db import db
+from src.sync.sync_service import sync_service
 
 
 class InventoryService:
@@ -122,6 +123,20 @@ class InventoryService:
             data["warehouse_id"], data["product_id"], quantity,
         )
 
+        # Queue sync to cloud
+        payload = {
+            "warehouse_id": data["warehouse_id"],
+            "product_id": data["product_id"],
+            "transaction_type": "import",
+            "quantity": quantity,
+            "supplier": data.get("supplier"),
+            "unit_price": data.get("unit_price"),
+            "batch_number": data.get("batch_number"),
+            "expiry_date": data.get("expiry_date"),
+            "notes": data.get("notes"),
+        }
+        await sync_service.queue_change("inventory_transactions", f"{data['warehouse_id']}-{data['product_id']}-{quantity}", "import", payload)
+
         return {"ok": True, "warehouse_id": data["warehouse_id"],
                 "product_id": data["product_id"], "imported": quantity}
 
@@ -156,6 +171,18 @@ class InventoryService:
             WHERE warehouse_id = $1 AND product_id = $2""",
             data["warehouse_id"], data["product_id"], quantity,
         )
+
+        # Queue sync to cloud
+        payload = {
+            "warehouse_id": data["warehouse_id"],
+            "product_id": data["product_id"],
+            "transaction_type": "export",
+            "quantity": -quantity,
+            "reference_type": data.get("reference_type", "manual"),
+            "reference_id": data.get("reference_id"),
+            "notes": data.get("notes"),
+        }
+        await sync_service.queue_change("inventory_transactions", f"{data['warehouse_id']}-{data['product_id']}-{-quantity}", "export", payload)
 
         return {"ok": True, "exported": quantity}
 
@@ -203,6 +230,28 @@ class InventoryService:
             DO UPDATE SET quantity = inventory.quantity + $3, updated_at = NOW()""",
             data["to_warehouse_id"], data["product_id"], quantity,
         )
+
+        # Queue sync to cloud (2 transactions: export + import)
+        export_payload = {
+            "warehouse_id": data["from_warehouse_id"],
+            "product_id": data["product_id"],
+            "transaction_type": "export",
+            "quantity": -quantity,
+            "reference_type": "transfer",
+            "from_warehouse_id": data["from_warehouse_id"],
+            "notes": data.get("notes"),
+        }
+        import_payload = {
+            "warehouse_id": data["to_warehouse_id"],
+            "product_id": data["product_id"],
+            "transaction_type": "import",
+            "quantity": quantity,
+            "reference_type": "transfer",
+            "from_warehouse_id": data["from_warehouse_id"],
+            "notes": data.get("notes"),
+        }
+        await sync_service.queue_change("inventory_transactions", f"transfer-{data['from_warehouse_id']}-{data['product_id']}-{-quantity}", "export", export_payload)
+        await sync_service.queue_change("inventory_transactions", f"transfer-{data['to_warehouse_id']}-{data['product_id']}-{quantity}", "import", import_payload)
 
         return {"ok": True, "transferred": quantity}
 
