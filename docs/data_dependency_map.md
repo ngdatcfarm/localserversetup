@@ -1,250 +1,52 @@
 # Data Dependency Map - Local Server
 
 > **Created**: 2026-04-03
-> **Updated**: 2026-04-03 - Added Farm as top-level entity
-> **Purpose**: Document entity relationships and data flow for hybrid sync planning
+> **Updated**: 2026-04-03 - Clean restructure: Local is primary, Cloud aligns
+> **Purpose**: Entity relationships and data flow for hybrid sync (RESET CLOUD OK)
 
 ---
 
-## Top-Level Entity: `Farm`
+## Design Principles
 
-**Definition**: The overall farm operation — a single physical farm with multiple barns.
-
-### Farm Table Fields
-| Field | Type | Description | Purpose |
-|-------|------|-------------|---------|
-| `id` | VARCHAR(50) | Primary key (e.g., "farm-01") | Unique identifier |
-| `name` | VARCHAR(200) | Farm name (e.g., "Trang trại Vĩnh Thanh") | Human-readable |
-| `address` | TEXT | Full address | Location |
-| `contact_name` | VARCHAR(100) | Owner/manager name | Contact |
-| `contact_phone` | VARCHAR(20) | Phone number | Contact |
-| `contact_email` | VARCHAR(100) | Email | Contact |
-| `notes` | TEXT | Notes | |
-| `active` | BOOLEAN | Farm active status | Soft delete |
-| `created_at` | TIMESTAMPTZ | Creation timestamp | Audit |
-
-> **Note**: In current system, Farm entity may not exist as a separate table. Single-farm assumption currently in place. Consider adding `farm_id` to `barns` for multi-farm support.
+1. **Local is primary** — Local PostgreSQL drives schema design
+2. **Cloud aligns** — Cloud MySQL must reshape to match Local (reset OK, no production data)
+3. **Single source of truth** — Each entity has one home (no duplication)
+4. **Hierarchical** — Farm → Barn → [Cycle, Device, Warehouse, Equipment, SensorData]
 
 ---
 
-## Entity Above Barn: `Farm` (Parent)
+## Entity Hierarchy
 
 ```
 Farm (1) ─────< Barn (N)
-              └── farm_id FK (implicit — all barns belong to one farm)
-```
+              └── farm_id FK
 
-**Barn is child of Farm** — in current single-farm model, all barns belong to the same farm. For future multi-farm: add `farm_id` column to `barns` table.
-
----
-
-## Top-Level Entity: `Barn` (under Farm)
-
-**Definition**: A physical chicken coop/housing structure.
-
-### Barn Table Fields
-| Field | Type | Description | Purpose |
-|-------|------|-------------|---------|
-| `id` | VARCHAR(50) | Primary key (e.g., "barn-01") | Unique identifier |
-| `name` | VARCHAR(200) | Display name (e.g., "Chuồng 1") | Human-readable label |
-| `number` | INT | Ordinal number (1-9) | Sorting/order |
-| `capacity` | INT | **Số gà tối đa** có thể chứa (con) | Stocking density |
-| `length_m` | DECIMAL(5,2) | Chiều dài (m) | Volume calc, ventilation |
-| `width_m` | DECIMAL(5,2) | Chiều rộng (m) | Volume calc, ventilation |
-| `height_m` | DECIMAL(5,2) | Chiều cao tường (m) | Volume calc, ventilation |
-| `status` | ENUM | 'active' / 'inactive' | Active state |
-| `note` | TEXT | Ghi chú | Notes |
-| `active` | BOOLEAN | Có đang sử dụng không | Soft delete |
-| `created_at` | TIMESTAMPTZ | Creation timestamp | Audit |
-
-### Construction / Investment (CapEx)
-| Field | Type | Description | Purpose |
-|-------|------|-------------|---------|
-| `construction_cost` | DECIMAL(12,2) | Chi phí xây dựng (VND) | Asset valuation, ROI |
-| `construction_year` | INT | Năm xây dựng | Depreciation calc |
-| `expected_lifespan_years` | INT | Tuổi thọ dự kiến (năm) | Depreciation schedule |
-| `construction_type` | VARCHAR(50) | Loại công trình (bê tông/kim loại/gỗ...) | Asset classification |
-
-### Computed Fields (for finance + ventilation)
-| Field | Formula | Description |
-|-------|---------|-------------|
-| `volume_m3` | `length_m × width_m × height_m` | Thể tích barn (m³) |
-| `floor_area_sqm` | `length_m × width_m` | Diện tích sàn (m²) |
-| `birds_per_m3` | `capacity / volume_m3` | Mật độ nuôi (con/m³) |
-| `annual_depreciation` | `construction_cost / expected_lifespan_years` | Khấu hao hàng năm (VND) |
-| `depreciation_per_day` | `annual_depreciation / 365` | Khấu hao theo ngày |
-| `construction_cost_per_bird` | `construction_cost / capacity` | Chi phí xây/gà |
-| `breakeven_cycles` | `construction_cost / avg_profit_per_cycle` | Số chu kỳ hòa vốn |
-
-> **Note**: `barn_id` in `sensor_data` table links sensor readings to the correct barn.
-
-### Current Schema Gap (Local vs Cloud)
-
-| Field | Cloud (MySQL) | Local (PostgreSQL - 003_farm_management.sql) | Sync Status |
-|-------|---------------|----------------------------------------------|-------------|
-| `number` | ✅ tinyint | ❌ Missing | Cloud→Local sync handles |
-| `length_m` | ✅ decimal(5,2) | ❌ Missing | Cloud→Local sync handles |
-| `width_m` | ✅ decimal(5,2) | ❌ Missing | Cloud→Local sync handles |
-| `height_m` | ✅ decimal(5,2) | ❌ Missing | Cloud→Local sync handles |
-| `capacity` | ❌ Not in cloud | ✅ int | Missing (should sync to cloud) |
-| `construction_cost` | ❌ Not in cloud | ❌ Missing | **TODO: add to both** |
-| `construction_year` | ❌ Not in cloud | ❌ Missing | **TODO: add to both** |
-| `expected_lifespan_years` | ❌ Not in cloud | ❌ Missing | **TODO: add to both** |
-| `construction_type` | ❌ Not in cloud | ❌ Missing | **TODO: add to both** |
-| `area_sqm` | ❌ Not in cloud | ✅ float | Can compute from length×width |
-| `description` | ❌ (note exists) | ✅ text | Mapped |
-
-> **Action needed**: Update local `barns` table to include `number`, `length_m`, `width_m`, `height_m` from cloud. Add `construction_cost`, `construction_year`, `lifespan_years` to both schemas.
-
-### Barn Field Groups Summary
-
-| Group | Fields | Purpose |
-|-------|--------|---------|
-| **Identity** | `id`, `name`, `number` | Basic identification |
-| **Physical/Dimension** | `length_m`, `width_m`, `height_m`, `floor_area_sqm`, `volume_m3` | Ventilation, environment calc |
-| **Capacity** | `capacity`, `birds_per_m3` | Stocking density |
-| **Finance/CapEx** | `construction_cost`, `construction_year`, `expected_lifespan_years`, `construction_type`, `annual_depreciation`, `depreciation_per_day` | Asset tracking, ROI |
-| **Status** | `status`, `active`, `note`, `created_at` | Operational state |
-
----
-
-## Direct Children of Barn
-
-### 1. Cycle (`cycles` table)
-- **FK**: `barn_id` → `barns.id`
-- **Relationship**: 1 Barn has many Cycles (historical + active)
-- **Cardinality**: 1:N (one barn can have multiple cycles over time, but only one `status='active'` at a time)
-
-```
 Barn (1) ─────< Cycle (N)
-            └── barn_id FK
-```
-
-### 2. Device (`devices` table)
-- **FK**: `barn_id` → `barns.id`
-- **Relationship**: 1 Barn has many Devices (relay controllers, sensors)
-- **Cardinality**: 1:N
-
-```
 Barn (1) ─────< Device (N)
-            └── barn_id FK
+Barn (1) ─────< Warehouse (N)  -- nullable barn_id (central warehouse)
+Barn (1) ─────< Equipment (N)
+Barn (1) ─────< SensorData (N)
+
+Cycle (1) ────< care_feeds
+Cycle (1) ────< care_deaths
+Cycle (1) ────< care_medications
+Cycle (1) ────< care_sales
+Cycle (1) ────< care_weights
+Cycle (1) ────< weight_reminders
+Cycle (1) ────< cycle_daily_snapshots
+Cycle (1) ────< vaccine_schedules
+Cycle (1) ────< health_notes
+
+Device (1) ───< device_channels
+Device (1) ───< device_states
+Device (1) ───< device_state_log
+Device (1) ───< device_commands
+
+Warehouse (1) ─< inventory
+Warehouse (1) ─< inventory_transactions
+
+SensorData: indexed by device_id + time (TimescaleDB hypertable)
 ```
-
-### 3. Warehouse (`warehouses` table)
-- **FK**: `barn_id` → `barns.id` (nullable, barn-level or central warehouse)
-- **Relationship**: 1 Barn has many Warehouses (feed仓库, medication仓库)
-- **Cardinality**: 1:N (or 0:N if barn_id can be NULL for central warehouses)
-
-```
-Barn (1) ─────< Warehouse (N)
-            └── barn_id FK (nullable)
-```
-
----
-
-## Children of Cycle
-
-Once a Cycle exists, it becomes the parent for all daily farming operations:
-
-```
-Barn ──── Cycle (active) ────< care_feeds
- │                           └── care_deaths
- │                           └── care_medications
- │                           └── care_sales
- │                           └── care_weights (weight_sessions)
- │                           └── weight_reminders
- │                           └── cycle_daily_snapshots
- │                           └── vaccine_schedules
- │                           └── health_notes
-```
-
-### Detail: Cycle Children
-
-| Table | FK to Cycle | Description |
-|-------|-------------|-------------|
-| `care_feeds` | `cycle_id` | Feed log entries (who feeds, how much, when) |
-| `care_deaths` | `cycle_id` | Mortality records (count, cause, date) |
-| `care_medications` | `cycle_id` | Medication/vaccine administration records |
-| `care_sales` | `cycle_id` | Sales records (count sold, weight, price) |
-| `care_weights` | `cycle_id` | Weight measurement sessions |
-| `weight_reminders` | `cycle_id` | Scheduled weight measurement reminders |
-| `cycle_daily_snapshots` | `cycle_id` | Pre-computed daily statistics (alive count, FCR, etc.) |
-| `vaccine_schedules` | `cycle_id` | Scheduled vaccine events for this cycle |
-| `health_notes` | `cycle_id` | Health observations and notes |
-
----
-
-## Children of Warehouse
-
-```
-Warehouse ────< Inventory (stock levels)
-           └──< Inventory_Transactions (all in/out movements)
-```
-
-| Table | FK to Warehouse | Description |
-|-------|-----------------|-------------|
-| `inventory` | `warehouse_id` | Current stock quantity per product |
-| `inventory_transactions` | `warehouse_id` | Import/export/transfer history |
-
----
-
-## Children of Device
-
-```
-Device ────< Device_Channels (relay channels)
-         └──< Device_States (current on/off state)
-         └──< Device_State_Log (state change history)
-         └──< Device_Commands (command history)
-```
-
-| Table | FK to Device | Description |
-|-------|--------------|-------------|
-| `device_channels` | `device_id` | Channel configuration (GPIO, function, name) |
-| `device_states` | `device_id` | Current state per channel |
-| `device_state_log` | `device_id` | State change history (TimescaleDB) |
-| `device_commands` | `device_id` | Commands sent to device |
-
----
-
-## IoT/Sensor Hierarchy (Separate from Barn)
-
-```
-Device ────< Sensor_Data (time-series readings)
-          └──< Curtain_Configs (if device controls curtains)
-```
-
-| Table | FK to Device | Description |
-|-------|--------------|-------------|
-| `sensor_data` | `device_id` | Time-series sensor readings (TimescaleDB hypertable) |
-| `curtain_configs` | `device_id` | Curtain position and timing config |
-
----
-
-## Reference Data (Independent — not under Farm)
-
-These are master data / lookup tables, not children of Farm/Barn:
-
-| Table | Description | Sync |
-|-------|-------------|------|
-| `feed_brands` | Feed manufacturers (CP, GreenFeed, etc.) | Cloud→Local (master) |
-| `feed_types` | Feed product types per brand (starter, grower, finisher) | Cloud→Local |
-| `medications` | Medication/vaccine catalog | Cloud→Local |
-| `suppliers` | Feed/medicine vendors | Bidirectional |
-| `vaccine_programs` | Program templates (e.g., "Chương trình 1") | Cloud→Local |
-| `vaccine_program_items` | Vaccine schedule lines per program | Cloud→Local |
-| `device_types` | Device categories (relay_4ch, relay_8ch, sensor) | Seed data |
-
----
-
-## Sync-Related Tables (Independent)
-
-These tables manage sync state and are not children of any farm entity:
-
-| Table | Purpose |
-|-------|---------|
-| `sync_queue` | Pending changes to push to cloud |
-| `sync_log` | History of sync operations |
-| `sync_config` | Sync configuration settings |
 
 ---
 
@@ -253,28 +55,28 @@ These tables manage sync state and are not children of any farm entity:
 ```
 Farm
 └── Barn
-    ├── Cycle (barn_id)
-    │   ├── care_feeds (cycle_id)
-    │   ├── care_deaths (cycle_id)
-    │   ├── care_medications (cycle_id)
-    │   ├── care_sales (cycle_id)
-    │   ├── care_weights (cycle_id)
-    │   ├── weight_reminders (cycle_id)
-    │   ├── cycle_daily_snapshots (cycle_id)
-    │   ├── vaccine_schedules (cycle_id)
-    │   └── health_notes (cycle_id)
-    ├── Device (barn_id)
-    │   ├── device_channels (device_id)
-    │   ├── device_states (device_id)
-    │   ├── device_state_log (device_id)
-    │   ├── device_commands (device_id)
-    │   ├── sensor_data (device_id)
-    │   └── curtain_configs (device_id)
-    └── Warehouse (barn_id, nullable)
-        ├── inventory (warehouse_id)
-        └── inventory_transactions (warehouse_id)
+    ├── Cycle
+    │   ├── care_feeds
+    │   ├── care_deaths
+    │   ├── care_medications
+    │   ├── care_sales
+    │   ├── care_weights
+    │   ├── weight_reminders
+    │   ├── cycle_daily_snapshots
+    │   ├── vaccine_schedules
+    │   └── health_notes
+    ├── Device
+    │   ├── device_channels
+    │   ├── device_states
+    │   ├── device_state_log
+    │   └── device_commands
+    ├── Warehouse
+    │   ├── inventory
+    │   └── inventory_transactions
+    ├── Equipment
+    └── SensorData
 
-Reference Data (independent, not under Farm):
+Reference Data (independent, Cloud→Local sync):
 ├── feed_brands
 ├── feed_types
 ├── medications
@@ -290,61 +92,604 @@ Sync Infrastructure:
 
 ---
 
-## Field Naming Reference
+## Entity Definitions
 
-### care_feeds
-| Local Field | Cloud Field | Note |
-|-------------|-------------|------|
-| `meal` | `session` | Meal time (morning/afternoon/evening/all_day) |
-| `quantity` | `quantity` (kg) | Amount in kg |
-| `bags` | `bags` | Number of feed bags |
-| `kg_actual` | `kg_actual` | Actual kg dispensed |
-| `remaining_pct` | `remaining_pct` | % remaining in trough |
+### 1. Farm (top-level)
 
-### care_deaths
-| Local Field | Cloud Field | Note |
-|-------------|-------------|------|
-| `count` | `quantity` | Number of deaths |
-| `cause` | `reason` | Cause of death |
+```sql
+CREATE TABLE farms (
+    id VARCHAR(50) PRIMARY KEY,
+    name VARCHAR(200) NOT NULL,
+    address TEXT,
+    contact_name VARCHAR(100),
+    contact_phone VARCHAR(20),
+    contact_email VARCHAR(100),
+    notes TEXT,
+    active BOOLEAN DEFAULT TRUE,
+    created_at TIMESTAMPTZ DEFAULT NOW()
+);
+```
 
-### care_sales
-| Local Field | Cloud Field | Note |
-|-------------|-------------|------|
-| `count` | `quantity` | Number sold |
-| `total_weight` | `weight_kg` | Total weight in kg |
-| `unit_price` | `price_per_kg` | Price per kg |
-| `gender` | `gender` | Male/Female (MISSING in local) |
+---
 
-### care_medications
-| Local Field | Cloud Field | Note |
-|-------------|-------------|------|
-| `product_id` | `medication_id` | Product/medication reference |
-| `quantity` | `quantity` | Dosage amount |
-| `unit` | `unit` | Unit of measurement (MISSING in local) |
+### 2. Barn
 
-### weight_sessions / care_weights
-| Local Field | Cloud Field | Note |
-|-------------|-------------|------|
-| `weigh_date` | `weighed_at` | Date of weighing |
-| `total_weight` | — | Sum of all samples |
-| `sample_count` | `sample_count` | Number of birds weighed |
-| `avg_weight` | `avg_weight_g` | Average weight in grams |
+```sql
+CREATE TABLE barns (
+    id VARCHAR(50) PRIMARY KEY,
+    farm_id VARCHAR(50) DEFAULT 'farm-01',  -- multi-farm ready
+    name VARCHAR(200) NOT NULL,
+    number INT,                     -- 1-9, from cloud
+    capacity INT,                   -- max birds
+    length_m DECIMAL(5,2),         -- meters
+    width_m DECIMAL(5,2),
+    height_m DECIMAL(5,2),
+    construction_cost DECIMAL(12,2),
+    construction_year INT,
+    expected_lifespan_years INT DEFAULT 15,
+    construction_type VARCHAR(50),
+    status VARCHAR(20) DEFAULT 'active',
+    note TEXT,
+    active BOOLEAN DEFAULT TRUE,
+    created_at TIMESTAMPTZ DEFAULT NOW()
+);
+
+-- Computed at query time:
+-- volume_m3 = length_m × width_m × height_m
+-- floor_area_sqm = length_m × width_m
+-- annual_depreciation = construction_cost / expected_lifespan_years
+```
+
+---
+
+### 3. Cycle
+
+```sql
+CREATE TABLE cycles (
+    id SERIAL PRIMARY KEY,
+    barn_id VARCHAR(50) REFERENCES barns(id),
+    name VARCHAR(200) NOT NULL,
+    breed VARCHAR(100),
+    initial_count INT NOT NULL,
+    current_count INT,
+    start_date DATE NOT NULL,
+    expected_end_date DATE,
+    actual_end_date DATE,
+    status VARCHAR(20) DEFAULT 'active',
+    notes TEXT,
+    created_at TIMESTAMPTZ DEFAULT NOW(),
+    updated_at TIMESTAMPTZ DEFAULT NOW()
+);
+-- Only ONE active cycle per barn at a time
+```
+
+---
+
+### 4. Device
+
+```sql
+CREATE TABLE devices (
+    id SERIAL PRIMARY KEY,
+    device_code VARCHAR(100) UNIQUE NOT NULL,
+    device_type_id INT REFERENCES device_types(id),
+    barn_id VARCHAR(50) REFERENCES barns(id),  -- nullable (unassigned)
+    mqtt_topic VARCHAR(200) NOT NULL,
+    name VARCHAR(200),
+    is_online BOOLEAN DEFAULT FALSE,
+    last_heartbeat_at TIMESTAMPTZ,
+    wifi_rssi INT,
+    ip_address VARCHAR(45),
+    firmware_version VARCHAR(50),
+    alert_offline BOOLEAN DEFAULT TRUE,
+    notes TEXT,
+    created_at TIMESTAMPTZ DEFAULT NOW(),
+    updated_at TIMESTAMPTZ DEFAULT NOW()
+);
+
+CREATE TABLE device_channels (
+    id SERIAL PRIMARY KEY,
+    device_id INT REFERENCES devices(id) ON DELETE CASCADE,
+    channel_number INT NOT NULL,
+    function VARCHAR(50),
+    name VARCHAR(100),
+    gpio_pin INT,
+    UNIQUE(device_id, channel_number)
+);
+
+CREATE TABLE device_states (
+    id SERIAL PRIMARY KEY,
+    device_id INT REFERENCES devices(id) ON DELETE CASCADE,
+    channel_number INT NOT NULL,
+    state VARCHAR(20) NOT NULL,
+    updated_at TIMESTAMPTZ DEFAULT NOW(),
+    UNIQUE(device_id, channel_number)
+);
+
+CREATE TABLE device_state_log (
+    time TIMESTAMPTZ NOT NULL,
+    device_id INT NOT NULL,
+    channel_number INT NOT NULL,
+    state VARCHAR(20) NOT NULL,
+    source VARCHAR(50)
+);
+
+CREATE TABLE device_commands (
+    id SERIAL PRIMARY KEY,
+    device_id INT REFERENCES devices(id),
+    command_type VARCHAR(50) NOT NULL,
+    payload JSONB NOT NULL,
+    source VARCHAR(50) DEFAULT 'manual',
+    status VARCHAR(20) DEFAULT 'sent',
+    sent_at TIMESTAMPTZ DEFAULT NOW(),
+    delivered_at TIMESTAMPTZ
+);
+```
+
+---
+
+### 5. Warehouse
+
+```sql
+CREATE TABLE warehouses (
+    id SERIAL PRIMARY KEY,
+    code VARCHAR(50) UNIQUE NOT NULL,
+    name VARCHAR(200) NOT NULL,
+    warehouse_type VARCHAR(20) NOT NULL,  -- 'feed' | 'medication' | 'general'
+    barn_id VARCHAR(50) REFERENCES barns(id),  -- nullable (central warehouse)
+    active BOOLEAN DEFAULT TRUE,
+    created_at TIMESTAMPTZ DEFAULT NOW()
+);
+
+CREATE TABLE inventory (
+    id SERIAL PRIMARY KEY,
+    warehouse_id INT REFERENCES warehouses(id),
+    product_id INT REFERENCES products(id),
+    quantity DOUBLE PRECISION DEFAULT 0,
+    updated_at TIMESTAMPTZ DEFAULT NOW(),
+    UNIQUE(warehouse_id, product_id)
+);
+
+CREATE TABLE inventory_transactions (
+    id SERIAL PRIMARY KEY,
+    warehouse_id INT REFERENCES warehouses(id),
+    product_id INT REFERENCES products(id),
+    transaction_type VARCHAR(20) NOT NULL,  -- 'import' | 'export' | 'transfer'
+    quantity DOUBLE PRECISION NOT NULL,
+    reference_type VARCHAR(50),
+    reference_id INT,
+    from_warehouse_id INT REFERENCES warehouses(id),
+    supplier VARCHAR(200),
+    unit_price DECIMAL(12,2),
+    batch_number VARCHAR(100),
+    expiry_date DATE,
+    notes TEXT,
+    created_by VARCHAR(100),
+    created_at TIMESTAMPTZ DEFAULT NOW()
+);
+```
+
+---
+
+### 6. Equipment (Fixed Assets)
+
+```sql
+CREATE TABLE equipment (
+    id SERIAL PRIMARY KEY,
+    barn_id VARCHAR(50) REFERENCES barns(id),
+    name VARCHAR(200) NOT NULL,
+    equipment_type VARCHAR(50),     -- 'fan' | 'heater' | 'light' | 'sensor' | etc.
+    model VARCHAR(100),
+    serial_no VARCHAR(100),
+    status VARCHAR(20) DEFAULT 'active',  -- 'active' | 'broken' | 'disposed'
+    install_date DATE,
+    warranty_until DATE,
+    purchase_price DECIMAL(12,2),
+    notes TEXT,
+    created_at TIMESTAMPTZ DEFAULT NOW()
+);
+```
+
+---
+
+### 7. SensorData (Time-Series)
+
+```sql
+CREATE TABLE sensor_data (
+    time TIMESTAMPTZ NOT NULL,
+    device_id INT NOT NULL,
+    barn_id VARCHAR(50),           -- denormalized for fast query
+    cycle_id INT,
+    sensor_type VARCHAR(50) NOT NULL,  -- 'temperature' | 'humidity' | 'nh3' | 'co2' | 'wind_speed' | 'wind_direction' | 'rainfall' | 'outdoor_temp' | etc.
+    value DOUBLE PRECISION NOT NULL,
+    unit VARCHAR(20),
+    created_at TIMESTAMPTZ DEFAULT NOW()
+);
+-- TimescaleDB hypertable on 'time'
+-- Index: (device_id, time DESC), (barn_id, time DESC), (sensor_type, time DESC)
+```
+
+---
+
+### 8. Cycle Children (Care Operations)
+
+```sql
+-- Feed logs
+CREATE TABLE care_feeds (
+    id SERIAL PRIMARY KEY,
+    cycle_id INT REFERENCES cycles(id),
+    barn_id VARCHAR(50) REFERENCES barns(id),
+    feed_date DATE NOT NULL,
+    meal VARCHAR(20),              -- 'morning' | 'afternoon' | 'evening' | 'all_day'
+    product_id INT REFERENCES products(id),
+    quantity DOUBLE PRECISION NOT NULL,  -- kg
+    bags DOUBLE PRECISION,
+    kg_actual DOUBLE PRECISION,
+    remaining_pct DOUBLE PRECISION,  -- trough check
+    remaining DOUBLE PRECISION,
+    warehouse_id INT REFERENCES warehouses(id),
+    session VARCHAR(20),           -- sync to cloud: meal→session
+    notes TEXT,
+    created_at TIMESTAMPTZ DEFAULT NOW()
+);
+
+-- Mortality
+CREATE TABLE care_deaths (
+    id SERIAL PRIMARY KEY,
+    cycle_id INT REFERENCES cycles(id),
+    barn_id VARCHAR(50) REFERENCES barns(id),
+    death_date DATE NOT NULL,
+    count INT NOT NULL,
+    cause VARCHAR(200),            -- sync to cloud: cause→reason
+    symptoms TEXT,
+    notes TEXT,
+    created_at TIMESTAMPTZ DEFAULT NOW()
+);
+
+-- Medication
+CREATE TABLE care_medications (
+    id SERIAL PRIMARY KEY,
+    cycle_id INT REFERENCES cycles(id),
+    barn_id VARCHAR(50) REFERENCES barns(id),
+    med_date DATE NOT NULL,
+    med_type VARCHAR(20) NOT NULL,  -- 'vaccine' | 'medication' | 'supplement'
+    product_id INT REFERENCES products(id),
+    quantity DOUBLE PRECISION,
+    dosage DOUBLE PRECISION,
+    unit VARCHAR(20),
+    method VARCHAR(50),
+    warehouse_id INT REFERENCES warehouses(id),
+    purpose TEXT,
+    notes TEXT,
+    created_at TIMESTAMPTZ DEFAULT NOW()
+);
+
+-- Sales
+CREATE TABLE care_sales (
+    id SERIAL PRIMARY KEY,
+    cycle_id INT REFERENCES cycles(id),
+    barn_id VARCHAR(50) REFERENCES barns(id),
+    sale_date DATE NOT NULL,
+    count INT NOT NULL,            -- sync to cloud: count→quantity
+    total_weight DOUBLE PRECISION, -- sync: total_weight→weight_kg
+    avg_weight DOUBLE PRECISION,
+    unit_price DOUBLE PRECISION,   -- sync: unit_price→price_per_kg
+    total_amount DOUBLE PRECISION,
+    gender VARCHAR(20),           -- 'male' | 'female' | 'mixed'
+    buyer VARCHAR(200),
+    sale_type VARCHAR(20) DEFAULT 'sale',
+    notes TEXT,
+    created_at TIMESTAMPTZ DEFAULT NOW()
+);
+
+-- Weight measurements
+CREATE TABLE care_weights (
+    id SERIAL PRIMARY KEY,
+    cycle_id INT REFERENCES cycles(id),
+    barn_id VARCHAR(50) REFERENCES barns(id),
+    weigh_date DATE NOT NULL,
+    sample_count INT NOT NULL,
+    total_weight DOUBLE PRECISION NOT NULL,
+    avg_weight DOUBLE PRECISION GENERATED ALWAYS AS (total_weight / NULLIF(sample_count, 0)) STORED,
+    min_weight DOUBLE PRECISION,
+    max_weight DOUBLE PRECISION,
+    uniformity DOUBLE PRECISION,
+    day_age INT,
+    notes TEXT,
+    created_at TIMESTAMPTZ DEFAULT NOW()
+);
+
+-- Weight reminders
+CREATE TABLE weight_reminders (
+    id SERIAL PRIMARY KEY,
+    cycle_id INT REFERENCES cycles(id),
+    remind_every_days INT DEFAULT 7,
+    next_remind_date DATE,
+    enabled BOOLEAN DEFAULT TRUE,
+    created_at TIMESTAMPTZ DEFAULT NOW()
+);
+
+-- Daily snapshots
+CREATE TABLE cycle_daily_snapshots (
+    id SERIAL PRIMARY KEY,
+    cycle_id INT REFERENCES cycles(id),
+    snapshot_date DATE NOT NULL,
+    day_age INT NOT NULL,
+    alive_count INT,
+    total_deaths INT,
+    daily_deaths INT,
+    mortality_rate DOUBLE PRECISION,
+    daily_feed_kg DOUBLE PRECISION,
+    cumulative_feed_kg DOUBLE PRECISION,
+    avg_weight DOUBLE PRECISION,
+    fcr DOUBLE PRECISION,
+    feed_per_bird DOUBLE PRECISION,
+    avg_temperature DOUBLE PRECISION,
+    avg_humidity DOUBLE PRECISION,
+    notes TEXT,
+    created_at TIMESTAMPTZ DEFAULT NOW(),
+    UNIQUE(cycle_id, snapshot_date)
+);
+
+-- Vaccine schedules
+CREATE TABLE vaccine_schedules (
+    id SERIAL PRIMARY KEY,
+    cycle_id INT REFERENCES cycles(id),
+    program_item_id INT REFERENCES vaccine_program_items(id),
+    vaccine_name VARCHAR(200) NOT NULL,
+    day_age_target INT,
+    scheduled_date DATE,
+    method VARCHAR(50),
+    done BOOLEAN DEFAULT FALSE,
+    done_at TIMESTAMPTZ,
+    skipped BOOLEAN DEFAULT FALSE,
+    skip_reason TEXT,
+    created_at TIMESTAMPTZ DEFAULT NOW()
+);
+
+-- Health notes
+CREATE TABLE health_notes (
+    id SERIAL PRIMARY KEY,
+    cycle_id INT REFERENCES cycles(id),
+    barn_id VARCHAR(50) REFERENCES barns(id),
+    day_age INT,
+    recorded_at TIMESTAMPTZ,
+    symptoms TEXT,
+    severity VARCHAR(20),
+    resolved BOOLEAN DEFAULT FALSE,
+    resolved_at TIMESTAMPTZ,
+    image_path VARCHAR(500),
+    notes TEXT,
+    created_at TIMESTAMPTZ DEFAULT NOW()
+);
+```
+
+---
+
+## Reference Data (Independent)
+
+```sql
+CREATE TABLE feed_brands (
+    id SERIAL PRIMARY KEY,
+    name VARCHAR(200) NOT NULL,
+    kg_per_bag DECIMAL(5,2),
+    note TEXT,
+    status VARCHAR(20) DEFAULT 'active',
+    created_at TIMESTAMPTZ DEFAULT NOW()
+);
+
+CREATE TABLE feed_types (
+    id SERIAL PRIMARY KEY,
+    feed_brand_id INT REFERENCES feed_brands(id),
+    code VARCHAR(50),
+    name VARCHAR(200),
+    price_per_bag DECIMAL(10,2),
+    suggested_stage VARCHAR(50),  -- 'starter' | 'grower' | 'finisher'
+    note TEXT,
+    status VARCHAR(20) DEFAULT 'active',
+    created_at TIMESTAMPTZ DEFAULT NOW()
+);
+
+CREATE TABLE medications (
+    id SERIAL PRIMARY KEY,
+    name VARCHAR(200) NOT NULL,
+    unit VARCHAR(20),
+    category VARCHAR(50),
+    manufacturer VARCHAR(200),
+    price_per_unit DECIMAL(10,2),
+    recommended_dose TEXT,
+    note TEXT,
+    status VARCHAR(20) DEFAULT 'active',
+    created_at TIMESTAMPTZ DEFAULT NOW()
+);
+
+CREATE TABLE suppliers (
+    id SERIAL PRIMARY KEY,
+    name VARCHAR(200) NOT NULL,
+    phone VARCHAR(20),
+    address TEXT,
+    note TEXT,
+    status VARCHAR(20) DEFAULT 'active',
+    created_at TIMESTAMPTZ DEFAULT NOW()
+);
+
+CREATE TABLE products (
+    id SERIAL PRIMARY KEY,
+    code VARCHAR(50) UNIQUE NOT NULL,
+    name VARCHAR(200) NOT NULL,
+    product_type VARCHAR(20) NOT NULL,  -- 'feed' | 'medication' | 'equipment' | 'consumable'
+    unit VARCHAR(20) DEFAULT 'kg',
+    description TEXT,
+    active BOOLEAN DEFAULT TRUE,
+    created_at TIMESTAMPTZ DEFAULT NOW()
+);
+
+CREATE TABLE vaccine_programs (
+    id SERIAL PRIMARY KEY,
+    name VARCHAR(200) NOT NULL,
+    note TEXT,
+    active BOOLEAN DEFAULT TRUE,
+    created_at TIMESTAMPTZ DEFAULT NOW()
+);
+
+CREATE TABLE vaccine_program_items (
+    id SERIAL PRIMARY KEY,
+    program_id INT REFERENCES vaccine_programs(id),
+    vaccine_name VARCHAR(200) NOT NULL,
+    day_age INT NOT NULL,
+    method VARCHAR(50),
+    remind_days INT DEFAULT 1,
+    sort_order INT DEFAULT 0,
+    created_at TIMESTAMPTZ DEFAULT NOW()
+);
+
+CREATE TABLE device_types (
+    id SERIAL PRIMARY KEY,
+    code VARCHAR(50) UNIQUE NOT NULL,
+    name VARCHAR(100) NOT NULL,
+    channel_count INT DEFAULT 0,
+    description TEXT,
+    created_at TIMESTAMPTZ DEFAULT NOW()
+);
+
+CREATE TABLE curtain_configs (
+    id SERIAL PRIMARY KEY,
+    curtain_code VARCHAR(100) UNIQUE NOT NULL,
+    name VARCHAR(200) NOT NULL,
+    barn_id VARCHAR(50) REFERENCES barns(id),
+    device_id INT REFERENCES devices(id),
+    up_channel INT NOT NULL,
+    down_channel INT NOT NULL,
+    full_up_seconds FLOAT DEFAULT 60,
+    full_down_seconds FLOAT DEFAULT 60,
+    current_position INT DEFAULT 0 CHECK (current_position BETWEEN 0 AND 100),
+    created_at TIMESTAMPTZ DEFAULT NOW(),
+    updated_at TIMESTAMPTZ DEFAULT NOW()
+);
+```
+
+---
+
+## Sync Infrastructure
+
+```sql
+CREATE TABLE sync_queue (
+    id SERIAL PRIMARY KEY,
+    table_name VARCHAR(100) NOT NULL,
+    record_id VARCHAR(100) NOT NULL,
+    action VARCHAR(20) NOT NULL,  -- 'insert' | 'update' | 'delete'
+    payload JSONB NOT NULL,
+    synced BOOLEAN DEFAULT FALSE,
+    created_at TIMESTAMPTZ DEFAULT NOW(),
+    synced_at TIMESTAMPTZ
+);
+CREATE INDEX idx_sync_pending ON sync_queue (synced, created_at) WHERE NOT synced;
+
+CREATE TABLE sync_log (
+    id SERIAL PRIMARY KEY,
+    direction VARCHAR(10) NOT NULL,  -- 'push' | 'pull'
+    items_count INT,
+    status VARCHAR(20) NOT NULL,  -- 'ok' | 'error' | 'partial'
+    error_msg TEXT,
+    created_at TIMESTAMPTZ DEFAULT NOW()
+);
+
+CREATE TABLE sync_config (
+    key VARCHAR(100) PRIMARY KEY,
+    value TEXT,
+    updated_at TIMESTAMPTZ DEFAULT NOW()
+);
+```
 
 ---
 
 ## Sync Direction Summary
 
 | Entity | Local → Cloud | Cloud → Local | Notes |
-|--------|----------------|----------------|-------|
-| `barns` | ✅ Push on create/update | ✅ Pull on sync | |
-| `cycles` | ✅ Push on create/update | ✅ Pull on sync | |
-| `devices` | ✅ Push heartbeat states | ✅ Pull on sync | Auto-create from heartbeat |
-| `warehouses` | ❌ Not queued | ❌ Not handled | TODO |
-| `care_feeds` | ✅ Push via queue_change | ✅ Pull | Field mapping: meal→session |
-| `care_deaths` | ✅ Push via queue_change | ✅ Pull | Field mapping: count→quantity, cause→reason |
-| `care_medications` | ✅ Push via queue_change | ✅ Pull | Field mapping: product_id→medication_id |
-| `care_sales` | ✅ Push via queue_change | ✅ Pull | Field mapping: count→quantity, total_weight→weight_kg, unit_price→price_per_kg |
-| `care_weights` | ✅ Push via queue_change | ✅ Pull | |
-| `inventory_transactions` | ✅ Push via queue_change | ❌ Not handled | TODO: pull handler needed |
-| `cycle_daily_snapshots` | ❌ Not synced | ❌ Not handled | Computed locally, not needed |
-| `vaccine_schedules` | ❌ Not queued | ✅ Pull | Created by cloud based on program |
+|--------|---------------|---------------|-------|
+| farms | ✅ Push | ✅ Pull | New entity |
+| barns | ✅ Push | ✅ Pull | Full field sync |
+| cycles | ✅ Push | ✅ Pull | |
+| devices | ✅ Push (heartbeat) | ✅ Pull | Auto-create from heartbeat |
+| device_channels | ✅ Push | ✅ Pull | |
+| device_states | ✅ Push | ✅ Pull | |
+| warehouses | ✅ Push | ✅ Pull | |
+| inventory | ✅ Push | ✅ Pull | |
+| inventory_transactions | ✅ Push | ✅ Pull | |
+| equipment | ✅ Push | ✅ Pull | New entity |
+| sensor_data | ✅ Push | ✅ Pull | All sensor types |
+| care_feeds | ✅ Push | ✅ Pull | meal→session mapping |
+| care_deaths | ✅ Push | ✅ Pull | count→quantity, cause→reason |
+| care_medications | ✅ Push | ✅ Pull | product_id→medication_id |
+| care_sales | ✅ Push | ✅ Pull | count→quantity, total_weight→weight_kg, unit_price→price_per_kg |
+| care_weights | ✅ Push | ✅ Pull | |
+| weight_reminders | ✅ Push | ✅ Pull | |
+| cycle_daily_snapshots | ❌ Not synced | ❌ Not needed | Computed locally |
+| vaccine_schedules | ✅ Push | ✅ Pull | |
+| health_notes | ✅ Push | ✅ Pull | |
+| feed_brands | ❌ (cloud master) | ✅ Pull | Cloud is source |
+| feed_types | ❌ (cloud master) | ✅ Pull | |
+| medications | ❌ (cloud master) | ✅ Pull | |
+| suppliers | ✅ Push | ✅ Pull | Bidirectional |
+| vaccine_programs | ❌ (cloud master) | ✅ Pull | |
+| vaccine_program_items | ❌ (cloud master) | ✅ Pull | |
+| device_types | Seed data | Seed data | |
+
+---
+
+## Field Naming Reference (Local ↔ Cloud)
+
+### care_feeds
+| Local Field | Cloud Field | Note |
+|-------------|-------------|------|
+| `meal` | `session` | Map on sync |
+| `quantity` | `quantity` | Same |
+| `bags` | `bags` | Same |
+| `kg_actual` | `kg_actual` | Same |
+| `remaining_pct` | `remaining_pct` | Same |
+
+### care_deaths
+| Local Field | Cloud Field | Note |
+|-------------|-------------|------|
+| `count` | `quantity` | Map on sync |
+| `cause` | `reason` | Map on sync |
+
+### care_sales
+| Local Field | Cloud Field | Note |
+|-------------|-------------|------|
+| `count` | `quantity` | Map on sync |
+| `total_weight` | `weight_kg` | Map on sync |
+| `unit_price` | `price_per_kg` | Map on sync |
+| `gender` | `gender` | Same |
+
+### care_medications
+| Local Field | Cloud Field | Note |
+|-------------|-------------|------|
+| `product_id` | `medication_id` | Map on sync |
+| `quantity` | `quantity` | Same |
+| `unit` | `unit` | Same |
+
+### sensor_data (merged)
+| Old Cloud Table | New sensor_type | Notes |
+|-----------------|----------------|-------|
+| `env_readings.temperature` | `temperature` | |
+| `env_readings.humidity` | `humidity` | |
+| `env_readings.nh3_ppm` | `nh3` | |
+| `env_readings.co2_ppm` | `co2` | |
+| `env_readings.heat_index` | `heat_index` | |
+| `env_weather.wind_speed_ms` | `wind_speed` | |
+| `env_weather.wind_direction_deg` | `wind_direction` | |
+| `env_weather.is_raining` | `is_raining` | |
+| `env_weather.rainfall_mm` | `rainfall` | |
+| `env_weather.outdoor_temp` | `outdoor_temp` | |
+
+---
+
+## Migration Plan (Cloud Reset)
+
+Since Cloud can be reset, migrations are straightforward:
+
+1. **Drop cloud tables** that don't fit new model
+2. **Create new cloud tables** matching Local schema exactly
+3. **Run sync** to populate Cloud from Local
+
+No data migration needed — clean slate for Cloud.
