@@ -150,17 +150,77 @@ CREATE TABLE cycles (
     barn_id VARCHAR(50) REFERENCES barns(id),
     name VARCHAR(200) NOT NULL,
     breed VARCHAR(100),
+
+    -- Gender split (from cloud)
+    male_quantity INT DEFAULT 0,
+    female_quantity INT DEFAULT 0,
+
+    -- Counts
     initial_count INT NOT NULL,
     current_count INT,
+
+    -- Financial
+    purchase_price DECIMAL(12,2),  -- cost of chicks
+
+    -- Stage
+    stage VARCHAR(20) DEFAULT 'chick',  -- 'chick' | 'grower' | 'adult'
+
+    -- Source
+    flock_source VARCHAR(20),  -- 'local' | 'imported' | 'hatchery'
+
+    -- Dates
     start_date DATE NOT NULL,
     expected_end_date DATE,
     actual_end_date DATE,
+
+    -- Cycle splitting (from cloud)
+    parent_cycle_id INT REFERENCES cycles(id),
+    split_date DATE,
+
+    -- Status
     status VARCHAR(20) DEFAULT 'active',
     notes TEXT,
+
     created_at TIMESTAMPTZ DEFAULT NOW(),
     updated_at TIMESTAMPTZ DEFAULT NOW()
 );
 -- Only ONE active cycle per barn at a time
+```
+
+**Additional tables under Cycle**:
+
+```sql
+-- Weight samples (individual bird weights)
+CREATE TABLE weight_samples (
+    id SERIAL PRIMARY KEY,
+    session_id INT REFERENCES care_weights(id),
+    weight_g INT NOT NULL,
+    created_at TIMESTAMPTZ DEFAULT NOW()
+);
+
+-- Care expenses (feed, medication, labor, utilities)
+CREATE TABLE care_expenses (
+    id SERIAL PRIMARY KEY,
+    cycle_id INT REFERENCES cycles(id),
+    barn_id VARCHAR(50) REFERENCES barns(id),
+    expense_date DATE NOT NULL,
+    expense_type VARCHAR(50) NOT NULL,  -- 'feed' | 'medication' | 'labor' | 'utility' | 'other'
+    amount DECIMAL(12,2) NOT NULL,
+    description TEXT,
+    created_at TIMESTAMPTZ DEFAULT NOW()
+);
+
+-- Litter management
+CREATE TABLE care_litters (
+    id SERIAL PRIMARY KEY,
+    cycle_id INT REFERENCES cycles(id),
+    barn_id VARCHAR(50) REFERENCES barns(id),
+    litter_date DATE NOT NULL,
+    litter_type VARCHAR(50),  -- 'new' | 'top_up' | 'change'
+    quantity_kg DECIMAL(10,2),
+    notes TEXT,
+    created_at TIMESTAMPTZ DEFAULT NOW()
+);
 ```
 
 ---

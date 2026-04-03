@@ -119,24 +119,123 @@ CREATE TABLE equipment (
 
 **Priority**: HIGH
 
-Verify all care tables exist and sync correctly:
+### 4.1 Cycle Schema (Local needs these fields from Cloud)
 
-| Table | Local | Cloud | Sync |
-|-------|-------|-------|------|
-| `cycles` | ✅ | ⬜ Reset | ✅ Handler exists |
-| `care_feeds` | ✅ | ⬜ Reset | ✅ Queue added |
-| `care_deaths` | ✅ | ⬜ Reset | ✅ Queue added |
-| `care_medications` | ✅ | ⬜ Reset | ✅ Queue added |
-| `care_sales` | ✅ | ⬜ Reset | ✅ Queue added |
-| `care_weights` | ✅ | ⬜ Reset | ✅ Queue added |
-| `weight_reminders` | ✅ | ⬜ Reset | Need handler |
-| `cycle_daily_snapshots` | ✅ | ⬜ Reset | No sync needed |
-| `vaccine_schedules` | ✅ | ⬜ Reset | ✅ Pull handler exists |
-| `health_notes` | ✅ | ⬜ Reset | Need handler |
+| Field | Type | Local Status | Cloud Status | Action |
+|-------|------|--------------|-------------|--------|
+| `male_quantity` | INT | ❌ Missing | ✅ | Add to Local |
+| `female_quantity` | INT | ❌ Missing | ✅ | Add to Local |
+| `purchase_price` | DECIMAL(12,2) | ❌ Missing | ✅ | Add to Local |
+| `stage` | VARCHAR(20) | ❌ Missing | ✅ | Add to Local (chick/grower/adult) |
+| `flock_source` | VARCHAR(20) | ❌ Missing | ✅ | Add to Local (local/imported/hatchery) |
+| `parent_cycle_id` | INT FK | ❌ Missing | ✅ | Add to Local (cycle splitting) |
+| `split_date` | DATE | ❌ Missing | ✅ | Add to Local |
+| `barn_id` | FK | ✅ | ❌ Missing | Add to Cloud (critical!) |
 
-**Missing handlers to add**:
-- [ ] `weight_reminders` push to cloud
-- [ ] `health_notes` push to cloud
+**Migration script** (`scripts/017_add_cycle_gender_finance.sql`):
+```sql
+ALTER TABLE cycles ADD COLUMN IF NOT EXISTS male_quantity INT DEFAULT 0;
+ALTER TABLE cycles ADD COLUMN IF NOT EXISTS female_quantity INT DEFAULT 0;
+ALTER TABLE cycles ADD COLUMN IF NOT EXISTS purchase_price DECIMAL(12,2);
+ALTER TABLE cycles ADD COLUMN IF NOT EXISTS stage VARCHAR(20) DEFAULT 'chick';
+ALTER TABLE cycles ADD COLUMN IF NOT EXISTS flock_source VARCHAR(20);
+ALTER TABLE cycles ADD COLUMN IF NOT EXISTS parent_cycle_id INT REFERENCES cycles(id);
+ALTER TABLE cycles ADD COLUMN IF NOT EXISTS split_date DATE;
+```
+
+### 4.2 Care Tables Schema Gaps
+
+**care_deaths** - Add from Cloud:
+| Field | Type | Local Status | Cloud Status |
+|-------|------|--------------|-------------|
+| `death_category` | VARCHAR(20) | ❌ Missing | ✅ disease/accident/weak/unknown |
+| `image_path` | VARCHAR(500) | ❌ Missing | ✅ |
+
+**care_medications** - Add from Cloud:
+| Field | Type | Local Status | Cloud Status |
+|-------|------|--------------|-------------|
+| `dosage` | DECIMAL(10,2) | ❌ Missing | ✅ |
+| `unit` | VARCHAR(50) | ❌ Missing | ✅ |
+
+**care_sales** - Add from Cloud:
+| Field | Type | Local Status | Cloud Status |
+|-------|------|--------------|-------------|
+| `gender` | VARCHAR(20) | ✅ Exists | ✅ male/female/mixed |
+
+### 4.3 New Tables Missing in Local
+
+| Table | Cloud Status | Local Status | Action |
+|-------|-------------|--------------|--------|
+| `weight_samples` | ✅ | ❌ Missing | Create? (per bird weight data) |
+| `care_expenses` | ✅ | ❌ Missing | Create (feed/medicine cost tracking) |
+| `care_litters` | ✅ | ❌ Missing | Create (litter management) |
+
+**weight_samples** (cloud has, local doesn't):
+```sql
+-- Each row = one bird's weight in a session
+CREATE TABLE weight_samples (
+    id SERIAL PRIMARY KEY,
+    session_id INT REFERENCES weight_sessions(id),
+    weight_g INT NOT NULL,  -- grams
+    created_at TIMESTAMPTZ DEFAULT NOW()
+);
+```
+
+**care_expenses** (cloud has, local doesn't):
+```sql
+CREATE TABLE care_expenses (
+    id SERIAL PRIMARY KEY,
+    cycle_id INT REFERENCES cycles(id),
+    barn_id VARCHAR(50) REFERENCES barns(id),
+    expense_date DATE NOT NULL,
+    expense_type VARCHAR(50) NOT NULL,  -- 'feed' | 'medication' | 'labor' | 'utility' | 'other'
+    amount DECIMAL(12,2) NOT NULL,
+    description TEXT,
+    created_at TIMESTAMPTZ DEFAULT NOW()
+);
+```
+
+**care_litters** (cloud has, local doesn't):
+```sql
+CREATE TABLE care_litters (
+    id SERIAL PRIMARY KEY,
+    cycle_id INT REFERENCES cycles(id),
+    barn_id VARCHAR(50) REFERENCES barns(id),
+    litter_date DATE NOT NULL,
+    litter_type VARCHAR(50),  -- 'new' | 'top_up' | 'change'
+    quantity_kg DECIMAL(10,2),
+    notes TEXT,
+    created_at TIMESTAMPTZ DEFAULT NOW()
+);
+```
+
+### 4.4 Sync Handlers to Add
+
+| Handler | Status | Notes |
+|---------|--------|-------|
+| `_sync_weight_reminders` | ⬜ TODO | Push weight_reminders to cloud |
+| `_sync_health_notes` | ⬜ TODO | Push health_notes to cloud |
+| `_sync_care_expenses` | ⬜ TODO | Push care_expenses to cloud |
+| `_sync_care_litters` | ⬜ TODO | Push care_litters to cloud |
+| `_sync_weight_samples` | ⬜ TODO | Push weight_samples to cloud |
+
+### 4.5 Full Cycle Children Summary
+
+| Table | Local | Cloud | Sync | Priority |
+|-------|-------|-------|------|----------|
+| `cycles` | ✅ | ⬜ Reset | ✅ Handler exists | HIGH |
+| `care_feeds` | ✅ | ⬜ Reset | ✅ Queue added | HIGH |
+| `care_deaths` | ✅ (gap) | ⬜ Reset | ✅ Queue added | MEDIUM |
+| `care_medications` | ✅ (gap) | ⬜ Reset | ✅ Queue added | MEDIUM |
+| `care_sales` | ✅ | ⬜ Reset | ✅ Queue added | HIGH |
+| `care_weights` | ✅ | ⬜ Reset | ✅ Queue added | HIGH |
+| `weight_reminders` | ✅ | ⬜ Reset | ⬜ Need handler | MEDIUM |
+| `weight_samples` | ❌ | ✅ | ⬜ TODO | LOW |
+| `cycle_daily_snapshots` | ✅ | ⬜ Reset | ❌ Not synced | LOW |
+| `vaccine_schedules` | ✅ | ⬜ Reset | ✅ Pull handler exists | MEDIUM |
+| `health_notes` | ✅ | ⬜ Reset | ⬜ Need handler | MEDIUM |
+| `care_expenses` | ❌ | ✅ | ⬜ TODO | LOW |
+| `care_litters` | ❌ | ✅ | ⬜ TODO | LOW |
 
 ---
 
