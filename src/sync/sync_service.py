@@ -302,25 +302,72 @@ class SyncService:
 
         # Map cloud tables to local handlers
         handlers = {
-            "barns": self._sync_barns,
-            "cycles": self._sync_cycles,
-            "cycle_splits": self._sync_cycle_splits,
+            # Reference data (Cloud → Local pull)
+            "farms": self._sync_farms,
+            "suppliers": self._sync_suppliers,
+            "products": self._sync_products,
             "feed_brands": self._sync_feed_brands,
             "feed_types": self._sync_feed_types,
             "medications": self._sync_medications,
-            "suppliers": self._sync_suppliers,
             "vaccine_programs": self._sync_vaccine_programs,
             "vaccine_program_items": self._sync_vaccine_program_items,
-            "vaccine_schedules": self._sync_vaccine_schedules,
+            "device_types": self._sync_device_types,
+            "equipment_types": self._sync_equipment_types,
+            "sensor_types": self._sync_sensor_types,
+            # Infrastructure (Cloud → Local pull)
+            "barns": self._sync_barns,
+            "warehouses": self._sync_warehouses,
+            "warehouse_zones": self._sync_warehouse_zones,
+            "devices": self._sync_devices,
+            "device_channels": self._sync_device_channels,
+            "equipment": self._sync_equipment,
+            "sensors": self._sync_sensors,
+            # Operational (Cloud → Local pull)
+            "cycles": self._sync_cycles,
+            "cycle_splits": self._sync_cycle_splits,
+            "cycle_daily_snapshots": self._sync_cycle_daily_snapshots,
+            "cycle_feed_programs": self._sync_cycle_feed_programs,
+            "cycle_feed_program_items": self._sync_cycle_feed_program_items,
+            "cycle_feed_stages": self._sync_cycle_feed_stages,
             "care_feeds": self._sync_care_feeds,
             "care_deaths": self._sync_care_deaths,
             "care_medications": self._sync_care_medications,
-            "weight_sessions": self._sync_weight_sessions,
             "care_sales": self._sync_care_sales,
+            "care_litters": self._sync_care_litters,
+            "care_expenses": self._sync_care_expenses,
+            "care_weights": self._sync_care_weights,
+            "weight_samples": self._sync_weight_samples,
+            "weight_reminders": self._sync_weight_reminders,
+            "feed_trough_checks": self._sync_feed_trough_checks,
             "health_notes": self._sync_health_notes,
-            "devices": self._sync_devices,
+            "vaccine_schedules": self._sync_vaccine_schedules,
+            "curtain_configs": self._sync_curtain_configs,
+            # Inventory (Cloud → Local pull)
+            "inventory": self._sync_inventory,
+            "inventory_transactions": self._sync_inventory_transactions,
+            "inventory_alerts": self._sync_inventory_alerts,
+            "inventory_snapshots": self._sync_inventory_snapshots,
+            "stock_valuation": self._sync_stock_valuation,
+            "purchase_orders": self._sync_purchase_orders,
+            "purchase_order_items": self._sync_purchase_order_items,
+            # Time-series (Cloud → Local pull)
+            "sensor_data": self._sync_sensor_data,
+            "sensor_alerts": self._sync_sensor_alerts,
+            "sensor_daily_summary": self._sync_sensor_daily_summary,
+            "sensor_threshold_configs": self._sync_sensor_threshold_configs,
+            "sensor_calibrations": self._sync_sensor_calibrations,
+            "sensor_maintenance_log": self._sync_sensor_maintenance_log,
+            # Device telemetry (Cloud ← Local push, pulled periodically)
+            "device_states": self._sync_device_states,
+            "device_state_log": self._sync_device_state_log,
+            "device_commands": self._sync_device_commands,
+            "device_telemetry": self._sync_device_telemetry,
+            "device_alerts": self._sync_device_alerts,
+            "device_config_versions": self._sync_device_config_versions,
+            # Legacy
             "firmwares": self._sync_firmwares,
             "notification_rules": self._sync_notification_rules,
+            "weight_sessions": self._sync_weight_sessions,
         }
 
         handler = handlers.get(table)
@@ -659,6 +706,738 @@ class SyncService:
             )
         elif action == "delete":
             await db.execute("DELETE FROM firmwares WHERE id = $1", self._to_int(p["id"]))
+
+    # ═══════════════════════════════════════════════════════════════════════════
+    # NEW TABLE HANDLERS (Cloud → Local pull)
+    # ═══════════════════════════════════════════════════════════════════════════
+
+    # ── Reference Data ──────────────────────────────────
+
+    async def _sync_farms(self, action: str, p: dict):
+        if action in ("insert", "update"):
+            await db.execute(
+                """INSERT INTO farms (id, name, address, contact_name, contact_phone, contact_email, notes, active, created_at)
+                VALUES ($1, $2, $3, $4, $5, $6, $7, $8, COALESCE($9, NOW()))
+                ON CONFLICT (id) DO UPDATE SET
+                    name=$2, address=$3, contact_name=$4, contact_phone=$5,
+                    contact_email=$6, notes=$7, active=$8""",
+                str(p["id"]), p.get("name"), p.get("address"),
+                p.get("contact_name"), p.get("contact_phone"), p.get("contact_email"),
+                p.get("notes"), self._to_bool(p.get("active", True)),
+                self._to_dt(p.get("created_at")),
+            )
+        elif action == "delete":
+            await db.execute("DELETE FROM farms WHERE id = $1", str(p["id"]))
+
+    async def _sync_products(self, action: str, p: dict):
+        if action in ("insert", "update"):
+            await db.execute(
+                """INSERT INTO products (id, code, name, product_type, unit, supplier_id,
+                    price_per_unit, min_stock_alert, reorder_point, barcode, description, active, created_at, updated_at)
+                VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10, $11, $12, COALESCE($13, NOW()), NOW())
+                ON CONFLICT (id) DO UPDATE SET
+                    code=$2, name=$3, product_type=$4, unit=$5, supplier_id=$6,
+                    price_per_unit=$7, min_stock_alert=$8, reorder_point=$9,
+                    barcode=$10, description=$11, active=$12, updated_at=NOW()""",
+                self._to_int(p["id"]), p.get("code"), p.get("name"),
+                p.get("product_type"), p.get("unit"), self._to_int(p.get("supplier_id")),
+                self._to_float(p.get("price_per_unit")), self._to_float(p.get("min_stock_alert")),
+                self._to_float(p.get("reorder_point")), p.get("barcode"),
+                p.get("description"), self._to_bool(p.get("active", True)),
+                self._to_dt(p.get("created_at")),
+            )
+        elif action == "delete":
+            await db.execute("DELETE FROM products WHERE id = $1", self._to_int(p["id"]))
+
+    async def _sync_warehouses(self, action: str, p: dict):
+        if action in ("insert", "update"):
+            await db.execute(
+                """INSERT INTO warehouses (id, farm_id, barn_id, code, name, warehouse_type,
+                    is_central, address, length_m, width_m, height_m, capacity_kg, status, note, created_at)
+                VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10, $11, $12, $13, $14, COALESCE($15, NOW()))
+                ON CONFLICT (id) DO UPDATE SET
+                    farm_id=$2, barn_id=$3, code=$4, name=$5, warehouse_type=$6,
+                    is_central=$7, address=$8, length_m=$9, width_m=$10, height_m=$11,
+                    capacity_kg=$12, status=$13, note=$14""",
+                str(p["id"]), p.get("farm_id"), p.get("barn_id"),
+                p.get("code"), p.get("name"), p.get("warehouse_type"),
+                self._to_bool(p.get("is_central", False)), p.get("address"),
+                self._to_float(p.get("length_m")), self._to_float(p.get("width_m")),
+                self._to_float(p.get("height_m")), self._to_float(p.get("capacity_kg")),
+                p.get("status", "active"), p.get("note"),
+                self._to_dt(p.get("created_at")),
+            )
+        elif action == "delete":
+            await db.execute("DELETE FROM warehouses WHERE id = $1", str(p["id"]))
+
+    async def _sync_warehouse_zones(self, action: str, p: dict):
+        if action in ("insert", "update"):
+            await db.execute(
+                """INSERT INTO warehouse_zones (id, warehouse_id, name, zone_type, created_at)
+                VALUES ($1, $2, $3, $4, COALESCE($5, NOW()))
+                ON CONFLICT (id) DO UPDATE SET
+                    warehouse_id=$2, name=$3, zone_type=$4""",
+                self._to_int(p["id"]), p.get("warehouse_id"), p.get("name"),
+                p.get("zone_type"), self._to_dt(p.get("created_at")),
+            )
+        elif action == "delete":
+            await db.execute("DELETE FROM warehouse_zones WHERE id = $1", self._to_int(p["id"]))
+
+    async def _sync_purchase_orders(self, action: str, p: dict):
+        if action in ("insert", "update"):
+            await db.execute(
+                """INSERT INTO purchase_orders (id, supplier_id, order_number, order_date,
+                    expected_delivery_date, total_amount, status, note, created_at)
+                VALUES ($1, $2, $3, $4, $5, $6, $7, $8, COALESCE($9, NOW()))
+                ON CONFLICT (id) DO UPDATE SET
+                    supplier_id=$2, order_number=$3, order_date=$4,
+                    expected_delivery_date=$5, total_amount=$6, status=$7, note=$8""",
+                self._to_int(p["id"]), self._to_int(p.get("supplier_id")),
+                p.get("order_number"), self._to_dt(p.get("order_date")),
+                self._to_dt(p.get("expected_delivery_date")),
+                self._to_float(p.get("total_amount")), p.get("status", "pending"),
+                p.get("note"), self._to_dt(p.get("created_at")),
+            )
+        elif action == "delete":
+            await db.execute("DELETE FROM purchase_orders WHERE id = $1", self._to_int(p["id"]))
+
+    async def _sync_purchase_order_items(self, action: str, p: dict):
+        if action in ("insert", "update"):
+            await db.execute(
+                """INSERT INTO purchase_order_items (id, purchase_order_id, product_id,
+                    quantity, unit_price, received_quantity, line_total)
+                VALUES ($1, $2, $3, $4, $5, $6, $7)
+                ON CONFLICT (id) DO UPDATE SET
+                    purchase_order_id=$2, product_id=$3,
+                    quantity=$4, unit_price=$5, received_quantity=$6, line_total=$7""",
+                self._to_int(p["id"]), self._to_int(p.get("purchase_order_id")),
+                self._to_int(p.get("product_id")), self._to_float(p.get("quantity")),
+                self._to_float(p.get("unit_price")), self._to_float(p.get("received_quantity")),
+                self._to_float(p.get("line_total")),
+            )
+        elif action == "delete":
+            await db.execute("DELETE FROM purchase_order_items WHERE id = $1", self._to_int(p["id"]))
+
+    # ── Infrastructure ──────────────────────────────────
+
+    async def _sync_device_types(self, action: str, p: dict):
+        if action in ("insert", "update"):
+            await db.execute(
+                """INSERT INTO device_types (id, code, name, mqtt_protocol, relay_count, config_template, created_at)
+                VALUES ($1, $2, $3, $4, $5, $6, COALESCE($7, NOW()))
+                ON CONFLICT (id) DO UPDATE SET
+                    code=$2, name=$3, mqtt_protocol=$4, relay_count=$5, config_template=$6""",
+                self._to_int(p["id"]), p.get("code"), p.get("name"),
+                p.get("mqtt_protocol"), self._to_int(p.get("relay_count")),
+                p.get("config_template"), self._to_dt(p.get("created_at")),
+            )
+        elif action == "delete":
+            await db.execute("DELETE FROM device_types WHERE id = $1", self._to_int(p["id"]))
+
+    async def _sync_equipment_types(self, action: str, p: dict):
+        if action in ("insert", "update"):
+            await db.execute(
+                """INSERT INTO equipment_types (id, code, name, category, mqtt_protocol, config_schema, created_at)
+                VALUES ($1, $2, $3, $4, $5, $6, COALESCE($7, NOW()))
+                ON CONFLICT (id) DO UPDATE SET
+                    code=$2, name=$3, category=$4, mqtt_protocol=$5, config_schema=$6""",
+                self._to_int(p["id"]), p.get("code"), p.get("name"),
+                p.get("category"), p.get("mqtt_protocol"),
+                p.get("config_schema"), self._to_dt(p.get("created_at")),
+            )
+        elif action == "delete":
+            await db.execute("DELETE FROM equipment_types WHERE id = $1", self._to_int(p["id"]))
+
+    async def _sync_sensor_types(self, action: str, p: dict):
+        if action in ("insert", "update"):
+            await db.execute(
+                """INSERT INTO sensor_types (id, code, name, unit, data_type, typical_range, created_at)
+                VALUES ($1, $2, $3, $4, $5, $6, COALESCE($7, NOW()))
+                ON CONFLICT (id) DO UPDATE SET
+                    code=$2, name=$3, unit=$4, data_type=$5, typical_range=$6""",
+                self._to_int(p["id"]), p.get("code"), p.get("name"),
+                p.get("unit"), p.get("data_type", "numeric"),
+                p.get("typical_range"), self._to_dt(p.get("created_at")),
+            )
+        elif action == "delete":
+            await db.execute("DELETE FROM sensor_types WHERE id = $1", self._to_int(p["id"]))
+
+    async def _sync_device_channels(self, action: str, p: dict):
+        if action in ("insert", "update"):
+            await db.execute(
+                """INSERT INTO device_channels (id, device_id, channel_index, channel_type,
+                    function, equipment_id, relay_type, pwm_frequency, created_at)
+                VALUES ($1, $2, $3, $4, $5, $6, $7, $8, COALESCE($9, NOW()))
+                ON CONFLICT (id) DO UPDATE SET
+                    device_id=$2, channel_index=$3, channel_type=$4,
+                    function=$5, equipment_id=$6, relay_type=$7, pwm_frequency=$8""",
+                self._to_int(p["id"]), self._to_int(p.get("device_id")),
+                self._to_int(p.get("channel_index")), p.get("channel_type"),
+                p.get("function"), self._to_int(p.get("equipment_id")),
+                p.get("relay_type"), self._to_int(p.get("pwm_frequency")),
+                self._to_dt(p.get("created_at")),
+            )
+        elif action == "delete":
+            await db.execute("DELETE FROM device_channels WHERE id = $1", self._to_int(p["id"]))
+
+    async def _sync_equipment(self, action: str, p: dict):
+        if action in ("insert", "update"):
+            await db.execute(
+                """INSERT INTO equipment (id, barn_id, equipment_type_id, name, equipment_type,
+                    model, serial_no, power_watts, status, install_date, warranty_until,
+                    purchase_price, runtime_hours, energy_consumption_kwh, maintenance_interval_days,
+                    notes, created_at)
+                VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10, $11, $12, $13, $14, $15, $16, COALESCE($17, NOW()))
+                ON CONFLICT (id) DO UPDATE SET
+                    barn_id=$2, equipment_type_id=$3, name=$4, equipment_type=$5,
+                    model=$6, serial_no=$7, power_watts=$8, status=$9,
+                    install_date=$10, warranty_until=$11, purchase_price=$12,
+                    runtime_hours=$13, energy_consumption_kwh=$14, maintenance_interval_days=$15, notes=$16""",
+                self._to_int(p["id"]), p.get("barn_id"), self._to_int(p.get("equipment_type_id")),
+                p.get("name"), p.get("equipment_type"), p.get("model"), p.get("serial_no"),
+                self._to_int(p.get("power_watts")), p.get("status", "active"),
+                self._to_dt(p.get("install_date")), self._to_dt(p.get("warranty_until")),
+                self._to_float(p.get("purchase_price")), self._to_float(p.get("runtime_hours")),
+                self._to_float(p.get("energy_consumption_kwh")),
+                self._to_int(p.get("maintenance_interval_days")), p.get("notes"),
+                self._to_dt(p.get("created_at")),
+            )
+        elif action == "delete":
+            await db.execute("DELETE FROM equipment WHERE id = $1", self._to_int(p["id"]))
+
+    async def _sync_equipment_parts(self, action: str, p: dict):
+        if action in ("insert", "update"):
+            await db.execute(
+                """INSERT INTO equipment_parts (id, equipment_id, part_name, part_code,
+                    replacement_interval_hours, last_replaced_at, next_replacement_at, notes)
+                VALUES ($1, $2, $3, $4, $5, $6, $7, $8)
+                ON CONFLICT (id) DO UPDATE SET
+                    equipment_id=$2, part_name=$3, part_code=$4,
+                    replacement_interval_hours=$5, last_replaced_at=$6, next_replacement_at=$7, notes=$8""",
+                self._to_int(p["id"]), self._to_int(p.get("equipment_id")),
+                p.get("part_name"), p.get("part_code"),
+                self._to_int(p.get("replacement_interval_hours")),
+                self._to_dt(p.get("last_replaced_at")),
+                self._to_dt(p.get("next_replacement_at")), p.get("notes"),
+            )
+        elif action == "delete":
+            await db.execute("DELETE FROM equipment_parts WHERE id = $1", self._to_int(p["id"]))
+
+    async def _sync_sensors(self, action: str, p: dict):
+        if action in ("insert", "update"):
+            await db.execute(
+                """INSERT INTO sensors (id, sensor_type_id, barn_id, device_id, name, location,
+                    calibration_date, reading_interval_seconds, status, notes, created_at)
+                VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10, COALESCE($11, NOW()))
+                ON CONFLICT (id) DO UPDATE SET
+                    sensor_type_id=$2, barn_id=$3, device_id=$4, name=$5, location=$6,
+                    calibration_date=$7, reading_interval_seconds=$8, status=$9, notes=$10""",
+                self._to_int(p["id"]), self._to_int(p.get("sensor_type_id")),
+                p.get("barn_id"), self._to_int(p.get("device_id")),
+                p.get("name"), p.get("location"),
+                self._to_dt(p.get("calibration_date")),
+                self._to_int(p.get("reading_interval_seconds", 60)),
+                p.get("status", "active"), p.get("notes"),
+                self._to_dt(p.get("created_at")),
+            )
+        elif action == "delete":
+            await db.execute("DELETE FROM sensors WHERE id = $1", self._to_int(p["id"]))
+
+    # ── Care & Operational Records ───────────────────────
+
+    async def _sync_care_litters(self, action: str, p: dict):
+        if action in ("insert", "update"):
+            await db.execute(
+                """INSERT INTO care_litters (id, cycle_id, barn_id, litter_date, litter_type,
+                    product_id, quantity_kg, notes, created_at)
+                VALUES ($1, $2, $3, $4, $5, $6, $7, $8, COALESCE($9, NOW()))
+                ON CONFLICT (id) DO UPDATE SET
+                    cycle_id=$2, barn_id=$3, litter_date=$4, litter_type=$5,
+                    product_id=$6, quantity_kg=$7, notes=$8""",
+                self._to_int(p["id"]), self._to_int(p.get("cycle_id")),
+                p.get("barn_id"), self._to_dt(p.get("litter_date")),
+                p.get("litter_type"), self._to_int(p.get("product_id")),
+                self._to_float(p.get("quantity_kg")), p.get("notes"),
+                self._to_dt(p.get("created_at")),
+            )
+        elif action == "delete":
+            await db.execute("DELETE FROM care_litters WHERE id = $1", self._to_int(p["id"]))
+
+    async def _sync_care_expenses(self, action: str, p: dict):
+        if action in ("insert", "update"):
+            await db.execute(
+                """INSERT INTO care_expenses (id, cycle_id, barn_id, expense_date, expense_type,
+                    amount, description, created_at)
+                VALUES ($1, $2, $3, $4, $5, $6, $7, COALESCE($8, NOW()))
+                ON CONFLICT (id) DO UPDATE SET
+                    cycle_id=$2, barn_id=$3, expense_date=$4, expense_type=$5,
+                    amount=$6, description=$7""",
+                self._to_int(p["id"]), self._to_int(p.get("cycle_id")),
+                p.get("barn_id"), self._to_dt(p.get("expense_date")),
+                p.get("expense_type"), self._to_float(p.get("amount")),
+                p.get("description"), self._to_dt(p.get("created_at")),
+            )
+        elif action == "delete":
+            await db.execute("DELETE FROM care_expenses WHERE id = $1", self._to_int(p["id"]))
+
+    async def _sync_care_weights(self, action: str, p: dict):
+        if action in ("insert", "update"):
+            await db.execute(
+                """INSERT INTO care_weights (id, cycle_id, barn_id, day_age, sample_count,
+                    avg_weight_g, weighed_at, created_at)
+                VALUES ($1, $2, $3, $4, $5, $6, $7, COALESCE($8, NOW()))
+                ON CONFLICT (id) DO UPDATE SET
+                    cycle_id=$2, barn_id=$3, day_age=$4, sample_count=$5,
+                    avg_weight_g=$6, weighed_at=$7""",
+                self._to_int(p["id"]), self._to_int(p.get("cycle_id")),
+                p.get("barn_id"), self._to_int(p.get("day_age")),
+                self._to_int(p.get("sample_count")), self._to_float(p.get("avg_weight_g")),
+                self._to_dt(p.get("weighed_at")), self._to_dt(p.get("created_at")),
+            )
+        elif action == "delete":
+            await db.execute("DELETE FROM care_weights WHERE id = $1", self._to_int(p["id"]))
+
+    async def _sync_weight_samples(self, action: str, p: dict):
+        if action in ("insert", "update"):
+            await db.execute(
+                """INSERT INTO weight_samples (id, session_id, weight_g, created_at)
+                VALUES ($1, $2, $3, COALESCE($4, NOW()))
+                ON CONFLICT (id) DO UPDATE SET
+                    session_id=$2, weight_g=$3""",
+                self._to_int(p["id"]), self._to_int(p.get("session_id")),
+                self._to_int(p.get("weight_g")), self._to_dt(p.get("created_at")),
+            )
+        elif action == "delete":
+            await db.execute("DELETE FROM weight_samples WHERE id = $1", self._to_int(p["id"]))
+
+    async def _sync_weight_reminders(self, action: str, p: dict):
+        if action in ("insert", "update"):
+            await db.execute(
+                """INSERT INTO weight_reminders (id, cycle_id, barn_id, remind_date, reminded, created_at)
+                VALUES ($1, $2, $3, $4, $5, COALESCE($6, NOW()))
+                ON CONFLICT (id) DO UPDATE SET
+                    cycle_id=$2, barn_id=$3, remind_date=$4, reminded=$5""",
+                self._to_int(p["id"]), self._to_int(p.get("cycle_id")),
+                p.get("barn_id"), self._to_dt(p.get("remind_date")),
+                self._to_bool(p.get("reminded", False)),
+                self._to_dt(p.get("created_at")),
+            )
+        elif action == "delete":
+            await db.execute("DELETE FROM weight_reminders WHERE id = $1", self._to_int(p["id"]))
+
+    async def _sync_feed_trough_checks(self, action: str, p: dict):
+        if action in ("insert", "update"):
+            await db.execute(
+                """INSERT INTO feed_trough_checks (id, cycle_id, barn_id, ref_feed_id,
+                    remaining_pct, checked_at, notes)
+                VALUES ($1, $2, $3, $4, $5, $6, $7)
+                ON CONFLICT (id) DO UPDATE SET
+                    cycle_id=$2, barn_id=$3, ref_feed_id=$4,
+                    remaining_pct=$5, checked_at=$6, notes=$7""",
+                self._to_int(p["id"]), self._to_int(p.get("cycle_id")),
+                p.get("barn_id"), self._to_int(p.get("ref_feed_id")),
+                self._to_int(p.get("remaining_pct")), self._to_dt(p.get("checked_at")),
+                p.get("notes"),
+            )
+        elif action == "delete":
+            await db.execute("DELETE FROM feed_trough_checks WHERE id = $1", self._to_int(p["id"]))
+
+    async def _sync_curtain_configs(self, action: str, p: dict):
+        if action in ("insert", "update"):
+            await db.execute(
+                """INSERT INTO curtain_configs (id, curtain_code, name, barn_id, width_m, height_m,
+                    fabric_type, motor_power_watts, device_id, up_channel, down_channel,
+                    full_up_seconds, full_down_seconds, current_position, auto_control_enabled,
+                    min_position, max_position, wind_speed_max_kmh, note, created_at, updated_at)
+                VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10, $11, $12, $13, $14, $15, $16, $17, $18, $19, COALESCE($20, NOW()), NOW())
+                ON CONFLICT (id) DO UPDATE SET
+                    curtain_code=$2, name=$3, barn_id=$4, width_m=$5, height_m=$6,
+                    fabric_type=$7, motor_power_watts=$8, device_id=$9, up_channel=$10, down_channel=$11,
+                    full_up_seconds=$12, full_down_seconds=$13, current_position=$14, auto_control_enabled=$15,
+                    min_position=$16, max_position=$17, wind_speed_max_kmh=$18, note=$19, updated_at=NOW()""",
+                self._to_int(p["id"]), p.get("curtain_code"), p.get("name"), p.get("barn_id"),
+                self._to_float(p.get("width_m")), self._to_float(p.get("height_m")),
+                p.get("fabric_type"), self._to_int(p.get("motor_power_watts")),
+                self._to_int(p.get("device_id")), self._to_int(p.get("up_channel")),
+                self._to_int(p.get("down_channel")),
+                self._to_float(p.get("full_up_seconds", 60)), self._to_float(p.get("full_down_seconds", 60)),
+                self._to_int(p.get("current_position", 0)), self._to_bool(p.get("auto_control_enabled", False)),
+                self._to_int(p.get("min_position", 0)), self._to_int(p.get("max_position", 100)),
+                self._to_float(p.get("wind_speed_max_kmh")), p.get("note"),
+                self._to_dt(p.get("created_at")),
+            )
+        elif action == "delete":
+            await db.execute("DELETE FROM curtain_configs WHERE id = $1", self._to_int(p["id"]))
+
+    # ── Cycle Feed Programs ──────────────────────────────
+
+    async def _sync_cycle_feed_programs(self, action: str, p: dict):
+        if action in ("insert", "update"):
+            await db.execute(
+                """INSERT INTO cycle_feed_programs (id, cycle_id, feed_brand_id, name, created_at)
+                VALUES ($1, $2, $3, $4, COALESCE($5, NOW()))
+                ON CONFLICT (id) DO UPDATE SET
+                    cycle_id=$2, feed_brand_id=$3, name=$4""",
+                self._to_int(p["id"]), self._to_int(p.get("cycle_id")),
+                self._to_int(p.get("feed_brand_id")), p.get("name"),
+                self._to_dt(p.get("created_at")),
+            )
+        elif action == "delete":
+            await db.execute("DELETE FROM cycle_feed_programs WHERE id = $1", self._to_int(p["id"]))
+
+    async def _sync_cycle_feed_program_items(self, action: str, p: dict):
+        if action in ("insert", "update"):
+            await db.execute(
+                """INSERT INTO cycle_feed_program_items (id, cycle_feed_program_id, inventory_item_id, stage, status, created_at)
+                VALUES ($1, $2, $3, $4, $5, COALESCE($6, NOW()))
+                ON CONFLICT (id) DO UPDATE SET
+                    cycle_feed_program_id=$2, inventory_item_id=$3, stage=$4, status=$5""",
+                self._to_int(p["id"]), self._to_int(p.get("cycle_feed_program_id")),
+                self._to_int(p.get("inventory_item_id")), p.get("stage"),
+                p.get("status", "active"), self._to_dt(p.get("created_at")),
+            )
+        elif action == "delete":
+            await db.execute("DELETE FROM cycle_feed_program_items WHERE id = $1", self._to_int(p["id"]))
+
+    async def _sync_cycle_feed_stages(self, action: str, p: dict):
+        if action in ("insert", "update"):
+            await db.execute(
+                """INSERT INTO cycle_feed_stages (id, cycle_id, stage, primary_feed_type_id,
+                    mix_feed_type_id, mix_ratio, effective_date, created_at)
+                VALUES ($1, $2, $3, $4, $5, $6, $7, COALESCE($8, NOW()))
+                ON CONFLICT (id) DO UPDATE SET
+                    cycle_id=$2, stage=$3, primary_feed_type_id=$4,
+                    mix_feed_type_id=$5, mix_ratio=$6, effective_date=$7""",
+                self._to_int(p["id"]), self._to_int(p.get("cycle_id")),
+                p.get("stage"), self._to_int(p.get("primary_feed_type_id")),
+                self._to_int(p.get("mix_feed_type_id")), self._to_int(p.get("mix_ratio")),
+                self._to_dt(p.get("effective_date")), self._to_dt(p.get("created_at")),
+            )
+        elif action == "delete":
+            await db.execute("DELETE FROM cycle_feed_stages WHERE id = $1", self._to_int(p["id"]))
+
+    async def _sync_cycle_daily_snapshots(self, action: str, p: dict):
+        if action in ("insert", "update"):
+            await db.execute(
+                """INSERT INTO cycle_daily_snapshots (id, cycle_id, date, day_age, alive_male,
+                    alive_female, alive_total, bird_days_cumulative, feed_poured_kg, feed_consumed_kg,
+                    feed_cumulative_kg, avg_weight_g, biomass_kg, weight_produced_kg, fcr,
+                    mortality_count, sales_count, created_at)
+                VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10, $11, $12, $13, $14, $15, $16, $17, COALESCE($18, NOW()))
+                ON CONFLICT (id) DO UPDATE SET
+                    cycle_id=$2, date=$3, day_age=$4, alive_male=$5,
+                    alive_female=$6, alive_total=$7, bird_days_cumulative=$8,
+                    feed_poured_kg=$9, feed_consumed_kg=$10, feed_cumulative_kg=$11,
+                    avg_weight_g=$12, biomass_kg=$13, weight_produced_kg=$14, fcr=$15,
+                    mortality_count=$16, sales_count=$17""",
+                self._to_int(p["id"]), self._to_int(p.get("cycle_id")),
+                self._to_dt(p.get("date")), self._to_int(p.get("day_age")),
+                self._to_int(p.get("alive_male")), self._to_int(p.get("alive_female")),
+                self._to_int(p.get("alive_total")), self._to_float(p.get("bird_days_cumulative")),
+                self._to_float(p.get("feed_poured_kg")), self._to_float(p.get("feed_consumed_kg")),
+                self._to_float(p.get("feed_cumulative_kg")), self._to_float(p.get("avg_weight_g")),
+                self._to_float(p.get("biomass_kg")), self._to_float(p.get("weight_produced_kg")),
+                self._to_float(p.get("fcr")), self._to_int(p.get("mortality_count")),
+                self._to_int(p.get("sales_count")), self._to_dt(p.get("created_at")),
+            )
+        elif action == "delete":
+            await db.execute("DELETE FROM cycle_daily_snapshots WHERE id = $1", self._to_int(p["id"]))
+
+    # ── Inventory ─────────────────────────────────────
+
+    async def _sync_inventory(self, action: str, p: dict):
+        if action in ("insert", "update"):
+            await db.execute(
+                """INSERT INTO inventory (id, warehouse_id, product_id, batch_number,
+                    quantity, reserved_quantity, expiry_date, created_at, updated_at)
+                VALUES ($1, $2, $3, $4, $5, $6, $7, COALESCE($8, NOW()), NOW())
+                ON CONFLICT (id) DO UPDATE SET
+                    warehouse_id=$2, product_id=$3, batch_number=$4,
+                    quantity=$5, reserved_quantity=$6, expiry_date=$7, updated_at=NOW()""",
+                self._to_int(p["id"]), p.get("warehouse_id"),
+                self._to_int(p.get("product_id")), p.get("batch_number"),
+                self._to_float(p.get("quantity")), self._to_float(p.get("reserved_quantity")),
+                self._to_dt(p.get("expiry_date")), self._to_dt(p.get("created_at")),
+            )
+        elif action == "delete":
+            await db.execute("DELETE FROM inventory WHERE id = $1", self._to_int(p["id"]))
+
+    async def _sync_inventory_transactions(self, action: str, p: dict):
+        if action in ("insert", "update"):
+            await db.execute(
+                """INSERT INTO inventory_transactions (id, product_id, warehouse_id, txn_type,
+                    quantity, reference_type, reference_id, barn_id, cycle_id,
+                    unit_price, total_amount, recorded_at, note)
+                VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10, $11, $12, $13)
+                ON CONFLICT (id) DO UPDATE SET
+                    product_id=$2, warehouse_id=$3, txn_type=$4,
+                    quantity=$5, reference_type=$6, reference_id=$7,
+                    barn_id=$8, cycle_id=$9, unit_price=$10, total_amount=$11, recorded_at=$12, note=$13""",
+                self._to_int(p["id"]), self._to_int(p.get("product_id")),
+                p.get("warehouse_id"), p.get("txn_type"),
+                self._to_float(p.get("quantity")), p.get("reference_type"),
+                self._to_int(p.get("reference_id")), p.get("barn_id"),
+                self._to_int(p.get("cycle_id")), self._to_float(p.get("unit_price")),
+                self._to_float(p.get("total_amount")), self._to_dt(p.get("recorded_at")),
+                p.get("note"),
+            )
+        elif action == "delete":
+            await db.execute("DELETE FROM inventory_transactions WHERE id = $1", self._to_int(p["id"]))
+
+    async def _sync_inventory_alerts(self, action: str, p: dict):
+        if action in ("insert", "update"):
+            await db.execute(
+                """INSERT INTO inventory_alerts (id, inventory_id, alert_type, message,
+                    acknowledged, acknowledged_by, acknowledged_at, created_at)
+                VALUES ($1, $2, $3, $4, $5, $6, $7, COALESCE($8, NOW()))
+                ON CONFLICT (id) DO UPDATE SET
+                    inventory_id=$2, alert_type=$3, message=$4,
+                    acknowledged=$5, acknowledged_by=$6, acknowledged_at=$7""",
+                self._to_int(p["id"]), self._to_int(p.get("inventory_id")),
+                p.get("alert_type"), p.get("message"),
+                self._to_bool(p.get("acknowledged", False)), p.get("acknowledged_by"),
+                self._to_dt(p.get("acknowledged_at")), self._to_dt(p.get("created_at")),
+            )
+        elif action == "delete":
+            await db.execute("DELETE FROM inventory_alerts WHERE id = $1", self._to_int(p["id"]))
+
+    async def _sync_inventory_snapshots(self, action: str, p: dict):
+        if action in ("insert", "update"):
+            await db.execute(
+                """INSERT INTO inventory_snapshots (id, warehouse_id, snapshot_date,
+                    total_items, total_quantity, total_value, created_at)
+                VALUES ($1, $2, $3, $4, $5, $6, COALESCE($7, NOW()))
+                ON CONFLICT (id) DO UPDATE SET
+                    warehouse_id=$2, snapshot_date=$3,
+                    total_items=$4, total_quantity=$5, total_value=$6""",
+                self._to_int(p["id"]), p.get("warehouse_id"),
+                self._to_dt(p.get("snapshot_date")), self._to_int(p.get("total_items")),
+                self._to_float(p.get("total_quantity")), self._to_float(p.get("total_value")),
+                self._to_dt(p.get("created_at")),
+            )
+        elif action == "delete":
+            await db.execute("DELETE FROM inventory_snapshots WHERE id = $1", self._to_int(p["id"]))
+
+    async def _sync_stock_valuation(self, action: str, p: dict):
+        if action in ("insert", "update"):
+            await db.execute(
+                """INSERT INTO stock_valuation (id, warehouse_id, product_id, valuation_date,
+                    quantity, unit_cost, total_value, created_at)
+                VALUES ($1, $2, $3, $4, $5, $6, $7, COALESCE($8, NOW()))
+                ON CONFLICT (id) DO UPDATE SET
+                    warehouse_id=$2, product_id=$3, valuation_date=$4,
+                    quantity=$5, unit_cost=$6, total_value=$7""",
+                self._to_int(p["id"]), p.get("warehouse_id"),
+                self._to_int(p.get("product_id")), self._to_dt(p.get("valuation_date")),
+                self._to_float(p.get("quantity")), self._to_float(p.get("unit_cost")),
+                self._to_float(p.get("total_value")), self._to_dt(p.get("created_at")),
+            )
+        elif action == "delete":
+            await db.execute("DELETE FROM stock_valuation WHERE id = $1", self._to_int(p["id"]))
+
+    # ── Sensor Data ────────────────────────────────────
+
+    async def _sync_sensor_data(self, action: str, p: dict):
+        if action in ("insert", "update"):
+            await db.execute(
+                """INSERT INTO sensor_data (id, sensor_id, barn_id, cycle_id, day_age,
+                    sensor_type, value, quality, recorded_at)
+                VALUES ($1, $2, $3, $4, $5, $6, $7, $8, COALESCE($9, NOW()))
+                ON CONFLICT (id) DO UPDATE SET
+                    sensor_id=$2, barn_id=$3, cycle_id=$4, day_age=$5,
+                    sensor_type=$6, value=$7, quality=$8, recorded_at=$9""",
+                self._to_int(p["id"]), self._to_int(p.get("sensor_id")),
+                p.get("barn_id"), self._to_int(p.get("cycle_id")),
+                self._to_int(p.get("day_age")), p.get("sensor_type"),
+                self._to_float(p.get("value")), p.get("quality", "good"),
+                self._to_dt(p.get("recorded_at")),
+            )
+        elif action == "delete":
+            await db.execute("DELETE FROM sensor_data WHERE id = $1", self._to_int(p["id"]))
+
+    async def _sync_sensor_alerts(self, action: str, p: dict):
+        if action in ("insert", "update"):
+            await db.execute(
+                """INSERT INTO sensor_alerts (id, sensor_id, barn_id, alert_type, threshold_value,
+                    actual_value, acknowledged, acknowledged_by, acknowledged_at, created_at)
+                VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, COALESCE($10, NOW()))
+                ON CONFLICT (id) DO UPDATE SET
+                    sensor_id=$2, barn_id=$3, alert_type=$4, threshold_value=$5,
+                    actual_value=$6, acknowledged=$7, acknowledged_by=$8, acknowledged_at=$9""",
+                self._to_int(p["id"]), self._to_int(p.get("sensor_id")),
+                p.get("barn_id"), p.get("alert_type"),
+                self._to_float(p.get("threshold_value")), self._to_float(p.get("actual_value")),
+                self._to_bool(p.get("acknowledged", False)), p.get("acknowledged_by"),
+                self._to_dt(p.get("acknowledged_at")), self._to_dt(p.get("created_at")),
+            )
+        elif action == "delete":
+            await db.execute("DELETE FROM sensor_alerts WHERE id = $1", self._to_int(p["id"]))
+
+    async def _sync_sensor_daily_summary(self, action: str, p: dict):
+        if action in ("insert", "update"):
+            await db.execute(
+                """INSERT INTO sensor_daily_summary (id, sensor_id, barn_id, date, day_age,
+                    avg_value, min_value, max_value, sample_count, created_at)
+                VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, COALESCE($10, NOW()))
+                ON CONFLICT (id) DO UPDATE SET
+                    sensor_id=$2, barn_id=$3, date=$4, day_age=$5,
+                    avg_value=$6, min_value=$7, max_value=$8, sample_count=$9""",
+                self._to_int(p["id"]), self._to_int(p.get("sensor_id")),
+                p.get("barn_id"), self._to_dt(p.get("date")),
+                self._to_int(p.get("day_age")), self._to_float(p.get("avg_value")),
+                self._to_float(p.get("min_value")), self._to_float(p.get("max_value")),
+                self._to_int(p.get("sample_count")), self._to_dt(p.get("created_at")),
+            )
+        elif action == "delete":
+            await db.execute("DELETE FROM sensor_daily_summary WHERE id = $1", self._to_int(p["id"]))
+
+    async def _sync_sensor_threshold_configs(self, action: str, p: dict):
+        if action in ("insert", "update"):
+            await db.execute(
+                """INSERT INTO sensor_threshold_configs (id, sensor_id, alert_type,
+                    threshold_value, enabled, created_at)
+                VALUES ($1, $2, $3, $4, $5, COALESCE($6, NOW()))
+                ON CONFLICT (id) DO UPDATE SET
+                    sensor_id=$2, alert_type=$3, threshold_value=$4, enabled=$5""",
+                self._to_int(p["id"]), self._to_int(p.get("sensor_id")),
+                p.get("alert_type"), self._to_float(p.get("threshold_value")),
+                self._to_bool(p.get("enabled", True)), self._to_dt(p.get("created_at")),
+            )
+        elif action == "delete":
+            await db.execute("DELETE FROM sensor_threshold_configs WHERE id = $1", self._to_int(p["id"]))
+
+    async def _sync_sensor_calibrations(self, action: str, p: dict):
+        if action in ("insert", "update"):
+            await db.execute(
+                """INSERT INTO sensor_calibrations (id, sensor_id, calibration_date,
+                    reference_value, actual_value, notes, created_at)
+                VALUES ($1, $2, $3, $4, $5, $6, COALESCE($7, NOW()))
+                ON CONFLICT (id) DO UPDATE SET
+                    sensor_id=$2, calibration_date=$3,
+                    reference_value=$4, actual_value=$5, notes=$6""",
+                self._to_int(p["id"]), self._to_int(p.get("sensor_id")),
+                self._to_dt(p.get("calibration_date")),
+                self._to_float(p.get("reference_value")), self._to_float(p.get("actual_value")),
+                p.get("notes"), self._to_dt(p.get("created_at")),
+            )
+        elif action == "delete":
+            await db.execute("DELETE FROM sensor_calibrations WHERE id = $1", self._to_int(p["id"]))
+
+    async def _sync_sensor_maintenance_log(self, action: str, p: dict):
+        if action in ("insert", "update"):
+            await db.execute(
+                """INSERT INTO sensor_maintenance_log (id, sensor_id, maintenance_type,
+                    performed_by, performed_at, notes, created_at)
+                VALUES ($1, $2, $3, $4, $5, $6, COALESCE($7, NOW()))
+                ON CONFLICT (id) DO UPDATE SET
+                    sensor_id=$2, maintenance_type=$3,
+                    performed_by=$4, performed_at=$5, notes=$6""",
+                self._to_int(p["id"]), self._to_int(p.get("sensor_id")),
+                p.get("maintenance_type"), p.get("performed_by"),
+                self._to_dt(p.get("performed_at")), p.get("notes"),
+                self._to_dt(p.get("created_at")),
+            )
+        elif action == "delete":
+            await db.execute("DELETE FROM sensor_maintenance_log WHERE id = $1", self._to_int(p["id"]))
+
+    # ── Device State / Telemetry (Cloud ← Local push) ───
+
+    async def _sync_device_states(self, action: str, p: dict):
+        if action in ("insert", "update"):
+            await db.execute(
+                """INSERT INTO device_states (id, device_id, channel_index, state, value, updated_at)
+                VALUES ($1, $2, $3, $4, $5, NOW())
+                ON CONFLICT (id) DO UPDATE SET
+                    device_id=$2, channel_index=$3, state=$4, value=$5, updated_at=NOW()""",
+                self._to_int(p["id"]), self._to_int(p.get("device_id")),
+                self._to_int(p.get("channel_index")), p.get("state", "off"),
+                self._to_int(p.get("value", 0)),
+            )
+        elif action == "delete":
+            await db.execute("DELETE FROM device_states WHERE id = $1", self._to_int(p["id"]))
+
+    async def _sync_device_state_log(self, action: str, p: dict):
+        if action in ("insert", "update"):
+            await db.execute(
+                """INSERT INTO device_state_log (id, device_id, channel_index, old_state,
+                    new_state, old_value, new_value, triggered_by, recorded_at)
+                VALUES ($1, $2, $3, $4, $5, $6, $7, $8, COALESCE($9, NOW()))
+                ON CONFLICT (id) DO UPDATE SET
+                    device_id=$2, channel_index=$3, old_state=$4,
+                    new_state=$5, old_value=$6, new_value=$7, triggered_by=$8, recorded_at=$9""",
+                self._to_int(p["id"]), self._to_int(p.get("device_id")),
+                self._to_int(p.get("channel_index")), p.get("old_state"),
+                p.get("new_state"), self._to_int(p.get("old_value")),
+                self._to_int(p.get("new_value")), p.get("triggered_by"),
+                self._to_dt(p.get("recorded_at")),
+            )
+        elif action == "delete":
+            await db.execute("DELETE FROM device_state_log WHERE id = $1", self._to_int(p["id"]))
+
+    async def _sync_device_commands(self, action: str, p: dict):
+        if action in ("insert", "update"):
+            await db.execute(
+                """INSERT INTO device_commands (id, device_id, command, channel_index, value,
+                    priority, expires_at, response_payload, status, created_at)
+                VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, COALESCE($10, NOW()))
+                ON CONFLICT (id) DO UPDATE SET
+                    device_id=$2, command=$3, channel_index=$4, value=$5,
+                    priority=$6, expires_at=$7, response_payload=$8, status=$9""",
+                self._to_int(p["id"]), self._to_int(p.get("device_id")),
+                p.get("command"), self._to_int(p.get("channel_index")),
+                self._to_int(p.get("value")), self._to_int(p.get("priority", 5)),
+                self._to_dt(p.get("expires_at")), p.get("response_payload"),
+                p.get("status", "pending"), self._to_dt(p.get("created_at")),
+            )
+        elif action == "delete":
+            await db.execute("DELETE FROM device_commands WHERE id = $1", self._to_int(p["id"]))
+
+    async def _sync_device_telemetry(self, action: str, p: dict):
+        if action in ("insert", "update"):
+            await db.execute(
+                """INSERT INTO device_telemetry (id, device_id, raw_payload, parsed_data, recorded_at)
+                VALUES ($1, $2, $3, $4, COALESCE($5, NOW()))
+                ON CONFLICT (id) DO UPDATE SET
+                    device_id=$2, raw_payload=$3, parsed_data=$4, recorded_at=$5""",
+                self._to_int(p["id"]), self._to_int(p.get("device_id")),
+                p.get("raw_payload"), p.get("parsed_data"),
+                self._to_dt(p.get("recorded_at")),
+            )
+        elif action == "delete":
+            await db.execute("DELETE FROM device_telemetry WHERE id = $1", self._to_int(p["id"]))
+
+    async def _sync_device_alerts(self, action: str, p: dict):
+        if action in ("insert", "update"):
+            await db.execute(
+                """INSERT INTO device_alerts (id, device_id, alert_type, message,
+                    acknowledged, acknowledged_by, acknowledged_at, created_at)
+                VALUES ($1, $2, $3, $4, $5, $6, $7, COALESCE($8, NOW()))
+                ON CONFLICT (id) DO UPDATE SET
+                    device_id=$2, alert_type=$3, message=$4,
+                    acknowledged=$5, acknowledged_by=$6, acknowledged_at=$7""",
+                self._to_int(p["id"]), self._to_int(p.get("device_id")),
+                p.get("alert_type"), p.get("message"),
+                self._to_bool(p.get("acknowledged", False)), p.get("acknowledged_by"),
+                self._to_dt(p.get("acknowledged_at")), self._to_dt(p.get("created_at")),
+            )
+        elif action == "delete":
+            await db.execute("DELETE FROM device_alerts WHERE id = $1", self._to_int(p["id"]))
+
+    async def _sync_device_config_versions(self, action: str, p: dict):
+        if action in ("insert", "update"):
+            await db.execute(
+                """INSERT INTO device_config_versions (id, device_id, config_version,
+                    config_hash, config_payload, created_at)
+                VALUES ($1, $2, $3, $4, $5, COALESCE($6, NOW()))
+                ON CONFLICT (id) DO UPDATE SET
+                    device_id=$2, config_version=$3,
+                    config_hash=$4, config_payload=$5""",
+                self._to_int(p["id"]), self._to_int(p.get("device_id")),
+                self._to_int(p.get("config_version")), p.get("config_hash"),
+                p.get("config_payload"), self._to_dt(p.get("created_at")),
+            )
+        elif action == "delete":
+            await db.execute("DELETE FROM device_config_versions WHERE id = $1", self._to_int(p["id"]))
 
     # ── Sync Log ─────────────────────────────────────
 
