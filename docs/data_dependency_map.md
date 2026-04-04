@@ -44,12 +44,16 @@ Cycle (1) ────< cycle_feed_programs       [NEW]
 Cycle (1) ────< cycle_feed_stages         [NEW]
 Cycle (1) ────< cycle_splits              [NEW]
 
+Device (1) ───< device_types
 Device (1) ───< device_channels ───────────→ Equipment (nullable FK)
 Device (1) ───< device_states
 Device (1) ───< device_state_log
 Device (1) ───< device_commands
+Device (1) ───< device_telemetry
+Device (1) ───< device_alerts
+Device (1) ───< device_config_versions
 Device (1) ───< equipment_assignment_log
-Device (1) ───< equipment_command_log ─────────── lên bạt/xuống bạt, bật quạt...
+Device (1) ───< equipment_command_log
 
 Warehouse (1) ─< inventory
 Warehouse (1) ─< inventory_transactions ←── care_feeds, care_medications, care_litters
@@ -88,12 +92,16 @@ Farm
     │   └── cycle_splits [NEW] - lịch sử tách cycle
     │
     ├── Device
-    │   ├── device_channels ──────── → Equipment (nullable FK)
-    │   │       └── (8 channels của relay có thể gán vào 4 tấm bạt)
-    │   ├── device_states
-    │   ├── device_state_log
-    │   ├── device_commands ──────── điều khiển lên bạt/xuống bạt, bật quạt...
-    │   ├── equipment_assignment_log ←── lịch sử gán channel → Equipment
+    │   ├── device_types ──────────── loại thiết bị (relay/sensor/mixed)
+    │   ├── device_channels ──────────── → Equipment (nullable FK)
+    │   │       └── 8 channels có thể gán vào 4 tấm bạt (lên+xuống)
+    │   ├── device_states ─────────── trạng thái HIỆN TẠI của channel
+    │   ├── device_state_log ───────── lịch sử bật/tắt channel
+    │   ├── device_commands ─────────── lệnh gửi đến Device
+    │   ├── device_telemetry ───────── raw telemetry từ sensor
+    │   ├── device_alerts ─────────── cảnh báo (offline, low signal...)
+    │   ├── device_config_versions ─── firmware/parameter versions
+    │   ├── equipment_assignment_log ←── lịch sử gán channel→Equipment
     │   └── equipment_command_log ←── lịch sử bật/tắt Equipment
     │
     ├── Warehouse
@@ -252,119 +260,327 @@ CREATE TABLE care_litters (
 
 ---
 
-### 4. Device (IoT Controller)
+### 4. Device (IoT)
 
-**Định nghĩa:** Device là **controller** - thiết bị IoT điều khiển từ xa qua MQTT.
-**Device điều khiển Equipment** - Device ra lệnh bật/tắt/quay cho thiết bị vật lý.
+**Định nghĩa:** Device là thiết bị IoT - có thể là **controller** (điều khiển), **sensor** (thu thập dữ liệu), hoặc **mixed** (cả hai).
+**Device điều khiển Equipment** qua các channels.
 
-**Channel Assignment Pattern:**
-- Device channels có thể gán/ không gán equipment (nullable)
-- Có thể thay đổi assignment anytime (reassign)
-- Khi gán → ghi vào equipment_assignment_log
+**Use Cases:**
+1. **Relay Control** — điều khiển bạt, quạt, đèn, sưởi
+2. **Sensor Collection** — thu thập nhiệt độ, độ ẩm, NH3, CO2
+3. **Equipment Management** — gán channel → Equipment, track assignment
+4. **Monitoring** — online status, signal, uptime, alerts
+5. **Maintenance** — firmware, warranty, troubleshooting
 
 ```sql
-CREATE TABLE devices (
+-- ============================================
+-- 4.1 Device Types
+-- ============================================
+-- Phân loại thiết bị: ESP32 Relay 8CH, DHT22 Sensor, ENV Sensor...
+CREATE TABLE device_types (
     id SERIAL PRIMARY KEY,
-    device_code VARCHAR(100) UNIQUE NOT NULL,
-    device_type_id INT REFERENCES device_types(id),
-    barn_id VARCHAR(50) REFERENCES barns(id),  -- nullable (unassigned)
-    mqtt_topic VARCHAR(200) NOT NULL,
-    name VARCHAR(200),
-    is_online BOOLEAN DEFAULT FALSE,
-    last_heartbeat_at TIMESTAMPTZ,
-    wifi_rssi INT,
-    ip_address VARCHAR(45),
-    firmware_version VARCHAR(50),
-    alert_offline BOOLEAN DEFAULT TRUE,
-    notes TEXT,
+    code VARCHAR(50) UNIQUE NOT NULL,  -- 'esp32-relay-8ch', 'esp32-dht22', 'esp32-env-mixed'
+    name VARCHAR(100) NOT NULL,
+    device_class VARCHAR(20) NOT NULL,  -- 'relay' | 'sensor' | 'mixed'
+    channel_count INT DEFAULT 0,
+    channel_types JSONB,  -- [{ch: 1, type: 'relay'}, {ch: 2, type: 'relay'}, ...]
+    mqtt_protocol JSONB,  -- protocol config: topics, intervals, payload format
+    spec_sheet_url VARCHAR(500),
+    is_active BOOLEAN DEFAULT TRUE,
     created_at TIMESTAMPTZ DEFAULT NOW(),
     updated_at TIMESTAMPTZ DEFAULT NOW()
 );
 
--- Device channels: các relay/output channels của Device (ESP32 8CH)
--- Mỗi channel có thể điều khiển 1 Equipment (nullable - có thể gán hoặc không)
--- Ví dụ: Relay 8CH → 4 tấm bạt (mỗi bạt có lên + xuống = 2 channels)
+-- ============================================
+-- 4.2 Devices
+-- ============================================
+CREATE TABLE devices (
+    id SERIAL PRIMARY KEY,
+    device_code VARCHAR(100) UNIQUE NOT NULL,  -- 'esp-barn1-relay-01'
+    device_type_id INT REFERENCES device_types(id),
+    barn_id VARCHAR(50) REFERENCES barns(id),  -- nullable (unassigned)
+
+    -- Identity & Location
+    name VARCHAR(200),
+    location_description VARCHAR(200),  -- 'Cửa ra vào, tầng 2'
+
+    -- MQTT
+    mqtt_topic VARCHAR(200) NOT NULL,
+    mqtt_protocol JSONB,  -- override protocol config per device
+
+    -- Hardware
+    hardware_version VARCHAR(50),
+    firmware_version VARCHAR(50),
+    mac_address VARCHAR(17),
+    chip_id VARCHAR(50),  -- ESP32 chip ID
+
+    -- Connectivity
+    is_online BOOLEAN DEFAULT FALSE,
+    last_heartbeat_at TIMESTAMPTZ,
+    wifi_rssi INT,
+    wifi_ssid VARCHAR(100),
+    ip_address VARCHAR(45),
+
+    -- Health & Diagnostics
+    uptime_seconds BIGINT,
+    free_heap_bytes INT,
+    cpu_temperature DECIMAL(5,2),  -- CPU temperature
+    power_voltage DECIMAL(5,2),  -- Supply voltage
+
+    -- Config
+    telemetry_interval_seconds INT DEFAULT 300,  -- sensor read interval
+    heartbeat_interval_seconds INT DEFAULT 30,
+
+    -- Alerting
+    alert_offline BOOLEAN DEFAULT TRUE,
+    alert_low_signal BOOLEAN DEFAULT FALSE,
+    alert_high_temp BOOLEAN DEFAULT FALSE,
+    last_offline_alert_at TIMESTAMPTZ,
+
+    -- Maintenance
+    install_date DATE,
+    warranty_until DATE,
+    last_maintenance_at TIMESTAMPTZ,
+    next_maintenance_at DATE,
+
+    -- Deployment
+    status VARCHAR(20) DEFAULT 'active',  -- 'active' | 'inactive' | 'maintenance' | 'retired'
+    assigned_to VARCHAR(100),
+    notes TEXT,
+    metadata JSONB,
+
+    created_at TIMESTAMPTZ DEFAULT NOW(),
+    updated_at TIMESTAMPTZ DEFAULT NOW()
+);
+
+-- ============================================
+-- 4.3 Device Channels
+-- ============================================
+-- Các kênh I/O của Device (relay 1-8, sensor inputs, analog inputs...)
+-- Mỗi channel có thể gán đến 1 Equipment (nullable)
 CREATE TABLE device_channels (
     id SERIAL PRIMARY KEY,
     device_id INT REFERENCES devices(id) ON DELETE CASCADE,
-    channel_number INT NOT NULL,
-    channel_type VARCHAR(50),  -- 'relay' | 'pwm' | 'sensor' | 'digital'
-    function VARCHAR(50),      -- 'curtain_up' | 'curtain_down' | 'fan' | 'light'
-    name VARCHAR(100),
+    channel_number INT NOT NULL,  -- 1-8 for relay, 1-N for sensor
+
+    -- Classification
+    channel_type VARCHAR(20) NOT NULL,  -- 'relay' | 'pwm' | 'digital_input' | 'analog_input' | 'onewire' | 'i2c'
+    io_type VARCHAR(20) DEFAULT 'output',  -- 'input' | 'output' | 'bidirectional'
+
+    -- Function assignment
+    function VARCHAR(50),  -- 'curtain_up' | 'curtain_down' | 'fan' | 'light' | 'heater' | 'water_valve'
+    function_mode VARCHAR(20),  -- 'onoff' | 'toggle' | 'pwm' | 'step'
+
+    -- Hardware
     gpio_pin INT,
+    hardware_address VARCHAR(50),  -- I2C address, SPI chip select
+
+    -- Equipment linkage
     equipment_id INT REFERENCES equipment(id),  -- nullable: chưa gán thì NULL
+    equipment_function VARCHAR(20),  -- 'primary' | 'secondary' | 'backup'
+
+    -- Relay-specific
+    relay_type VARCHAR(10),  -- 'no' | 'nc' (normally open / normally closed)
+    max_load_amps DECIMAL(5,2),
+
+    -- PWM-specific
+    pwm_frequency_hz INT DEFAULT 1000,
+    pwm_resolution_bits INT DEFAULT 8,
+
+    -- Sensor-specific
+    sensor_model VARCHAR(100),
+    sensor_calibration JSONB,
+    reading_unit VARCHAR(20),
+    calibration_date DATE,
+
+    -- Config
+    config JSONB,  -- channel-specific config
+    min_value DECIMAL(10,2),
+    max_value DECIMAL(10,2),
+    default_state VARCHAR(20),  -- default on boot
+    safe_state VARCHAR(20),  -- safe state on disconnect (e.g., 'off')
+
+    -- Status
     is_active BOOLEAN DEFAULT TRUE,
+
     UNIQUE(device_id, channel_number)
 );
 
--- Trạng thái hiện tại của mỗi channel
+-- ============================================
+-- 4.4 Device State (Current)
+-- ============================================
+-- Trạng thái HIỆN TẠI của mỗi channel
 CREATE TABLE device_states (
     id SERIAL PRIMARY KEY,
     device_id INT REFERENCES devices(id) ON DELETE CASCADE,
     channel_number INT NOT NULL,
-    state VARCHAR(20) NOT NULL,
+    state VARCHAR(20) NOT NULL,  -- 'on' | 'off' | 'auto' | 'error'
+    state_value DECIMAL(10,2),  -- analog/PWM value
+    state_quality VARCHAR(20),  -- 'good' | 'bad' | 'uncertain'
+    last_command_id INT,  -- last command that changed this
     updated_at TIMESTAMPTZ DEFAULT NOW(),
     UNIQUE(device_id, channel_number)
 );
 
--- Lịch sử thay đổi trạng thái channel (bật/tắt)
-CREATE TABLE device_state_log (
-    time TIMESTAMPTZ NOT NULL,
-    device_id INT NOT NULL,
-    channel_number INT NOT NULL,
-    state VARCHAR(20) NOT NULL,
-    source VARCHAR(50)  -- 'schedule' | 'manual' | 'auto' | 'cloud'
-);
-
+-- ============================================
+-- 4.5 Device Commands
+-- ============================================
 -- Lệnh điều khiển gửi đến Device
 CREATE TABLE device_commands (
     id SERIAL PRIMARY KEY,
     device_id INT REFERENCES devices(id),
-    command_type VARCHAR(50) NOT NULL,
-    payload JSONB NOT NULL,
-    source VARCHAR(50) DEFAULT 'manual',
-    status VARCHAR(20) DEFAULT 'sent',
+    channel_number INT,  -- nullable for device-wide commands
+
+    command_type VARCHAR(50) NOT NULL,  -- 'relay_on' | 'relay_off' | 'set_pwm' | 'configure' | 'reboot'
+    command_action VARCHAR(50) NOT NULL,
+
+    payload JSONB NOT NULL,  -- {"state": "on", "duration": 30, "position": 50}
+
+    -- Source & Priority
+    source VARCHAR(50) NOT NULL,  -- 'manual' | 'schedule' | 'auto_rule' | 'cloud' | 'api'
+    triggered_by VARCHAR(100),  -- user_id or system rule name
+    priority VARCHAR(20) DEFAULT 'normal',  -- 'low' | 'normal' | 'high' | 'critical'
+
+    -- Response & Status
+    status VARCHAR(20) DEFAULT 'pending',  -- 'pending' | 'sent' | 'delivered' | 'executed' | 'timeout' | 'failed'
+    response_payload JSONB,
+    error_code VARCHAR(20),
+    error_message TEXT,
+
+    -- Timing
     sent_at TIMESTAMPTZ DEFAULT NOW(),
-    delivered_at TIMESTAMPTZ
+    delivered_at TIMESTAMPTZ,
+    executed_at TIMESTAMPTZ,
+    expires_at TIMESTAMPTZ  -- command expires at this time if not executed
 );
 
--- Lịch sử gán channel → Equipment
--- Ghi lại khi nào channel được gán/unassign/reassign
+-- ============================================
+-- 4.6 Device State Log (History)
+-- ============================================
+-- Lịch sử thay đổi trạng thái channel
+CREATE TABLE device_state_log (
+    id SERIAL PRIMARY KEY,
+    device_id INT NOT NULL,
+    channel_number INT NOT NULL,
+    previous_state VARCHAR(20),
+    new_state VARCHAR(20) NOT NULL,
+    state_value DECIMAL(10,2),
+    state_quality VARCHAR(20),
+    source VARCHAR(50),
+    trigger_command_id INT,  -- FK to device_commands if triggered by command
+    logged_at TIMESTAMPTZ DEFAULT NOW()
+);
+
+-- ============================================
+-- 4.7 Equipment Assignment Log
+-- ============================================
+-- Lịch sử gán/unassign/reassign channel → Equipment
 CREATE TABLE equipment_assignment_log (
     id SERIAL PRIMARY KEY,
     equipment_id INT REFERENCES equipment(id),
     device_id INT REFERENCES devices(id),
     channel_number INT NOT NULL,
-    action VARCHAR(20) NOT NULL,           -- 'assigned' | 'unassigned' | 'reassigned'
-    previous_equipment_id INT,             -- nếu reassigned, equipment cũ
+    action VARCHAR(20) NOT NULL,  -- 'assigned' | 'unassigned' | 'reassigned' | 'function_changed'
+    previous_equipment_id INT,
+    previous_function VARCHAR(50),
+    new_function VARCHAR(50),
     reason TEXT,
+    verified_by VARCHAR(100),
+    verified_at TIMESTAMPTZ,
     changed_by VARCHAR(100),
     changed_at TIMESTAMPTZ DEFAULT NOW()
 );
 
--- Lịch sử bật/tắt Equipment (qua Device channel)
--- Muốn biết "Quạt #1 bật lúc nào?" → JOIN device_state_log + device_channels
+-- ============================================
+-- 4.8 Equipment Command Log
+-- ============================================
+-- Lịch sử bật/tắt Equipment (để trace "Quạt #1 bật lúc nào?")
 CREATE TABLE equipment_command_log (
     id SERIAL PRIMARY KEY,
     equipment_id INT REFERENCES equipment(id),
     device_id INT REFERENCES devices(id),
     channel_number INT NOT NULL,
-    command VARCHAR(20) NOT NULL,         -- 'on' | 'off' | 'set_position'
-    payload JSONB,                        -- ví dụ: {"position": 50}
-    source VARCHAR(50),                   -- 'schedule' | 'manual' | 'auto'
+    command VARCHAR(20) NOT NULL,  -- 'on' | 'off' | 'set_position' | 'toggle'
+    command_payload JSONB,  -- {"position": 50, "duration": 3600}
+    source VARCHAR(50),  -- 'manual' | 'schedule' | 'auto' | 'cloud'
     triggered_by VARCHAR(100),
+    status VARCHAR(20),  -- 'success' | 'failed' | 'timeout'
+    error_message TEXT,
     executed_at TIMESTAMPTZ DEFAULT NOW()
+);
+
+-- ============================================
+-- 4.9 Device Telemetry (for sensor devices)
+-- ============================================
+-- Raw telemetry data from sensor devices (before processing into sensor_data)
+CREATE TABLE device_telemetry (
+    id SERIAL PRIMARY KEY,
+    device_id INT REFERENCES devices(id),
+    telemetry_type VARCHAR(50) NOT NULL,  -- 'environment' | 'power' | 'performance' | 'gps'
+    payload JSONB NOT NULL,  -- raw payload from device
+    received_at TIMESTAMPTZ DEFAULT NOW(),
+    processed_at TIMESTAMPTZ  -- when parsed into sensor_data
+);
+
+-- ============================================
+-- 4.10 Device Alerts
+-- ============================================
+CREATE TABLE device_alerts (
+    id SERIAL PRIMARY KEY,
+    device_id INT REFERENCES devices(id),
+    alert_type VARCHAR(50) NOT NULL,  -- 'offline' | 'low_signal' | 'high_temp' | 'command_failed' | 'heap_low'
+    severity VARCHAR(20) NOT NULL,  -- 'info' | 'warning' | 'critical'
+    message TEXT,
+    payload JSONB,
+    acknowledged BOOLEAN DEFAULT FALSE,
+    acknowledged_by VARCHAR(100),
+    acknowledged_at TIMESTAMPTZ,
+    resolved_at TIMESTAMPTZ,
+    created_at TIMESTAMPTZ DEFAULT NOW()
+);
+
+-- ============================================
+-- 4.11 Device Config Versions
+-- ============================================
+-- Track firmware/parameter versions for each device
+CREATE TABLE device_config_versions (
+    id SERIAL PRIMARY KEY,
+    device_id INT REFERENCES devices(id),
+    config_type VARCHAR(50) NOT NULL,  -- 'firmware' | 'parameters' | 'schedule' | 'mqtt'
+    version VARCHAR(50) NOT NULL,
+    config_payload JSONB NOT NULL,
+    changelog TEXT,
+    is_deployed BOOLEAN DEFAULT FALSE,
+    deployed_at TIMESTAMPTZ,
+    created_at TIMESTAMPTZ DEFAULT NOW()
 );
 ```
 
-**Query ví dụ - "Quạt hút #1 bật những lúc nào?":**
+**Query: "Quạt hút #1 bật những lúc nào?"**
 ```sql
-SELECT dsl.time, dsl.state
-FROM device_state_log dsl
-JOIN device_channels dc ON dsl.device_id = dc.device_id
-                        AND dsl.channel_number = dc.channel_number
-WHERE dc.equipment_id = (SELECT id FROM equipment WHERE name = 'Quạt hút #1')
-ORDER BY dsl.time DESC;
+SELECT ecl.executed_at, ecl.command, ecl.source, ecl.triggered_by
+FROM equipment_command_log ecl
+WHERE ecl.equipment_id = (SELECT id FROM equipment WHERE name = 'Quạt hút #1')
+ORDER BY ecl.executed_at DESC;
+```
+
+**Query: "Device esp-barn1-relay-01 đã offline bao nhiêu lần?"**
+```sql
+SELECT created_at, message
+FROM device_alerts
+WHERE device_id = (SELECT id FROM devices WHERE device_code = 'esp-barn1-relay-01')
+  AND alert_type = 'offline'
+ORDER BY created_at DESC;
+```
+
+**Query: "Tất cả channel của Device đang điều khiển Equipment nào?"**
+```sql
+SELECT d.name as device, dc.channel_number, dc.function, e.name as equipment, e.equipment_type
+FROM device_channels dc
+JOIN devices d ON dc.device_id = d.id
+LEFT JOIN equipment e ON dc.equipment_id = e.id
+WHERE d.device_code = 'esp-barn1-relay-01'
+ORDER BY dc.channel_number;
 ```
 
 ---
@@ -869,13 +1085,17 @@ CREATE TABLE sync_config (
 | farms | ✅ Push | ✅ Pull | New entity |
 | barns | ✅ Push | ✅ Pull | Full field sync |
 | cycles | ✅ Push | ✅ Pull | |
+| device_types | ✅ Push | ✅ Pull | Seed data |
 | devices | ✅ Push (heartbeat) | ✅ Pull | Auto-create from heartbeat |
 | device_channels | ✅ Push | ✅ Pull | → Equipment FK |
 | device_states | ✅ Push | ✅ Pull | |
 | device_state_log | ✅ Push | ✅ Pull | |
 | device_commands | ✅ Push | ✅ Pull | |
-| equipment_assignment_log | ✅ Push | ✅ Pull | [NEW] |
-| equipment_command_log | ✅ Push | ✅ Pull | [NEW] |
+| device_telemetry | ✅ Push | ✅ Pull | [NEW] |
+| device_alerts | ✅ Push | ✅ Pull | [NEW] |
+| device_config_versions | ✅ Push | ✅ Pull | [NEW] |
+| equipment_assignment_log | ✅ Push | ✅ Pull | |
+| equipment_command_log | ✅ Push | ✅ Pull | |
 | warehouses | ✅ Push | ✅ Pull | |
 | inventory | ✅ Push | ✅ Pull | |
 | inventory_transactions | ✅ Push | ✅ Pull | Side-effect from care ops |
