@@ -10,7 +10,9 @@ class InventoryService:
     # ── Warehouses ────────────────────────────────────
 
     async def list_warehouses(self, warehouse_type: str = None,
-                              barn_id: str = None) -> list[dict]:
+                              barn_id: str = None,
+                              farm_id: str = None) -> list[dict]:
+        """List warehouses with optional filters."""
         conditions = ["active = TRUE"]
         params = []
         idx = 1
@@ -23,6 +25,10 @@ class InventoryService:
             conditions.append(f"(barn_id = ${idx} OR barn_id IS NULL)")
             params.append(barn_id)
             idx += 1
+        if farm_id:
+            conditions.append(f"farm_id = ${idx}")
+            params.append(farm_id)
+            idx += 1
 
         where = f"WHERE {' AND '.join(conditions)}"
         rows = await db.fetch(
@@ -31,14 +37,126 @@ class InventoryService:
         )
         return [dict(r) for r in rows]
 
-    async def create_warehouse(self, data: dict) -> dict:
+    async def get_warehouse(self, warehouse_id: str) -> Optional[dict]:
         row = await db.fetchrow(
-            """INSERT INTO warehouses (code, name, warehouse_type, barn_id, description)
-            VALUES ($1, $2, $3, $4, $5) RETURNING *""",
-            data["code"], data["name"], data["warehouse_type"],
-            data.get("barn_id"), data.get("description"),
+            "SELECT * FROM warehouses WHERE id = $1", warehouse_id
+        )
+        return dict(row) if row else None
+
+    async def create_warehouse(self, data: dict) -> dict:
+        """Create a warehouse.
+
+        Business rules:
+        - code must be unique
+        - farm_id defaults to 'farm-01'
+        - is_central = TRUE if barn_id is NULL
+        """
+        # Check if code exists
+        existing = await db.fetchval(
+            "SELECT 1 FROM warehouses WHERE code = $1", data.get("code")
+        )
+        if existing:
+            return {"ok": False, "message": f"Warehouse code '{data['code']}' already exists"}
+
+        if not data.get("code"):
+            return {"ok": False, "message": "Warehouse code is required"}
+        if not data.get("name"):
+            return {"ok": False, "message": "Warehouse name is required"}
+
+        farm_id = data.get("farm_id", "farm-01")
+        is_central = data.get("barn_id") is None
+
+        row = await db.fetchrow(
+            """INSERT INTO warehouses (code, name, warehouse_type, barn_id, farm_id,
+                                     description, is_central, active)
+            VALUES ($1, $2, $3, $4, $5, $6, $7, $8)
+            RETURNING *""",
+            data["code"],
+            data["name"],
+            data.get("warehouse_type", "mixed"),
+            data.get("barn_id"),
+            farm_id,
+            data.get("description"),
+            is_central,
+            data.get("active", True),
         )
         return {"ok": True, "warehouse": dict(row)}
+
+    async def update_warehouse(self, warehouse_id: str, data: dict) -> dict:
+        """Update warehouse fields."""
+        existing = await self.get_warehouse(warehouse_id)
+        if not existing:
+            return {"ok": False, "message": "Warehouse not found"}
+
+        # Recalculate is_central if barn_id changes
+        barn_id = data.get("barn_id", existing.get("barn_id"))
+        is_central = barn_id is None
+
+        await db.execute(
+            """UPDATE warehouses SET
+                code = COALESCE($1, code),
+                name = COALESCE($2, name),
+                warehouse_type = COALESCE($3, warehouse_type),
+                barn_id = $4,
+                farm_id = COALESCE($5, farm_id),
+                description = COALESCE($6, description),
+                is_central = $7,
+                active = COALESCE($8, active)
+            WHERE id = $9""",
+            data.get("code"),
+            data.get("name"),
+            data.get("warehouse_type"),
+            barn_id,
+            data.get("farm_id"),
+            data.get("description"),
+            is_central,
+            data.get("active"),
+            warehouse_id,
+        )
+        return {"ok": True, "warehouse": await self.get_warehouse(warehouse_id)}
+
+    async def delete_warehouse(self, warehouse_id: str) -> dict:
+        """Delete a warehouse. Cannot delete if has inventory."""
+        inventory_count = await db.fetchval(
+            "SELECT COUNT(*) FROM inventory WHERE warehouse_id = $1",
+            warehouse_id
+        )
+        if inventory_count > 0:
+            return {
+                "ok": False,
+                "message": f"Cannot delete: warehouse has {inventory_count} inventory records",
+            }
+
+        await db.execute("DELETE FROM warehouses WHERE id = $1", warehouse_id)
+        return {"ok": True, "message": "Warehouse deleted"}
+
+    # ── Warehouse Zones ────────────────────────────────
+
+    async def list_warehouse_zones(self, warehouse_id: str = None) -> list[dict]:
+        """List warehouse zones."""
+        if warehouse_id:
+            rows = await db.fetch(
+                "SELECT * FROM warehouse_zones WHERE warehouse_id = $1 ORDER BY name",
+                warehouse_id,
+            )
+        else:
+            rows = await db.fetch("SELECT * FROM warehouse_zones ORDER BY warehouse_id, name")
+        return [dict(r) for r in rows]
+
+    async def create_warehouse_zone(self, data: dict) -> dict:
+        row = await db.fetchrow(
+            """INSERT INTO warehouse_zones (warehouse_id, name, zone_type)
+            VALUES ($1, $2, $3)
+            RETURNING *""",
+            data["warehouse_id"],
+            data["name"],
+            data.get("zone_type", "storage"),
+        )
+        return {"ok": True, "zone": dict(row)}
+
+    async def delete_warehouse_zone(self, zone_id: int) -> dict:
+        await db.execute("DELETE FROM warehouse_zones WHERE id = $1", zone_id)
+        return {"ok": True, "message": "Zone deleted"}
 
     # ── Products ──────────────────────────────────────
 

@@ -10,7 +10,7 @@
 
 | Phase | Status | Progress |
 |-------|--------|----------|
-| Phase 1: Farm Infrastructure | 🔄 Pending | 0% |
+| Phase 1: Farm Infrastructure | ✅ Done | 100% |
 | Phase 2: IoT Infrastructure | ⬜ Pending | 0% |
 | Phase 3: Inventory & Products | ⬜ Pending | 0% |
 | Phase 4: Operations (Cycles & Care) | ⬜ Pending | 0% |
@@ -22,23 +22,23 @@
 
 **Goal:** CRUD operations cho Farm → Barn → Warehouse hierarchy
 
-### Step 1.1: Farm Entity
-- [ ] CRUD Farm (name, address, contact)
-- [ ] Farm settings/config
-- [ ] Test: Create farm, verify barns link correctly
+### Step 1.1: Farm Entity ✅ DONE
+- [x] CRUD Farm (name, address, contact)
+- [x] Farm settings/config
+- [x] Test: Create farm, verify barns link correctly
 
-### Step 1.2: Barn Entity
-- [ ] CRUD Barn (thuộc Farm nào)
-- [ ] Barn dimensions (length_m, width_m, height_m)
-- [ ] Barn capacity_kg
-- [ ] Barn status (active/inactive)
-- [ ] Test: Create barn under farm, verify relationship
+### Step 1.2: Barn Entity ✅ DONE
+- [x] CRUD Barn (thuộc Farm nào)
+- [x] Barn dimensions (length_m, width_m, height_m)
+- [x] Barn capacity_kg
+- [x] Barn status (active/inactive)
+- [x] Test: Create barn under farm, verify relationship
 
-### Step 1.3: Warehouse Entity
-- [ ] CRUD Warehouse (central vs barn-level)
-- [ ] Warehouse zones
-- [ ] Link to Farm/Barn
-- [ ] Test: Create warehouse, add zones
+### Step 1.3: Warehouse Entity ✅ DONE
+- [x] CRUD Warehouse (central vs barn-level)
+- [x] Warehouse zones
+- [x] Link to Farm/Barn
+- [x] Test: Create warehouse, add zones
 
 **Data Flow:**
 ```
@@ -47,35 +47,43 @@ Farm (1) ───< Barn (N)
   └──< Warehouse (N) ───< WarehouseZone (N)
 ```
 
-**Files to modify:**
-- `src/server/routes/farms.py` (create if not exists)
-- `src/server/routes/barns.py` (expand)
-- `src/server/routes/warehouses.py` (create if not exists)
-- `src/services/farm_service.py` (create business logic)
+**Files Modified:**
+- `src/farm/farm_service.py` (NEW)
+- `src/farm/barn_service.py` (updated)
+- `src/farm/inventory_service.py` (updated)
+- `src/server/routes/farm.py` (added Farm + Barn CRUD)
 
 **API Endpoints:**
 ```
-POST   /api/farms           - Create farm
-GET    /api/farms           - List farms
-GET    /api/farms/{id}      - Get farm details
-PUT    /api/farms/{id}      - Update farm
-DELETE /api/farms/{id}      - Delete farm (cascade?)
+POST   /api/farms           - Create farm ✅
+GET    /api/farms           - List farms ✅
+GET    /api/farms/{id}      - Get farm details (with barn/warehouse counts) ✅
+PUT    /api/farms/{id}      - Update farm ✅
+DELETE /api/farms/{id}      - Delete farm (check barns/warehouses first) ✅
 
-POST   /api/barns           - Create barn
-GET    /api/barns           - List barns (filter by farm_id)
-GET    /api/barns/{id}      - Get barn details
-PUT    /api/barns/{id}      - Update barn
-DELETE /api/barns/{id}      - Delete barn
+POST   /api/barns           - Create barn ✅
+GET    /api/barns           - List barns (filter by farm_id) ✅
+GET    /api/barns/{id}      - Get barn details (with farm + active cycle) ✅
+PUT    /api/barns/{id}      - Update barn ✅
+DELETE /api/barns/{id}      - Delete barn (check active cycle first) ✅
 
-POST   /api/warehouses
-GET    /api/warehouses
-GET    /api/warehouses/{id}
-PUT    /api/warehouses/{id}
-DELETE /api/warehouses/{id}
+POST   /api/warehouses      - Create warehouse ✅
+GET    /api/warehouses      - List warehouses (filter by farm_id) ✅
+GET    /api/warehouses/{id} - Get warehouse details ✅
+PUT    /api/warehouses/{id} - Update warehouse ✅
+DELETE /api/warehouses/{id} - Delete warehouse (check inventory first) ✅
 
-POST   /api/warehouse-zones
-GET    /api/warehouse-zones?warehouse_id=X
+POST   /api/warehouse-zones         - Create zone ✅
+GET    /api/warehouse-zones          - List zones (filter by warehouse) ✅
+DELETE /api/warehouse-zones/{zone_id} - Delete zone ✅
 ```
+
+**Test Results (2026-04-04):**
+- GET /api/farm/farms → returns farm-01
+- GET /api/farm/farms/farm-01 → returns summary (barn_count=1, warehouse_count=0)
+- GET /api/farm/barns → returns barns with farm_id
+- POST /api/farm/warehouses → creates warehouse with is_central=true
+- POST /api/farm/warehouse-zones → creates zone successfully
 
 ---
 

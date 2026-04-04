@@ -5,6 +5,7 @@ from fastapi import APIRouter, HTTPException
 from pydantic import BaseModel
 from typing import Optional
 
+from src.farm.farm_service import farm_service
 from src.farm.barn_service import barn_service
 from src.farm.cycle_service import cycle_service
 from src.farm.inventory_service import inventory_service
@@ -15,9 +16,21 @@ router = APIRouter(prefix="/api/farm", tags=["farm"])
 
 # ── Request Models ──────────────────────────────────
 
+class FarmRequest(BaseModel):
+    id: str
+    name: str
+    address: Optional[str] = None
+    contact_name: Optional[str] = None
+    contact_phone: Optional[str] = None
+    contact_email: Optional[str] = None
+    notes: Optional[str] = None
+    active: bool = True
+
+
 class BarnRequest(BaseModel):
     id: str
     name: str
+    farm_id: str = "farm-01"  # Default to farm-01 for backward compatibility
     capacity: Optional[int] = None
     area_sqm: Optional[float] = None
     description: Optional[str] = None
@@ -38,9 +51,12 @@ class CycleRequest(BaseModel):
 class WarehouseRequest(BaseModel):
     code: str
     name: str
-    warehouse_type: str          # 'feed' or 'medicine'
+    warehouse_type: Optional[str] = "mixed"  # 'feed', 'medication', 'equipment', 'consumable', 'mixed'
     barn_id: Optional[str] = None
+    farm_id: str = "farm-01"
     description: Optional[str] = None
+    is_central: bool = False
+    active: bool = True
 
 
 class ProductRequest(BaseModel):
@@ -139,17 +155,66 @@ class SaleLogRequest(BaseModel):
 
 
 # ══════════════════════════════════════════════════════
+# FARMS
+# ══════════════════════════════════════════════════════
+
+@router.get("/farms")
+async def list_farms(active_only: bool = True):
+    """List all farms."""
+    return await farm_service.list_all(active_only)
+
+
+@router.post("/farms")
+async def create_farm(req: FarmRequest):
+    """Create a new farm."""
+    result = await farm_service.create(req.model_dump())
+    if not result["ok"]:
+        raise HTTPException(status_code=400, detail=result.get("message"))
+    return result["farm"]
+
+
+@router.get("/farms/{farm_id}")
+async def get_farm(farm_id: str):
+    """Get farm details with barn and warehouse counts."""
+    farm = await farm_service.get_summary(farm_id)
+    if not farm:
+        raise HTTPException(status_code=404, detail="Farm not found")
+    return farm
+
+
+@router.put("/farms/{farm_id}")
+async def update_farm(farm_id: str, req: FarmRequest):
+    """Update farm fields."""
+    result = await farm_service.update(farm_id, req.model_dump(exclude_none=True))
+    if not result["ok"]:
+        raise HTTPException(status_code=404, detail=result.get("message"))
+    return result["farm"]
+
+
+@router.delete("/farms/{farm_id}")
+async def delete_farm(farm_id: str):
+    """Delete a farm. Cannot delete if farm has barns or warehouses."""
+    result = await farm_service.delete(farm_id)
+    if not result["ok"]:
+        raise HTTPException(status_code=400, detail=result.get("message"))
+    return result
+
+
+# ══════════════════════════════════════════════════════
 # BARNS
 # ══════════════════════════════════════════════════════
 
 @router.get("/barns")
-async def list_barns(active_only: bool = True):
-    return await barn_service.list_all(active_only)
+async def list_barns(farm_id: str = None, active_only: bool = True):
+    """List barns, optionally filtered by farm_id."""
+    return await barn_service.list_all(farm_id, active_only)
 
 
 @router.post("/barns")
 async def create_barn(req: BarnRequest):
     result = await barn_service.create(req.model_dump())
+    if not result["ok"]:
+        raise HTTPException(status_code=400, detail=result.get("message"))
     return result["barn"]
 
 
@@ -163,7 +228,19 @@ async def get_barn(barn_id: str):
 
 @router.put("/barns/{barn_id}")
 async def update_barn(barn_id: str, req: BarnRequest):
-    return await barn_service.update(barn_id, req.model_dump(exclude_none=True))
+    result = await barn_service.update(barn_id, req.model_dump(exclude_none=True))
+    if not result["ok"]:
+        raise HTTPException(status_code=404, detail=result.get("message"))
+    return result["barn"]
+
+
+@router.delete("/barns/{barn_id}")
+async def delete_barn(barn_id: str):
+    """Delete a barn. Cannot delete if barn has an active cycle."""
+    result = await barn_service.delete(barn_id)
+    if not result["ok"]:
+        raise HTTPException(status_code=400, detail=result.get("message"))
+    return result
 
 
 # ══════════════════════════════════════════════════════
@@ -220,14 +297,70 @@ async def get_daily_snapshots(cycle_id: int, days: int = 30):
 # ══════════════════════════════════════════════════════
 
 @router.get("/warehouses")
-async def list_warehouses(warehouse_type: str = None, barn_id: str = None):
-    return await inventory_service.list_warehouses(warehouse_type, barn_id)
+async def list_warehouses(warehouse_type: str = None, barn_id: str = None, farm_id: str = None):
+    """List warehouses with optional filters."""
+    return await inventory_service.list_warehouses(warehouse_type, barn_id, farm_id)
 
 
 @router.post("/warehouses")
 async def create_warehouse(req: WarehouseRequest):
     result = await inventory_service.create_warehouse(req.model_dump())
+    if not result.get("ok"):
+        raise HTTPException(status_code=400, detail=result.get("message"))
     return result["warehouse"]
+
+
+@router.get("/warehouses/{warehouse_id}")
+async def get_warehouse(warehouse_id: str):
+    """Get warehouse details."""
+    wh = await inventory_service.get_warehouse(warehouse_id)
+    if not wh:
+        raise HTTPException(status_code=404, detail="Warehouse not found")
+    return wh
+
+
+@router.put("/warehouses/{warehouse_id}")
+async def update_warehouse(warehouse_id: str, req: WarehouseRequest):
+    """Update warehouse."""
+    result = await inventory_service.update_warehouse(warehouse_id, req.model_dump(exclude_none=True))
+    if not result.get("ok"):
+        raise HTTPException(status_code=404, detail=result.get("message"))
+    return result["warehouse"]
+
+
+@router.delete("/warehouses/{warehouse_id}")
+async def delete_warehouse(warehouse_id: str):
+    """Delete warehouse. Cannot delete if has inventory."""
+    result = await inventory_service.delete_warehouse(warehouse_id)
+    if not result.get("ok"):
+        raise HTTPException(status_code=400, detail=result.get("message"))
+    return result
+
+
+# ── Warehouse Zones ────────────────────────────────────
+
+@router.get("/warehouse-zones")
+async def list_warehouse_zones(warehouse_id: str = None):
+    """List warehouse zones."""
+    return await inventory_service.list_warehouse_zones(warehouse_id)
+
+
+@router.post("/warehouse-zones")
+async def create_warehouse_zone(warehouse_id: int, name: str, zone_type: str = "storage"):
+    """Create a warehouse zone."""
+    result = await inventory_service.create_warehouse_zone({
+        "warehouse_id": warehouse_id,
+        "name": name,
+        "zone_type": zone_type,
+    })
+    return result["zone"]
+
+
+@router.delete("/warehouse-zones/{zone_id}")
+async def delete_warehouse_zone(zone_id: int):
+    """Delete a warehouse zone."""
+    result = await inventory_service.delete_warehouse_zone(zone_id)
+    return result
 
 
 @router.get("/products")
