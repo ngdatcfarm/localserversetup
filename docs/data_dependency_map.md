@@ -44,10 +44,12 @@ Cycle (1) ────< cycle_feed_programs       [NEW]
 Cycle (1) ────< cycle_feed_stages         [NEW]
 Cycle (1) ────< cycle_splits              [NEW]
 
-Device (1) ───< device_channels
+Device (1) ───< device_channels ───────────→ Equipment (nullable FK)
 Device (1) ───< device_states
 Device (1) ───< device_state_log
-Device (1) ───< device_commands ─────────── lên bạt/xuống bạt, bật quạt...
+Device (1) ───< device_commands
+Device (1) ───< equipment_assignment_log
+Device (1) ───< equipment_command_log ─────────── lên bạt/xuống bạt, bật quạt...
 
 Warehouse (1) ─< inventory
 Warehouse (1) ─< inventory_transactions ←── care_feeds, care_medications, care_litters
@@ -86,10 +88,13 @@ Farm
     │   └── cycle_splits [NEW] - lịch sử tách cycle
     │
     ├── Device
-    │   ├── device_channels ──────── curtain_up, curtain_down, fan, light, water...
+    │   ├── device_channels ──────── → Equipment (nullable FK)
+    │   │       └── (8 channels của relay có thể gán vào 4 tấm bạt)
     │   ├── device_states
     │   ├── device_state_log
-    │   └── device_commands ──────── điều khiển lên bạt/xuống bạt, bật quạt...
+    │   ├── device_commands ──────── điều khiển lên bạt/xuống bạt, bật quạt...
+    │   ├── equipment_assignment_log ←── lịch sử gán channel → Equipment
+    │   └── equipment_command_log ←── lịch sử bật/tắt Equipment
     │
     ├── Warehouse
     │   ├── inventory
@@ -252,6 +257,11 @@ CREATE TABLE care_litters (
 **Định nghĩa:** Device là **controller** - thiết bị IoT điều khiển từ xa qua MQTT.
 **Device điều khiển Equipment** - Device ra lệnh bật/tắt/quay cho thiết bị vật lý.
 
+**Channel Assignment Pattern:**
+- Device channels có thể gán/ không gán equipment (nullable)
+- Có thể thay đổi assignment anytime (reassign)
+- Khi gán → ghi vào equipment_assignment_log
+
 ```sql
 CREATE TABLE devices (
     id SERIAL PRIMARY KEY,
@@ -271,18 +281,23 @@ CREATE TABLE devices (
     updated_at TIMESTAMPTZ DEFAULT NOW()
 );
 
--- Device channels: các relay/output channels của Device (ESP32)
--- Mỗi channel có thể điều khiển 1 Equipment
+-- Device channels: các relay/output channels của Device (ESP32 8CH)
+-- Mỗi channel có thể điều khiển 1 Equipment (nullable - có thể gán hoặc không)
+-- Ví dụ: Relay 8CH → 4 tấm bạt (mỗi bạt có lên + xuống = 2 channels)
 CREATE TABLE device_channels (
     id SERIAL PRIMARY KEY,
     device_id INT REFERENCES devices(id) ON DELETE CASCADE,
     channel_number INT NOT NULL,
-    function VARCHAR(50),
+    channel_type VARCHAR(50),  -- 'relay' | 'pwm' | 'sensor' | 'digital'
+    function VARCHAR(50),      -- 'curtain_up' | 'curtain_down' | 'fan' | 'light'
     name VARCHAR(100),
     gpio_pin INT,
+    equipment_id INT REFERENCES equipment(id),  -- nullable: chưa gán thì NULL
+    is_active BOOLEAN DEFAULT TRUE,
     UNIQUE(device_id, channel_number)
 );
 
+-- Trạng thái hiện tại của mỗi channel
 CREATE TABLE device_states (
     id SERIAL PRIMARY KEY,
     device_id INT REFERENCES devices(id) ON DELETE CASCADE,
@@ -292,14 +307,16 @@ CREATE TABLE device_states (
     UNIQUE(device_id, channel_number)
 );
 
+-- Lịch sử thay đổi trạng thái channel (bật/tắt)
 CREATE TABLE device_state_log (
     time TIMESTAMPTZ NOT NULL,
     device_id INT NOT NULL,
     channel_number INT NOT NULL,
     state VARCHAR(20) NOT NULL,
-    source VARCHAR(50)
+    source VARCHAR(50)  -- 'schedule' | 'manual' | 'auto' | 'cloud'
 );
 
+-- Lệnh điều khiển gửi đến Device
 CREATE TABLE device_commands (
     id SERIAL PRIMARY KEY,
     device_id INT REFERENCES devices(id),
@@ -310,6 +327,44 @@ CREATE TABLE device_commands (
     sent_at TIMESTAMPTZ DEFAULT NOW(),
     delivered_at TIMESTAMPTZ
 );
+
+-- Lịch sử gán channel → Equipment
+-- Ghi lại khi nào channel được gán/unassign/reassign
+CREATE TABLE equipment_assignment_log (
+    id SERIAL PRIMARY KEY,
+    equipment_id INT REFERENCES equipment(id),
+    device_id INT REFERENCES devices(id),
+    channel_number INT NOT NULL,
+    action VARCHAR(20) NOT NULL,           -- 'assigned' | 'unassigned' | 'reassigned'
+    previous_equipment_id INT,             -- nếu reassigned, equipment cũ
+    reason TEXT,
+    changed_by VARCHAR(100),
+    changed_at TIMESTAMPTZ DEFAULT NOW()
+);
+
+-- Lịch sử bật/tắt Equipment (qua Device channel)
+-- Muốn biết "Quạt #1 bật lúc nào?" → JOIN device_state_log + device_channels
+CREATE TABLE equipment_command_log (
+    id SERIAL PRIMARY KEY,
+    equipment_id INT REFERENCES equipment(id),
+    device_id INT REFERENCES devices(id),
+    channel_number INT NOT NULL,
+    command VARCHAR(20) NOT NULL,         -- 'on' | 'off' | 'set_position'
+    payload JSONB,                        -- ví dụ: {"position": 50}
+    source VARCHAR(50),                   -- 'schedule' | 'manual' | 'auto'
+    triggered_by VARCHAR(100),
+    executed_at TIMESTAMPTZ DEFAULT NOW()
+);
+```
+
+**Query ví dụ - "Quạt hút #1 bật những lúc nào?":**
+```sql
+SELECT dsl.time, dsl.state
+FROM device_state_log dsl
+JOIN device_channels dc ON dsl.device_id = dc.device_id
+                        AND dsl.channel_number = dc.channel_number
+WHERE dc.equipment_id = (SELECT id FROM equipment WHERE name = 'Quạt hút #1')
+ORDER BY dsl.time DESC;
 ```
 
 ---
@@ -372,26 +427,28 @@ Dùng `reference_type` + `reference_id` để track nguồn gốc.
 
 **Quy tắc:**
 - Device → điều khiển Equipment (1 Device có nhiều channels điều khiển nhiều Equipment)
-- Equipment → có thể có Device điều khiển nó (nullable, vì Equipment có thể là "stock" chưa lắp)
+- Equipment → có thể được điều khiển bởi Device (qua device_channels.equipment_id)
+- Equipment không cần device_id/device_channel - đó là mối quan hệ ngược (reverse reference)
 
 ```sql
 CREATE TABLE equipment (
     id SERIAL PRIMARY KEY,
     barn_id VARCHAR(50) REFERENCES barns(id),
     name VARCHAR(200) NOT NULL,
-    equipment_type VARCHAR(50),     -- 'fan' | 'heater' | 'light' | 'sensor' | etc.
+    equipment_type VARCHAR(50),     -- 'fan' | 'heater' | 'light' | 'curtain' | 'sensor' | etc.
     model VARCHAR(100),
     serial_no VARCHAR(100),
     status VARCHAR(20) DEFAULT 'active',  -- 'stock' | 'installed' | 'broken' | 'disposed'
     install_date DATE,
     warranty_until DATE,
     purchase_price DECIMAL(12,2),
-    -- Device linkage: Device điều khiển Equipment này
-    device_id INT REFERENCES devices(id),  -- nullable (chưa lắp thì không có)
-    device_channel INT,                  -- channel nào trên Device điều khiển
+    -- current_assignment: biết channel nào đang điều khiển
+    -- (query qua device_channels WHERE equipment_id = this.id)
     notes TEXT,
     created_at TIMESTAMPTZ DEFAULT NOW()
 );
+-- NOTE: Equipment được điều khiển từ device_channels.equipment_id FK
+--       Không cần device_id trong equipment vì đó là reverse relationship
 ```
 
 ---
@@ -813,9 +870,12 @@ CREATE TABLE sync_config (
 | barns | ✅ Push | ✅ Pull | Full field sync |
 | cycles | ✅ Push | ✅ Pull | |
 | devices | ✅ Push (heartbeat) | ✅ Pull | Auto-create from heartbeat |
-| device_channels | ✅ Push | ✅ Pull | |
+| device_channels | ✅ Push | ✅ Pull | → Equipment FK |
 | device_states | ✅ Push | ✅ Pull | |
+| device_state_log | ✅ Push | ✅ Pull | |
 | device_commands | ✅ Push | ✅ Pull | |
+| equipment_assignment_log | ✅ Push | ✅ Pull | [NEW] |
+| equipment_command_log | ✅ Push | ✅ Pull | [NEW] |
 | warehouses | ✅ Push | ✅ Pull | |
 | inventory | ✅ Push | ✅ Pull | |
 | inventory_transactions | ✅ Push | ✅ Pull | Side-effect from care ops |
