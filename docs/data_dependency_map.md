@@ -1,7 +1,7 @@
 # Data Dependency Map - Local Server
 
 > **Created**: 2026-04-03
-> **Updated**: 2026-04-03 - Clean restructure: Local is primary, Cloud aligns
+> **Updated**: 2026-04-04 - Sync Infrastructure redesigned: 6 issues fixed, 38 missing handlers, retry/priority/lock/version system
 > **Purpose**: Entity relationships and data flow for hybrid sync (RESET CLOUD OK)
 
 ---
@@ -72,7 +72,15 @@ Warehouse
 ├── purchase_order_items ─────────── chi tiết đơn hàng
 └── stock_valuation ───────────────── định giá tồn kho
 
-SensorData: indexed by device_id + time (TimescaleDB hypertable)
+SensorData
+├── sensor_types ───────────────────── danh mục loại sensor (temp, humidity, NH3...)
+├── sensors ───────────────────────── sensor vật lý được deploy
+├── sensor_data ───────────────────── TimescaleDB hypertable (time-series)
+├── sensor_alerts ─────────────────── cảnh báo ngưỡng
+├── sensor_daily_summary ───────────── tổng hợp theo ngày (avg/min/max)
+├── sensor_threshold_configs ───────── cấu hình ngưỡng cho từng sensor
+├── sensor_calibrations ─────────────── lịch sử hiệu chuẩn
+└── sensor_maintenance_log ─────────── bảo trì (vệ sinh, thay thế)
 ```
 
 **Cross-Domain Pattern (Fact Table):**
@@ -123,14 +131,12 @@ Farm
     │   │       ├── central warehouse ─── kho tổng (thuốc, equipment tiêu hao)
     │   │       └── barn warehouses ──── kho theo barn (cám)
     │   ├── warehouse_zones ─────────── vùng (receiving, storage, quarantine)
-    │   ├── products ─────────────────── danh mục sản phẩm
-    │   ├── inventory ─────────────────── tồn kho hiện tại
+    │   ├── inventory ─────────────────── tồn kho → products(id)
     │   ├── inventory_transactions ─────── xuất/nhập (side-effect từ care)
     │   ├── inventory_snapshots ────────── snapshot định kỳ
     │   ├── inventory_alerts ─────────── cảnh báo (low stock, expiry)
-    │   ├── suppliers ─────────────────── nhà cung cấp
-    │   ├── purchase_orders ───────────── đơn đặt hàng
-    │   ├── purchase_order_items ───────── chi tiết đơn hàng
+    │   ├── purchase_orders ───────────── đơn đặt hàng → suppliers
+    │   ├── purchase_order_items ───────── chi tiết đơn hàng → products
     │   └── stock_valuation ───────────── định giá tồn kho
     │
     ├── Equipment
@@ -139,14 +145,26 @@ Farm
     │   └── equipment_performance ─────── snapshot hiệu suất định kỳ
     │
     └── SensorData
+        ├── sensor_types ─────────────── danh mục loại sensor
+        ├── sensors ─────────────────── sensor vật lý được deploy
+        ├── sensor_data ─────────────── TimescaleDB hypertable
+        ├── sensor_alerts ───────────── cảnh báo ngưỡng
+        ├── sensor_daily_summary ─────── tổng hợp theo ngày
+        ├── sensor_threshold_configs ── cấu hình ngưỡng
+        ├── sensor_calibrations ─────── lịch sử hiệu chuẩn
+        └── sensor_maintenance_log ──── bảo trì sensor
 
 Reference Data (independent, Cloud→Local sync):
-├── feed_brands
-├── feed_types
-├── medications
-├── suppliers
-├── vaccine_programs
-└── vaccine_program_items
+├── products ─────────────────────── central catalog (ALL items: feed/med/equipment/consumable)
+├── suppliers ─────────────────────── nhà cung cấp (EXPANDED)
+├── feed_brands ──────────────────── hãng thức ăn → products
+├── feed_types ───────────────────── loại thức ăn → feed_brands + products
+├── medications ───────────────────── thuốc → products
+├── vaccine_programs ───────────────── chương trình vaccine
+├── vaccine_program_items ──────────── → medications(id) → products(id)
+├── equipment_types ───────────────── loại thiết bị IoT (power, MQTT protocol JSONB)
+├── device_types ──────────────────── loại thiết bị IoT (MQTT protocol JSONB)
+└── curtain_configs ────────────────── cấu hình bạt
 
 Sync Infrastructure:
 ├── sync_queue
@@ -1334,19 +1352,379 @@ ORDER BY e.next_maintenance_at;
 
 ### 7. SensorData (Time-Series)
 
+**Định nghĩa:** SensorData là dữ liệu cảm biến môi trường trong barn — nhiệt độ, độ ẩm, khí độc...
+**Thu thập TỰ ĐỘNG** từ ESP32 Sensor gửi về qua MQTT.
+**Dùng cho:** giám sát môi trường, cảnh báo, phân tích FCR, AI insights.
+
+**SensorData đứng một mình vì:**
+- Là time-series data (TimescaleDB hypertable) — khác storage pattern
+- Thu thập TỰ ĐỘNG — không phải con người nhập
+- Mô tả MÔI TRƯỜNG — không phải trạng thái thiết bị
+- Thuộc BARN/CYCLE — dùng để monitor môi trường chuồng nuôi
+
+**Phân loại Sensor:**
+- **Environment** — nhiệt độ, độ ẩm, khí (NH3, CO2, H2S)
+- **Weather** — ngoài trời, gió, mưa
+- **Equipment** — sensor tích hợp trong equipment
+- **Energy** — công suất, điện áp
+
 ```sql
+-- ============================================
+-- 7.1 Sensor Types (Reference)
+-- ============================================
+-- Danh mục các loại sensor có thể đo
+CREATE TABLE sensor_types (
+    id SERIAL PRIMARY KEY,
+    sensor_code VARCHAR(50) UNIQUE NOT NULL,  -- 'temp' | 'humidity' | 'nh3'
+    sensor_name VARCHAR(100) NOT NULL,
+
+    -- Classification
+    category VARCHAR(30) NOT NULL,  -- 'environment' | 'weather' | 'equipment' | 'energy'
+    measurement_type VARCHAR(30) NOT NULL,  -- 'temperature' | 'humidity' | 'gas' | 'light' | 'wind'
+
+    -- Unit
+    default_unit VARCHAR(20) NOT NULL,
+    display_unit VARCHAR(20),
+
+    -- Range
+    min_value DECIMAL(10,4),
+    max_value DECIMAL(10,4),
+
+    -- Accuracy
+    accuracy DECIMAL(10,4),
+    resolution DECIMAL(10,4),
+
+    -- Thresholds (defaults)
+    warning_low DECIMAL(10,4),
+    warning_high DECIMAL(10,4),
+    critical_low DECIMAL(10,4),
+    critical_high DECIMAL(10,4),
+
+    is_active BOOLEAN DEFAULT TRUE,
+    created_at TIMESTAMPTZ DEFAULT NOW(),
+    updated_at TIMESTAMPTZ DEFAULT NOW()
+);
+
+-- ============================================
+-- 7.2 Sensors (Physical sensors deployed)
+-- ============================================
+-- Mỗi sensor vật lý được lắp đặt
+CREATE TABLE sensors (
+    id SERIAL PRIMARY KEY,
+    sensor_code VARCHAR(50) UNIQUE NOT NULL,  -- 'SENSOR-BARN01-TEMP-01'
+    sensor_type_id INT REFERENCES sensor_types(id),
+
+    -- Location
+    barn_id VARCHAR(50) REFERENCES barns(id),
+    device_id INT REFERENCES devices(id),  -- ESP32 nào đọc sensor này
+    channel_number INT,                    -- channel nào trên device
+
+    -- Physical
+    name VARCHAR(200) NOT NULL,
+    location_description VARCHAR(200),     -- 'Góc trái, độ cao 2m'
+    installation_height_m DECIMAL(5,2),   -- độ cao lắp đặt
+    position_x DECIMAL(8,2),              -- vị trí tương đối trong barn
+    position_y DECIMAL(8,2),
+
+    -- Model
+    manufacturer VARCHAR(100),
+    model VARCHAR(100),
+    serial_no VARCHAR(100),
+    firmware_version VARCHAR(50),
+
+    -- Calibration
+    calibration_date DATE,
+    calibration_interval_days INT DEFAULT 90,
+    next_calibration_date DATE,
+    calibration_certificate_url VARCHAR(500),
+
+    -- Config
+    reading_interval_seconds INT DEFAULT 60,  -- tần suất đọc
+    aggregation_interval_seconds INT DEFAULT 300,  -- gửi mỗi 5 phút
+    reading_count_per_aggregation INT DEFAULT 5,  -- số đọc trước khi gửi
+
+    -- Offset (để hiệu chỉnh)
+    offset_value DECIMAL(10,4) DEFAULT 0,
+    multiplier DECIMAL(10,4) DEFAULT 1,
+
+    -- Status
+    is_active BOOLEAN DEFAULT TRUE,
+    operational_status VARCHAR(20) DEFAULT 'active',  -- 'active' | 'maintenance' | 'faulty' | 'discontinued'
+    last_reading_at TIMESTAMPTZ,
+    last_communication_at TIMESTAMPTZ,
+
+    notes TEXT,
+    metadata JSONB,
+    created_at TIMESTAMPTZ DEFAULT NOW(),
+    updated_at TIMESTAMPTZ DEFAULT NOW()
+);
+
+-- ============================================
+-- 7.3 Sensor Data (Time-Series - TimescaleDB)
+-- ============================================
+-- Raw data từ sensor — bảng chính cho analytics
 CREATE TABLE sensor_data (
+    id BIGSERIAL,
+
+    -- Time (required for TimescaleDB)
     time TIMESTAMPTZ NOT NULL,
-    device_id INT NOT NULL,
-    barn_id VARCHAR(50),           -- denormalized for fast query
-    cycle_id INT,
-    sensor_type VARCHAR(50) NOT NULL,  -- 'temperature' | 'humidity' | 'nh3' | 'co2' | 'wind_speed' | 'wind_direction' | 'rainfall' | 'outdoor_temp' | etc.
+
+    -- Links
+    sensor_id INT REFERENCES sensors(id),
+    device_id INT REFERENCES devices(id),
+    barn_id VARCHAR(50) REFERENCES barns(id),
+    cycle_id INT REFERENCES cycles(id),
+
+    -- Sensor type (denormalized for fast query)
+    sensor_type VARCHAR(50) NOT NULL,  -- 'temperature' | 'humidity' | 'nh3' | 'co2'
+
+    -- Value
     value DOUBLE PRECISION NOT NULL,
     unit VARCHAR(20),
+
+    -- Quality
+    quality VARCHAR(20) DEFAULT 'good',  -- 'good' | 'suspect' | 'bad' | 'missing'
+    raw_value DOUBLE PRECISION,             -- giá trị chưa offset
+    aggregation_type VARCHAR(20),            -- 'raw' | 'avg' | 'min' | 'max' | 'sum'
+
+    -- Context
+    reading_count INT,                      -- số readings trước aggregation
+    min_value_in_aggregation DOUBLE PRECISION,
+    max_value_in_aggregation DOUBLE PRECISION,
+    std_deviation DOUBLE PRECISION,
+
+    -- Location at reading time
+    latitude DECIMAL(10,7),
+    longitude DECIMAL(10,7),
+
     created_at TIMESTAMPTZ DEFAULT NOW()
 );
--- TimescaleDB hypertable on 'time'
--- Index: (device_id, time DESC), (barn_id, time DESC), (sensor_type, time DESC)
+
+-- TimescaleDB hypertable
+-- Indexes: (time DESC), (sensor_id, time DESC), (barn_id, time DESC), (sensor_type, time DESC)
+
+-- ============================================
+-- 7.4 Sensor Alerts
+-- ============================================
+-- Cảnh báo khi sensor vượt ngưỡng
+CREATE TABLE sensor_alerts (
+    id SERIAL PRIMARY KEY,
+    sensor_id INT REFERENCES sensors(id),
+    device_id INT REFERENCES devices(id),
+    barn_id VARCHAR(50) REFERENCES barns(id),
+    cycle_id INT REFERENCES cycles(id),
+
+    -- Alert details
+    alert_type VARCHAR(30) NOT NULL,  -- 'threshold_warning' | 'threshold_critical' | 'sensor_faulty' | 'no_data' | 'drift_detected'
+    severity VARCHAR(20) NOT NULL,    -- 'info' | 'warning' | 'critical'
+
+    -- Threshold that was breached
+    sensor_type VARCHAR(50),
+    threshold_type VARCHAR(20),      -- 'warning_low' | 'warning_high' | 'critical_low' | 'critical_high'
+    threshold_value DECIMAL(10,4),
+    actual_value DECIMAL(10,4),
+
+    -- Duration
+    started_at TIMESTAMPTZ NOT NULL,
+    duration_seconds INT,
+    ended_at TIMESTAMPTZ,
+
+    -- Acknowledgment
+    acknowledged BOOLEAN DEFAULT FALSE,
+    acknowledged_by VARCHAR(100),
+    acknowledged_at TIMESTAMPTZ,
+    resolution_notes TEXT,
+
+    -- Related
+    triggered_by VARCHAR(100),         -- 'system' | 'user' | 'auto_rule'
+    rule_id INT,                       -- nếu triggered by automation rule
+
+    created_at TIMESTAMPTZ DEFAULT NOW()
+);
+
+-- ============================================
+-- 7.5 Sensor Daily Summary
+-- ============================================
+-- Tổng hợp ngày cho mỗi sensor
+CREATE TABLE sensor_daily_summary (
+    id SERIAL PRIMARY KEY,
+    sensor_id INT REFERENCES sensors(id),
+    barn_id VARCHAR(50) REFERENCES barns(id),
+    sensor_type VARCHAR(50) NOT NULL,
+    summary_date DATE NOT NULL,
+
+    -- Count
+    reading_count INT,
+    valid_reading_count INT,
+    missing_reading_count INT,
+    data_quality_pct DECIMAL(5,2),  -- valid/total * 100
+
+    -- Temperature/Humidity stats
+    avg_value DECIMAL(10,4),
+    min_value DECIMAL(10,4),
+    max_value DECIMAL(10,4),
+    std_deviation DECIMAL(10,4),
+    median_value DECIMAL(10,4),
+
+    -- For gas sensors (NH3, CO2)
+    percentile_10 DECIMAL(10,4),
+    percentile_25 DECIMAL(10,4),
+    percentile_75 DECIMAL(10,4),
+    percentile_90 DECIMAL(10,4),
+    percentile_95 DECIMAL(10,4),
+
+    -- Duration in ranges
+    duration_below_warning_low_minutes INT,
+    duration_in_good_range_minutes INT,
+    duration_above_warning_high_minutes INT,
+    duration_above_critical_minutes INT,
+
+    -- Target comparison (nếu có target cho cycle)
+    target_value DECIMAL(10,4),
+    deviation_from_target DECIMAL(10,4),
+    deviation_pct DECIMAL(5,2),
+
+    -- Time
+    first_reading_at TIMESTAMPTZ,
+    last_reading_at TIMESTAMPTZ,
+
+    created_at TIMESTAMPTZ DEFAULT NOW(),
+    UNIQUE(sensor_id, summary_date)
+);
+
+-- ============================================
+-- 7.6 Sensor Threshold Configs
+-- ============================================
+-- Cấu hình ngưỡng cảnh báo cho từng sensor/sensor_type
+CREATE TABLE sensor_threshold_configs (
+    id SERIAL PRIMARY KEY,
+    sensor_id INT REFERENCES sensors(id),   -- NULL = apply to all sensors of this type
+    sensor_type VARCHAR(50) NOT NULL,       -- 'temperature' | 'humidity' | 'nh3'
+    barn_id VARCHAR(50) REFERENCES barns(id),  -- NULL = apply to all barns
+
+    -- Thresholds
+    warning_low DECIMAL(10,4),
+    warning_high DECIMAL(10,4),
+    critical_low DECIMAL(10,4),
+    critical_high DECIMAL(10,4),
+
+    -- Duration before alert (prevent flapping)
+    min_duration_seconds INT DEFAULT 60,  -- phải vượt ngưỡng trong X giây mới báo
+
+    -- Alert settings
+    alert_enabled BOOLEAN DEFAULT TRUE,
+    send_sms BOOLEAN DEFAULT FALSE,
+    send_email BOOLEAN DEFAULT FALSE,
+    alert_recipients VARCHAR(500)[],      -- array of emails/phones
+
+    -- Auto-actions
+    auto_action_rule_id INT,            -- trigger automation rule when exceeded
+
+    -- Priority
+    priority VARCHAR(20) DEFAULT 'normal',  -- 'low' | 'normal' | 'high' | 'critical'
+
+    is_active BOOLEAN DEFAULT TRUE,
+    effective_from DATE,
+    effective_to DATE,
+
+    created_at TIMESTAMPTZ DEFAULT NOW(),
+    updated_at TIMESTAMPTZ DEFAULT NOW()
+);
+
+-- ============================================
+-- 7.7 Sensor Calibrations
+-- ============================================
+-- Lịch sử hiệu chuẩn sensor
+CREATE TABLE sensor_calibrations (
+    id SERIAL PRIMARY KEY,
+    sensor_id INT REFERENCES sensors(id),
+
+    calibration_date DATE NOT NULL,
+    next_calibration_date DATE,
+
+    -- Reference values
+    reference_value DECIMAL(10,4),
+    measured_value_before DECIMAL(10,4),
+    measured_value_after DECIMAL(10,4),
+
+    -- Adjustment
+    offset_adjustment DECIMAL(10,4),
+    multiplier_adjustment DECIMAL(10,4),
+
+    -- Who
+    calibrated_by VARCHAR(100),
+    calibration_method VARCHAR(100),
+    certificate_no VARCHAR(100),
+    certificate_url VARCHAR(500),
+
+    -- Result
+    calibration_result VARCHAR(20),      -- 'pass' | 'fail'
+    notes TEXT,
+
+    created_at TIMESTAMPTZ DEFAULT NOW()
+);
+
+-- ============================================
+-- 7.8 Sensor Maintenance Log
+-- ============================================
+CREATE TABLE sensor_maintenance_log (
+    id SERIAL PRIMARY KEY,
+    sensor_id INT REFERENCES sensors(id),
+
+    maintenance_type VARCHAR(50) NOT NULL,  -- 'cleaning' | 'calibration' | 'repair' | 'replacement' | 'inspection'
+    maintenance_date DATE NOT NULL,
+
+    -- Details
+    description TEXT,
+    performed_by VARCHAR(100),
+    cost DECIMAL(10,2),
+
+    -- Parts used
+    parts_replaced VARCHAR(200),
+    parts_cost DECIMAL(10,2),
+
+    -- Result
+    result VARCHAR(20),                  -- 'completed' | 'pending' | 'failed'
+    next_maintenance_date DATE,
+
+    photos JSONB,                          -- ['url1', 'url2']
+
+    created_at TIMESTAMPTZ DEFAULT NOW()
+);
+```
+
+**Query: "Báo cáo nhiệt độ trung bình barn-01 trong tháng?"**
+```sql
+SELECT
+    summary_date,
+    AVG(avg_value) as avg_temp,
+    MIN(min_value) as min_temp,
+    MAX(max_value) as max_temp
+FROM sensor_daily_summary
+WHERE barn_id = 'barn-01'
+  AND sensor_type = 'temperature'
+  AND summary_date BETWEEN '2026-04-01' AND '2026-04-30'
+GROUP BY summary_date
+ORDER BY summary_date;
+```
+
+**Query: "NH3 cao bất thường trong tuần?"**
+```sql
+SELECT time, value, sensor_id
+FROM sensor_data
+WHERE sensor_type = 'nh3'
+  AND value > (SELECT threshold_value FROM sensor_threshold_configs WHERE sensor_type = 'nh3' AND threshold_type = 'critical_high')
+  AND time > NOW() - INTERVAL '7 days'
+ORDER BY time DESC;
+```
+
+**Query: "Sensor nào cần hiệu chuẩn?"**
+```sql
+SELECT s.name, s.sensor_code, s.next_calibration_date, st.sensor_name
+FROM sensors s
+JOIN sensor_types st ON s.sensor_type_id = st.id
+WHERE s.next_calibration_date <= CURRENT_DATE
+  AND s.is_active = TRUE;
 ```
 
 ---
@@ -1606,109 +1984,377 @@ CREATE TABLE cycle_splits (
 
 ## Reference Data (Independent)
 
+**Thiết kế mới — FIX 6 vấn đề:**
+
+### Design Principles
+1. **products là central catalog** — TẤT CẢ vật tư (feed/medication/equipment/consumable) đều có bản ghi trong `products`
+2. **Type-specific tables bổ sung metadata** — `feed_brands`, `medications`, `equipment` link về `products(id)` để lấy thông tin chung
+3. **inventory chỉ cần product_id** — không cần biết type gì, chỉ cần FK → products
+4. **vaccine_program_items → product_id** — vaccine là medication, link được vào inventory
+5. **Cascade protection** — FK constraints ngăn orphan data
+6. **device_types mô tả protocol** — JSONB cho MQTT command/telemetry structure
+
+### Schema
+
 ```sql
-CREATE TABLE feed_brands (
-    id SERIAL PRIMARY KEY,
-    name VARCHAR(200) NOT NULL,
-    kg_per_bag DECIMAL(5,2),
-    note TEXT,
-    status VARCHAR(20) DEFAULT 'active',
-    created_at TIMESTAMPTZ DEFAULT NOW()
-);
-
-CREATE TABLE feed_types (
-    id SERIAL PRIMARY KEY,
-    feed_brand_id INT REFERENCES feed_brands(id),
-    code VARCHAR(50),
-    name VARCHAR(200),
-    price_per_bag DECIMAL(10,2),
-    suggested_stage VARCHAR(50),  -- 'starter' | 'grower' | 'finisher'
-    note TEXT,
-    status VARCHAR(20) DEFAULT 'active',
-    created_at TIMESTAMPTZ DEFAULT NOW()
-);
-
-CREATE TABLE medications (
-    id SERIAL PRIMARY KEY,
-    name VARCHAR(200) NOT NULL,
-    unit VARCHAR(20),
-    category VARCHAR(50),
-    manufacturer VARCHAR(200),
-    price_per_unit DECIMAL(10,2),
-    recommended_dose TEXT,
-    note TEXT,
-    status VARCHAR(20) DEFAULT 'active',
-    created_at TIMESTAMPTZ DEFAULT NOW()
-);
-
-CREATE TABLE suppliers (
-    id SERIAL PRIMARY KEY,
-    name VARCHAR(200) NOT NULL,
-    phone VARCHAR(20),
-    address TEXT,
-    note TEXT,
-    status VARCHAR(20) DEFAULT 'active',
-    created_at TIMESTAMPTZ DEFAULT NOW()
-);
-
+-- ============================================
+-- products: CENTRAL CATALOG for ALL physical items
+-- Every feed/medication/equipment/consumable has ONE record here.
+-- inventory, inventory_transactions, care_medications all reference this.
+-- ============================================
 CREATE TABLE products (
     id SERIAL PRIMARY KEY,
     code VARCHAR(50) UNIQUE NOT NULL,
     name VARCHAR(200) NOT NULL,
     product_type VARCHAR(20) NOT NULL,  -- 'feed' | 'medication' | 'equipment' | 'consumable'
     unit VARCHAR(20) DEFAULT 'kg',
+
+    -- Supplier link
+    supplier_id INT REFERENCES suppliers(id) ON DELETE SET NULL,
+
+    -- Pricing
+    price_per_unit DECIMAL(12,2),
+
+    -- Stock alerts
+    min_stock_alert DECIMAL(12,2) DEFAULT 0,
+    reorder_point DECIMAL(12,2) DEFAULT 0,
+
+    -- Barcode for scanning
+    barcode VARCHAR(100),
+
     description TEXT,
     active BOOLEAN DEFAULT TRUE,
-    created_at TIMESTAMPTZ DEFAULT NOW()
+    created_at TIMESTAMPTZ DEFAULT NOW(),
+    updated_at TIMESTAMPTZ DEFAULT NOW()
 );
 
+-- ============================================
+-- suppliers: nhà cung cấp (EXPANDED)
+-- ============================================
+CREATE TABLE suppliers (
+    id SERIAL PRIMARY KEY,
+    code VARCHAR(50) UNIQUE NOT NULL,
+    name VARCHAR(200) NOT NULL,
+
+    -- Contact
+    contact_name VARCHAR(100),
+    phone VARCHAR(20),
+    email VARCHAR(100),
+    website VARCHAR(200),
+
+    -- Address
+    address TEXT,
+    city VARCHAR(100),
+    tax_id VARCHAR(50),          -- Mã số thuế
+
+    -- Bank info
+    bank_name VARCHAR(100),
+    bank_account VARCHAR(50),
+    bank_account_holder VARCHAR(200),
+
+    -- Business
+    categories TEXT[],           -- ARRAY['feed', 'medication', 'equipment']
+    lead_time_days INT DEFAULT 7,
+    payment_terms VARCHAR(50),   -- 'net30', 'cod', 'prepaid'
+
+    note TEXT,
+    status VARCHAR(20) DEFAULT 'active',
+    created_at TIMESTAMPTZ DEFAULT NOW(),
+    updated_at TIMESTAMPTZ DEFAULT NOW()
+);
+
+-- ============================================
+-- feed_brands: hãng thức ăn (links to products)
+-- FIX: product_id → products (central catalog)
+-- ============================================
+CREATE TABLE feed_brands (
+    id SERIAL PRIMARY KEY,
+    product_id INT REFERENCES products(id) ON DELETE CASCADE,  -- FIX: link to products
+    code VARCHAR(50) UNIQUE NOT NULL,
+    name VARCHAR(200) NOT NULL,
+    kg_per_bag DECIMAL(5,2),
+    manufacturer VARCHAR(200),
+    country_of_origin VARCHAR(100),
+    note TEXT,
+    status VARCHAR(20) DEFAULT 'active',
+    created_at TIMESTAMPTZ DEFAULT NOW(),
+    updated_at TIMESTAMPTZ DEFAULT NOW()
+);
+
+-- ============================================
+-- feed_types: loại thức ăn (links to feed_brand + products)
+-- FIX: product_id links to inventory, warehouse_id knows which warehouse
+-- ============================================
+CREATE TABLE feed_types (
+    id SERIAL PRIMARY KEY,
+    product_id INT REFERENCES products(id) ON DELETE CASCADE,  -- central catalog item
+    feed_brand_id INT REFERENCES feed_brands(id) ON DELETE SET NULL,
+
+    code VARCHAR(50),
+    name VARCHAR(200) NOT NULL,
+
+    -- Pricing (can differ from product price if repackaged)
+    price_per_bag DECIMAL(10,2),
+
+    -- Nutritional info
+    protein_pct DECIMAL(5,2),
+    energy_kcal_kg DECIMAL(10,2),
+
+    -- Stage
+    suggested_stage VARCHAR(20),  -- 'starter' | 'grower' | 'finisher'
+    bird_type VARCHAR(50),        -- 'broiler' | 'layer' | 'breeder'
+
+    -- Packaging
+    bag_size_kg DECIMAL(5,2),
+
+    -- Storage
+    shelf_life_months INT,
+    storage_requirements TEXT,
+
+    note TEXT,
+    status VARCHAR(20) DEFAULT 'active',
+    created_at TIMESTAMPTZ DEFAULT NOW(),
+    updated_at TIMESTAMPTZ DEFAULT NOW()
+);
+
+-- ============================================
+-- medications: danh mục thuốc (links to products)
+-- FIX: product_id → products (central catalog)
+-- ============================================
+CREATE TABLE medications (
+    id SERIAL PRIMARY KEY,
+    product_id INT REFERENCES products(id) ON DELETE CASCADE,  -- FIX: link to products
+
+    code VARCHAR(50) UNIQUE,
+    name VARCHAR(200) NOT NULL,
+
+    -- Classification
+    medication_type VARCHAR(50),  -- 'antibiotic' | 'vaccine' | 'vitamin' | 'disinfectant'
+    category VARCHAR(50),
+    active_ingredient VARCHAR(200),
+    manufacturer VARCHAR(200),
+    country_of_origin VARCHAR(100),
+
+    -- Dosage
+    unit VARCHAR(20),             -- 'ml', 'g', 'tablet', 'dose'
+    concentration VARCHAR(50),    -- '500mg/ml', '10%'
+
+    -- Usage
+    recommended_dose TEXT,
+    route_of_administration VARCHAR(50),  -- 'oral' | 'injection' | ' Drinking water'
+    withdrawal_days INT,         -- Ngày ngừng thuốc trước giết mổ
+
+    -- Storage
+    storage_conditions TEXT,
+    shelf_life_months INT,
+
+    -- Cost
+    price_per_unit DECIMAL(12,2),
+
+    note TEXT,
+    status VARCHAR(20) DEFAULT 'active',
+    created_at TIMESTAMPTZ DEFAULT NOW(),
+    updated_at TIMESTAMPTZ DEFAULT NOW()
+);
+
+-- ============================================
+-- vaccine_programs: chương trình tiêm vaccine
+-- ============================================
 CREATE TABLE vaccine_programs (
     id SERIAL PRIMARY KEY,
+    code VARCHAR(50) UNIQUE NOT NULL,
     name VARCHAR(200) NOT NULL,
+
+    bird_type VARCHAR(50),        -- 'broiler' | 'layer' | 'breeder'
+    description TEXT,
     note TEXT,
     active BOOLEAN DEFAULT TRUE,
-    created_at TIMESTAMPTZ DEFAULT NOW()
+    created_at TIMESTAMPTZ DEFAULT NOW(),
+    updated_at TIMESTAMPTZ DEFAULT NOW()
 );
 
+-- ============================================
+-- vaccine_program_items: chi tiết từng mũi tiêm
+-- FIX: product_id → medications(id) → products(id) → inventory
+-- FIX: cascade protection
+-- ============================================
 CREATE TABLE vaccine_program_items (
     id SERIAL PRIMARY KEY,
-    program_id INT REFERENCES vaccine_programs(id),
+    program_id INT REFERENCES vaccine_programs(id) ON DELETE CASCADE,
+
+    product_id INT REFERENCES medications(id) ON DELETE SET NULL,  -- FIX: link to medication
+
     vaccine_name VARCHAR(200) NOT NULL,
     day_age INT NOT NULL,
-    method VARCHAR(50),
+    method VARCHAR(50),           -- 'injection' | 'eye_drop' | 'drinking_water' | 'spray'
+    route VARCHAR(50),           -- 'subcutaneous' | 'intramuscular' | 'oral'
+
+    dose_per_bird VARCHAR(50),
+    dilution TEXT,
+
     remind_days INT DEFAULT 1,
     sort_order INT DEFAULT 0,
+
+    note TEXT,
     created_at TIMESTAMPTZ DEFAULT NOW()
 );
 
+-- ============================================
+-- equipment_types: loại thiết bị (for IoT equipment, NOT consumable equipment)
+-- NOTE: Consumable equipment (rakes, sprayers) → products table
+-- FIX: mqtt_protocol JSONB describes command/telemetry structure
+-- ============================================
+CREATE TABLE equipment_types (
+    id SERIAL PRIMARY KEY,
+    product_id INT REFERENCES products(id) ON DELETE SET NULL,  -- optional: if it's also a purchasable item
+
+    code VARCHAR(50) UNIQUE NOT NULL,
+    name VARCHAR(100) NOT NULL,
+
+    -- Physical specs
+    power_watts INT,
+    voltage_v INT,
+    current_amp DECIMAL(5,2),
+
+    -- MQTT Protocol Definition (FIX: describe command/telemetry structure)
+    mqtt_protocol JSONB,  -- {
+                            --   "command_topic": "cfarm/{code}/cmd",
+                            --   "telemetry_topic": "cfarm/{code}/telemetry",
+                            --   "command_format": {"relay": [0-7], "pwm": {"ch": 0-7, "val": 0-255}},
+                            --   "telemetry_format": {"temp": "float", "humidity": "float"},
+                            --   "heartbeat_topic": "cfarm/{code}/heartbeat",
+                            --   "heartbeat_interval_sec": 30
+                            -- }
+
+    description TEXT,
+    created_at TIMESTAMPTZ DEFAULT NOW()
+);
+
+-- ============================================
+-- device_types: loại thiết bị IoT (ESP32, PLC, Sensor hub...)
+-- FIX: mqtt_protocol JSONB for device communication
+-- ============================================
 CREATE TABLE device_types (
     id SERIAL PRIMARY KEY,
     code VARCHAR(50) UNIQUE NOT NULL,
     name VARCHAR(100) NOT NULL,
+
+    device_class VARCHAR(20),     -- 'relay' | 'sensor' | 'mixed' | 'gateway'
     channel_count INT DEFAULT 0,
+
+    -- MQTT Protocol Definition (FIX: describes how to communicate)
+    mqtt_protocol JSONB,  -- {
+                            --   "broker_host": "string",
+                            --   "broker_port": 1883,
+                            --   "username": "string",
+                            --   "command_topic": "cfarm/{code}/cmd",
+                            --   "telemetry_topic": "cfarm/{code}/telemetry",
+                            --   "heartbeat_topic": "cfarm/{code}/heartbeat",
+                            --   "command_format": {"relay": {"ch": 0-7, "val": 0|1}, "pwm": {"ch": 0-7, "val": 0-255}},
+                            --   "telemetry_format": {"temperature": "float", "humidity": "float", "nh3": "float"},
+                            --   "heartbeat_interval_sec": 30,
+                            --   "ping_fail_threshold": 3
+                            -- }
+
+    -- Firmware
+    firmware_version VARCHAR(50),
+    firmware_url VARCHAR(500),
+
     description TEXT,
     created_at TIMESTAMPTZ DEFAULT NOW()
 );
 
+-- ============================================
+-- curtain_configs: cấu hình bạt cuốn
+-- ============================================
 CREATE TABLE curtain_configs (
     id SERIAL PRIMARY KEY,
     curtain_code VARCHAR(100) UNIQUE NOT NULL,
     name VARCHAR(200) NOT NULL,
-    barn_id VARCHAR(50) REFERENCES barns(id),
-    device_id INT REFERENCES devices(id),
+    barn_id VARCHAR(50) REFERENCES barns(id) ON DELETE SET NULL,
+
+    -- Physical
+    width_m DECIMAL(5,2),
+    height_m DECIMAL(5,2),
+    fabric_type VARCHAR(50),       -- 'mesh' | 'solid' | 'polyethylene'
+
+    -- Motor control
+    motor_power_watts INT,
+    device_id INT REFERENCES devices(id) ON DELETE SET NULL,
     up_channel INT NOT NULL,
     down_channel INT NOT NULL,
+
+    -- Timing
     full_up_seconds FLOAT DEFAULT 60,
     full_down_seconds FLOAT DEFAULT 60,
+
+    -- Position
     current_position INT DEFAULT 0 CHECK (current_position BETWEEN 0 AND 100),
+
+    -- Auto control
+    auto_control_enabled BOOLEAN DEFAULT FALSE,
+    min_position INT DEFAULT 0,
+    max_position INT DEFAULT 100,
+    wind_speed_max_kmh DECIMAL(5,2),  -- auto cuốn lên khi gió quá mạnh
+
+    note TEXT,
     created_at TIMESTAMPTZ DEFAULT NOW(),
     updated_at TIMESTAMPTZ DEFAULT NOW()
 );
+
+-- ============================================
+-- CASCADE PROTECTION: Add FK constraints to protect orphan data
+-- ============================================
+
+-- feed_brands.product_id already has ON DELETE CASCADE
+-- feed_types.product_id already has ON DELETE CASCADE
+-- medications.product_id already has ON DELETE CASCADE
+
+-- Additional FK protections:
+-- inventory.product_id has FK → products (via products FK)
+-- inventory_transactions.product_id has FK → products (via products FK)
+-- care_medications.product_id has FK → medications (→ products)
+-- care_feeds.feed_type_id has FK → feed_types (→ products)
+-- inventory_transactions.feed_type_id has FK → feed_types (→ products)
 ```
 
 ---
 
 ## Sync Infrastructure
+
+### Current State (Issues)
+
+| Issue | Severity | Description |
+|-------|----------|-------------|
+| Missing 18 pull handlers | 🔴 HIGH | farms, warehouses, products, equipment, sensor tables, care tables |
+| Field mapping scattered | 🟡 MEDIUM | Each handler manually maps Local↔Cloud fields |
+| No retry mechanism | 🔴 HIGH | Failed push items stay synced=FALSE forever |
+| No conflict resolution | 🟡 MEDIUM | Last-write-wins, no version checking |
+| Sensor sync separate loop | 🟡 MEDIUM | Runs every 5 cycles, not integrated with push_to_cloud |
+| No locking | 🔴 HIGH | Concurrent syncs can corrupt queue |
+| No priority queue | 🟡 MEDIUM | Care records should sync before sensor data |
+
+### Redesigned Sync Architecture
+
+```
+┌─────────────────────────────────────────────────────────────┐
+│                     SYNC LAYER                              │
+├─────────────────────────────────────────────────────────────┤
+│                                                             │
+│  queue_change() ──→ sync_queue ──→ _sync_loop()            │
+│       │                   │               │                 │
+│       │            priority queue        ├── push_to_cloud()│
+│       │            retry_count          ├── pull_from_cloud │
+│       │            version/lock          └── sensor_sync()  │
+│                                                             │
+│  FieldMapper: centralized Local ↔ Cloud field name mapping  │
+│  ConflictResolver: version-based last-write-wins           │
+│  RetryQueue: exponential backoff for failed items          │
+│                                                             │
+└─────────────────────────────────────────────────────────────┘
+```
+
+### Redesigned sync_queue (FIX issues)
 
 ```sql
 CREATE TABLE sync_queue (
@@ -1717,26 +2363,337 @@ CREATE TABLE sync_queue (
     record_id VARCHAR(100) NOT NULL,
     action VARCHAR(20) NOT NULL,  -- 'insert' | 'update' | 'delete'
     payload JSONB NOT NULL,
+
+    -- Priority (higher = pushed first)
+    priority INT DEFAULT 5,  -- 1=low(sensor), 5=normal, 10=high(care/command)
+
+    -- Retry mechanism
+    retry_count INT DEFAULT 0,
+    max_retries INT DEFAULT 5,
+    last_error TEXT,
+    next_retry_at TIMESTAMPTZ,
+
+    -- Version for conflict resolution
+    local_version INT DEFAULT 1,
+    synced_version INT DEFAULT 0,
+
+    -- Status
     synced BOOLEAN DEFAULT FALSE,
     created_at TIMESTAMPTZ DEFAULT NOW(),
     synced_at TIMESTAMPTZ
 );
-CREATE INDEX idx_sync_pending ON sync_queue (synced, created_at) WHERE NOT synced;
 
-CREATE TABLE sync_log (
-    id SERIAL PRIMARY KEY,
-    direction VARCHAR(10) NOT NULL,  -- 'push' | 'pull'
-    items_count INT,
-    status VARCHAR(20) NOT NULL,  -- 'ok' | 'error' | 'partial'
-    error_msg TEXT,
-    created_at TIMESTAMPTZ DEFAULT NOW()
-);
+-- Pending items with retry logic
+CREATE INDEX idx_sync_pending ON sync_queue (synced, priority DESC, created_at)
+    WHERE NOT synced;
 
-CREATE TABLE sync_config (
-    key VARCHAR(100) PRIMARY KEY,
-    value TEXT,
-    updated_at TIMESTAMPTZ DEFAULT NOW()
+-- Items ready for retry (backoff elapsed)
+CREATE INDEX idx_sync_retry ON sync_queue (next_retry_at, retry_count)
+    WHERE NOT synced AND retry_count > 0;
+
+-- Prevent concurrent sync processes
+CREATE TABLE sync_lock (
+    lock_name VARCHAR(50) PRIMARY KEY,
+    locked_by VARCHAR(100),
+    locked_at TIMESTAMPTZ,
+    expires_at TIMESTAMPTZ
 );
+```
+
+### Sync Direction: ALL 65 Tables
+
+#### PULL Handlers (Cloud → Local) — 18 existing + 18 missing = 36
+
+**EXISTING (18):**
+```
+_sync_barns, _sync_cycles, _sync_cycle_splits,
+_sync_feed_brands, _sync_feed_types, _sync_medications,
+_sync_suppliers, _sync_vaccine_programs, _sync_vaccine_program_items,
+_sync_vaccine_schedules,
+_sync_care_feeds, _sync_care_deaths, _sync_care_medications,
+_sync_weight_sessions, _sync_care_sales, _sync_health_notes,
+_sync_devices, _sync_firmwares, _sync_notification_rules
+```
+
+**MISSING PULL (18) — Add:**
+```
+_sync_farms                    -- farms table
+_sync_warehouses               -- warehouses table
+_sync_warehouse_zones          -- warehouse_zones
+_sync_products                 -- products central catalog
+_sync_inventory                -- inventory
+_sync_inventory_transactions   -- inventory_transactions
+_sync_inventory_alerts         -- inventory_alerts
+_sync_inventory_snapshots      -- inventory_snapshots
+_sync_stock_valuation          -- stock_valuation
+_sync_purchase_orders           -- purchase_orders
+_sync_purchase_order_items      -- purchase_order_items
+_sync_equipment                -- equipment (IoT equipment)
+_sync_equipment_parts           -- equipment_parts
+_sync_equipment_readings       -- equipment_readings
+_sync_equipment_performance     -- equipment_performance
+_sync_sensors                  -- sensors
+_sync_sensor_alerts            -- sensor_alerts
+_sync_sensor_daily_summary     -- sensor_daily_summary
+_sync_sensor_threshold_configs -- sensor_threshold_configs
+_sync_sensor_calibrations      -- sensor_calibrations
+_sync_sensor_maintenance_log   -- sensor_maintenance_log
+_sync_weight_reminders         -- weight_reminders
+_sync_care_expenses            -- care_expenses
+_sync_care_litters             -- care_litters
+_sync_feed_trough_checks      -- feed_trough_checks
+_sync_cycle_feed_programs      -- cycle_feed_programs
+_sync_cycle_feed_program_items -- cycle_feed_program_items
+_sync_cycle_feed_stages       -- cycle_feed_stages
+_sync_device_channels         -- device_channels
+_sync_device_states           -- device_states
+_sync_device_state_log        -- device_state_log
+_sync_device_commands         -- device_commands
+_sync_device_telemetry        -- device_telemetry
+_sync_device_alerts           -- device_alerts
+_sync_device_config_versions  -- device_config_versions
+_sync_equipment_assignment_log -- equipment_assignment_log
+_sync_equipment_command_log   -- equipment_command_log
+_sync_curtain_configs         -- curtain_configs
+_sync_sensor_types            -- sensor_types
+```
+
+#### PUSH Handlers (Local → Cloud) — Queue only, handled by generic push_to_cloud()
+
+All tables that queue changes use `queue_change()` which pushes via generic handler.
+No separate push handler needed — cloud `/api/sync/receive` dispatches by table_name.
+
+**Tables that queue changes (PUSH):**
+- Care operations: care_feeds, care_deaths, care_medications, care_sales, care_weights
+- Cycle changes: cycles, cycle_splits, cycle_feed_programs, cycle_feed_stages
+- Device: devices, device_states, device_state_log, device_commands, device_channels
+- Inventory: inventory_transactions, warehouses
+- Farm: farms, barns
+- Sensor: sensor_data (via batch), sensors, sensor_alerts
+
+### Field Mapping System (FIX: centralized)
+
+```python
+class FieldMapper:
+    """Centralized Local ↔ Cloud field name mapping."""
+
+    # Format: cloud_field: local_field
+    MAPS = {
+        "care_feeds": {
+            "session": "meal",
+            "bags": "bags",
+            "kg_actual": "kg_actual",
+            "remaining_pct": "remaining_pct",
+        },
+        "care_deaths": {
+            "quantity": "count",
+            "reason": "cause",
+        },
+        "care_medications": {
+            "medication_id": "product_id",
+        },
+        "care_sales": {
+            "quantity": "count",
+            "weight_kg": "total_weight",
+            "price_per_kg": "unit_price",
+        },
+        "cycles": {
+            "initial_quantity": "initial_count",
+            "current_quantity": "current_count",
+            "end_date": "actual_end_date",
+        },
+        # Add all mappings here
+    }
+
+    @classmethod
+    def to_cloud(cls, table: str, payload: dict) -> dict:
+        """Convert Local → Cloud field names."""
+        mapping = cls.MAPS.get(table, {})
+        result = {}
+        for k, v in payload.items():
+            # Find cloud name (reverse mapping)
+            cloud_name = next((ck for ck, cl in mapping.items() if cl == k), k)
+            result[cloud_name] = v
+        return result
+
+    @classmethod
+    def to_local(cls, table: str, payload: dict) -> dict:
+        """Convert Cloud → Local field names."""
+        mapping = cls.MAPS.get(table, {})
+        result = {}
+        for k, v in payload.items():
+            local_name = mapping.get(k, k)
+            result[local_name] = v
+        return result
+```
+
+### Retry Mechanism (FIX: no retry)
+
+```python
+async def push_to_cloud(self):
+    """Push with retry and exponential backoff."""
+    # 1. Acquire lock to prevent concurrent pushes
+    if not await self._acquire_lock("push", ttl=30):
+        logger.warning("Push already in progress, skipping")
+        return 0
+
+    try:
+        # 2. Get items: retry-ready first, then oldest pending
+        items = await self.get_retry_queue(self.config["push_batch_size"])
+        if not items:
+            return 0
+
+        # 3. Group by table for batching
+        batches = self._batch_by_table(items)
+
+        # 4. Push with retry logic
+        for batch in batches:
+            try:
+                await self._push_batch(batch)
+            except Exception as e:
+                # Mark retry with backoff
+                await self._schedule_retry(batch, error=str(e))
+
+        await self.mark_synced([i["id"] for i in items])
+        return len(items)
+    finally:
+        await self._release_lock("push")
+
+async def get_retry_queue(self, limit: int) -> list[dict]:
+    """Get items ready for retry (backoff elapsed) OR new items."""
+    rows = await db.fetch("""
+        SELECT * FROM sync_queue
+        WHERE synced = FALSE
+        AND (
+            retry_count = 0  -- never tried
+            OR (retry_count > 0 AND next_retry_at <= NOW())  -- backoff elapsed
+        )
+        ORDER BY priority DESC, created_at ASC
+        LIMIT $1
+    """, limit)
+    return [dict(r) for r in rows]
+
+async def _schedule_retry(self, items: list, error: str):
+    """Schedule retry with exponential backoff."""
+    for item in items:
+        retry_count = item["retry_count"] + 1
+        # Exponential backoff: 1min, 2min, 4min, 8min, 16min
+        backoff_seconds = 60 * (2 ** retry_count)
+        await db.execute("""
+            UPDATE sync_queue SET
+                retry_count = $1,
+                last_error = $2,
+                next_retry_at = NOW() + (interval '1 second' * $3)
+            WHERE id = $4
+        """, retry_count, error, backoff_seconds, item["id"])
+```
+
+### Conflict Resolution (FIX: last-write-wins)
+
+```python
+class ConflictResolver:
+    """Version-based conflict resolution for sync."""
+
+    @classmethod
+    async def resolve(cls, table: str, record_id: str,
+                      local_payload: dict, cloud_payload: dict) -> dict:
+        """
+        Compare versions, return winning payload.
+        Strategy: highest version wins.
+        If equal version: newest created_at wins.
+        """
+        local_ver = local_payload.get("_version", 1)
+        cloud_ver = cloud_payload.get("_version", 0)
+
+        if cloud_ver > local_ver:
+            return cloud_payload  # Cloud wins
+        elif local_ver > cloud_ver:
+            return local_payload   # Local wins
+        else:
+            # Equal version: newest timestamp wins
+            local_ts = local_payload.get("updated_at", "1970-01-01")
+            cloud_ts = cloud_payload.get("updated_at", "1970-01-01")
+            return local_payload if local_ts > cloud_ts else cloud_payload
+```
+
+Every table gets `_version` field (auto-increment on update):
+```sql
+ALTER TABLE {table} ADD COLUMN _version INT DEFAULT 1;
+CREATE TRIGGER trg_version
+    BEFORE UPDATE ON {table}
+    FOR EACH ROW EXECUTE FUNCTION increment_version();
+```
+
+### Sync Lock (FIX: no locking)
+
+```python
+async def _acquire_lock(self, lock_name: str, ttl: int = 30) -> bool:
+    """Acquire distributed sync lock."""
+    try:
+        result = await db.execute("""
+            INSERT INTO sync_lock (lock_name, locked_by, locked_at, expires_at)
+            VALUES ($1, $2, NOW(), NOW() + (interval '1 second' * $3))
+            ON CONFLICT (lock_name) DO UPDATE
+            SET locked_by = EXCLUDED.locked_by,
+                locked_at = EXCLUDED.locked_at,
+                expires_at = EXCLUDED.expires_at
+            WHERE sync_lock.expires_at <= NOW()
+                OR sync_lock.locked_by = EXCLUDED.locked_by
+        """, lock_name, self._process_id, ttl)
+        return "INSERT" in result or "UPDATE" in result
+    except Exception:
+        return False
+
+async def _release_lock(self, lock_name: str):
+    """Release sync lock."""
+    await db.execute("""
+        DELETE FROM sync_lock
+        WHERE lock_name = $1 AND locked_by = $2
+    """, lock_name, self._process_id)
+```
+
+### Priority Queue (FIX: no priority)
+
+| Priority | Tables |
+|----------|--------|
+| 10 (HIGH) | device_commands, care_feeds, care_deaths, care_medications, care_sales |
+| 5 (NORMAL) | cycles, farms, barns, warehouses, equipment |
+| 1 (LOW) | sensor_data, sensor_alerts, device_telemetry |
+
+```python
+PRIORITY_MAP = {
+    "device_commands": 10,
+    "care_feeds": 10, "care_deaths": 10, "care_medications": 10, "care_sales": 10,
+    "cycles": 5, "farms": 5, "barns": 5, "warehouses": 5, "equipment": 5,
+    "devices": 5, "device_states": 5,
+    "sensor_data": 1, "sensor_alerts": 1, "device_telemetry": 1,
+}
+```
+
+### Sensor Sync Integration (FIX: separate loop)
+
+```python
+# REMOVE separate sensor_sync.push_sensor_summary() call
+# INTEGRATE into push_to_cloud() as a batch item:
+
+async def push_to_cloud(self):
+    # ... existing queue push ...
+
+    # Also push sensor batch as LOW priority item
+    sensor_batch = await self._get_sensor_batch()
+    if sensor_batch:
+        await self.cloud_request("POST", "/api/sync/receive", {
+            "source": "local",
+            "items": sensor_batch,
+            "priority": 1,
+        })
+
+# _sync_loop: Remove special case for sensor sync
+async def _sync_loop(self):
+    while self._running:
+        await self.push_to_cloud()      # includes sensor batch now
+        await self.pull_from_cloud()
+        await asyncio.sleep(self.config["sync_interval"])
 ```
 
 ---
@@ -1775,6 +2732,13 @@ CREATE TABLE sync_config (
 | equipment_readings | ✅ Push | ✅ Pull | [NEW] |
 | equipment_performance | ✅ Push | ✅ Pull | [NEW] |
 | sensor_data | ✅ Push | ✅ Pull | All sensor types |
+| sensor_types | ✅ Push | ✅ Pull | [NEW] |
+| sensors | ✅ Push | ✅ Pull | [NEW] Physical sensors |
+| sensor_alerts | ✅ Push | ✅ Pull | [NEW] |
+| sensor_daily_summary | ✅ Push | ✅ Pull | [NEW] |
+| sensor_threshold_configs | ✅ Push | ✅ Pull | [NEW] |
+| sensor_calibrations | ✅ Push | ✅ Pull | [NEW] |
+| sensor_maintenance_log | ✅ Push | ✅ Pull | [NEW] |
 | care_feeds | ✅ Push | ✅ Pull | meal→session mapping |
 | care_deaths | ✅ Push | ✅ Pull | count→quantity, cause→reason |
 | care_medications | ✅ Push | ✅ Pull | product_id→medication_id |
@@ -1792,14 +2756,16 @@ CREATE TABLE sync_config (
 | cycle_feed_program_items | ✅ Push | ✅ Pull | [NEW] |
 | cycle_feed_stages | ✅ Push | ✅ Pull | [NEW] |
 | cycle_splits | ✅ Push | ✅ Pull | [NEW] |
-| feed_brands | ❌ (cloud master) | ✅ Pull | Cloud is source |
-| feed_types | ❌ (cloud master) | ✅ Pull | |
-| medications | ❌ (cloud master) | ✅ Pull | |
-| suppliers | ✅ Push | ✅ Pull | Bidirectional |
-| vaccine_programs | ❌ (cloud master) | ✅ Pull | |
-| vaccine_program_items | ❌ (cloud master) | ✅ Pull | |
-| device_types | Seed data | Seed data | |
-| curtain_configs | ✅ Push | ✅ Pull | [NEW] |
+| feed_brands | ❌ (cloud master) | ✅ Pull | Cloud source → product_id FK |
+| feed_types | ❌ (cloud master) | ✅ Pull | Cloud source → product_id FK |
+| medications | ❌ (cloud master) | ✅ Pull | Cloud source → product_id FK |
+| suppliers | ❌ (cloud master) | ✅ Pull | Cloud source, EXPANDED fields |
+| products | ❌ (cloud master) | ✅ Pull | Cloud source, central catalog |
+| vaccine_programs | ❌ (cloud master) | ✅ Pull | Cloud source |
+| vaccine_program_items | ❌ (cloud master) | ✅ Pull | Cloud source → product_id FK |
+| equipment_types | ❌ (cloud master) | ✅ Pull | Cloud source, [NEW] MQTT JSONB |
+| device_types | Seed data | Seed data | MQTT protocol JSONB |
+| curtain_configs | ✅ Push | ✅ Pull | |
 
 ---
 
