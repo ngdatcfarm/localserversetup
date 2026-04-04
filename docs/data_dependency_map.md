@@ -247,7 +247,10 @@ CREATE TABLE care_litters (
 
 ---
 
-### 4. Device
+### 4. Device (IoT Controller)
+
+**Định nghĩa:** Device là **controller** - thiết bị IoT điều khiển từ xa qua MQTT.
+**Device điều khiển Equipment** - Device ra lệnh bật/tắt/quay cho thiết bị vật lý.
 
 ```sql
 CREATE TABLE devices (
@@ -268,6 +271,8 @@ CREATE TABLE devices (
     updated_at TIMESTAMPTZ DEFAULT NOW()
 );
 
+-- Device channels: các relay/output channels của Device (ESP32)
+-- Mỗi channel có thể điều khiển 1 Equipment
 CREATE TABLE device_channels (
     id SERIAL PRIMARY KEY,
     device_id INT REFERENCES devices(id) ON DELETE CASCADE,
@@ -362,6 +367,13 @@ Dùng `reference_type` + `reference_id` để track nguồn gốc.
 
 ### 6. Equipment (Fixed Assets)
 
+**Định nghĩa:** Equipment là **vật thể vật lý** - thiết bị cố định trong barn (quạt, sưởi, đèn...).
+**Equipment được điều khiển bởi Device** - thông qua device_channel.
+
+**Quy tắc:**
+- Device → điều khiển Equipment (1 Device có nhiều channels điều khiển nhiều Equipment)
+- Equipment → có thể có Device điều khiển nó (nullable, vì Equipment có thể là "stock" chưa lắp)
+
 ```sql
 CREATE TABLE equipment (
     id SERIAL PRIMARY KEY,
@@ -370,10 +382,13 @@ CREATE TABLE equipment (
     equipment_type VARCHAR(50),     -- 'fan' | 'heater' | 'light' | 'sensor' | etc.
     model VARCHAR(100),
     serial_no VARCHAR(100),
-    status VARCHAR(20) DEFAULT 'active',  -- 'active' | 'broken' | 'disposed'
+    status VARCHAR(20) DEFAULT 'active',  -- 'stock' | 'installed' | 'broken' | 'disposed'
     install_date DATE,
     warranty_until DATE,
     purchase_price DECIMAL(12,2),
+    -- Device linkage: Device điều khiển Equipment này
+    device_id INT REFERENCES devices(id),  -- nullable (chưa lắp thì không có)
+    device_channel INT,                  -- channel nào trên Device điều khiển
     notes TEXT,
     created_at TIMESTAMPTZ DEFAULT NOW()
 );
