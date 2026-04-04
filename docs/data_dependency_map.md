@@ -59,8 +59,18 @@ Equipment (1) ───< equipment_parts
 Equipment (1) ───< equipment_readings
 Equipment (1) ───< equipment_performance
 
-Warehouse (1) ─< inventory
-Warehouse (1) ─< inventory_transactions ←── care_feeds, care_medications, care_litters
+Warehouse
+├── warehouses ───────────────────── kho (central hoặc barn-specific)
+├── warehouse_zones ─────────────── vùng trong kho (receiving, storage, quarantine)
+├── products ─────────────────────── danh mục sản phẩm (feed, medication, equipment, consumable)
+├── inventory ─────────────────────── tồn kho hiện tại
+├── inventory_transactions ─────────── lịch sử xuất/nhập ←── care_feeds, care_medications, care_litters
+├── inventory_snapshots ───────────── snapshot tồn kho định kỳ
+├── inventory_alerts ───────────────── cảnh báo tồn kho
+├── suppliers ─────────────────────── nhà cung cấp
+├── purchase_orders ───────────────── đơn đặt hàng
+├── purchase_order_items ─────────── chi tiết đơn hàng
+└── stock_valuation ───────────────── định giá tồn kho
 
 SensorData: indexed by device_id + time (TimescaleDB hypertable)
 ```
@@ -109,8 +119,19 @@ Farm
     │   └── equipment_command_log ←── lịch sử bật/tắt Equipment
     │
     ├── Warehouse
-    │   ├── inventory
-    │   └── inventory_transactions ←── care_feeds, care_medications, care_litters
+    │   ├── warehouses ─────────────── kho (central/barn-specific)
+    │   │       ├── central warehouse ─── kho tổng (thuốc, equipment tiêu hao)
+    │   │       └── barn warehouses ──── kho theo barn (cám)
+    │   ├── warehouse_zones ─────────── vùng (receiving, storage, quarantine)
+    │   ├── products ─────────────────── danh mục sản phẩm
+    │   ├── inventory ─────────────────── tồn kho hiện tại
+    │   ├── inventory_transactions ─────── xuất/nhập (side-effect từ care)
+    │   ├── inventory_snapshots ────────── snapshot định kỳ
+    │   ├── inventory_alerts ─────────── cảnh báo (low stock, expiry)
+    │   ├── suppliers ─────────────────── nhà cung cấp
+    │   ├── purchase_orders ───────────── đơn đặt hàng
+    │   ├── purchase_order_items ───────── chi tiết đơn hàng
+    │   └── stock_valuation ───────────── định giá tồn kho
     │
     ├── Equipment
     │   ├── equipment_parts ─────────── linh kiện thay thế (bạc, dây curoa...)
@@ -595,52 +616,476 @@ ORDER BY dc.channel_number;
 
 ### 5. Warehouse
 
+**Định nghĩa:** Warehouse là nơi lưu trữ nguyên vật liệu, thuốc, thiết bị tiêu hao.
+Có 2 loại: **Barn Warehouse** (mỗi barn có kho cám riêng) và **Central Warehouse** (kho tổng chung).
+
+**Phân loại:**
+- **feed_warehouse** — kho cám cho từng barn
+- **medication_warehouse** — kho thuốc (tập trung hoặc theo barn)
+- **general_warehouse** — kho tổng chứa equipment tiêu hao, phụ tùng
+
+**Cross-Domain Pattern:**
+inventory_transactions là "fact table" - được tạo như **side-effect** từ các care operations.
+
 ```sql
+-- ============================================
+-- 5.1 Warehouses
+-- ============================================
 CREATE TABLE warehouses (
     id SERIAL PRIMARY KEY,
-    code VARCHAR(50) UNIQUE NOT NULL,
+    warehouse_code VARCHAR(50) UNIQUE NOT NULL,  -- 'WH-CENTRAL', 'WH-BARN01-FEED'
     name VARCHAR(200) NOT NULL,
-    warehouse_type VARCHAR(20) NOT NULL,  -- 'feed' | 'medication' | 'general'
-    barn_id VARCHAR(50) REFERENCES barns(id),  -- nullable (central warehouse)
-    active BOOLEAN DEFAULT TRUE,
+
+    -- Classification
+    warehouse_type VARCHAR(20) NOT NULL,  -- 'feed' | 'medication' | 'general' | 'central'
+    is_central BOOLEAN DEFAULT FALSE,   -- TRUE = kho tổng
+
+    -- Location
+    barn_id VARCHAR(50) REFERENCES barns(id),  -- NULL for central warehouse
+    address TEXT,
+    zone VARCHAR(50),                      -- 'zone_A' | 'storage' | 'receiving'
+    location_description VARCHAR(200),
+
+    -- Physical
+    length_m DECIMAL(6,2),
+    width_m DECIMAL(6,2),
+    height_m DECIMAL(6,2),
+    floor_area_sqm DECIMAL(10,2),         -- computed: length * width
+    volume_cbm DECIMAL(10,2),             -- computed: length * width * height
+    storage_capacity_units INT,           -- số tấn có thể lưu trữ
+
+    -- Environment
+    has_ventilation BOOLEAN DEFAULT FALSE,
+    has_humidifier BOOLEAN DEFAULT FALSE,
+    has_dehumidifier BOOLEAN DEFAULT FALSE,
+    has_temperature_control BOOLEAN DEFAULT FALSE,
+    temperature_range_min DECIMAL(5,2),
+    temperature_range_max DECIMAL(5,2),
+
+    -- Contact
+    manager_name VARCHAR(100),
+    manager_phone VARCHAR(20),
+    manager_email VARCHAR(100),
+
+    -- Status
+    is_active BOOLEAN DEFAULT TRUE,
+    operational_status VARCHAR(20) DEFAULT 'operational',  -- 'operational' | 'full' | 'maintenance' | 'closed'
+
+    -- Cost
+    rental_cost_monthly DECIMAL(12,2),
+    electricity_cost_monthly DECIMAL(12,2),
+
+    notes TEXT,
+    metadata JSONB,
+    created_at TIMESTAMPTZ DEFAULT NOW(),
+    updated_at TIMESTAMPTZ DEFAULT NOW()
+);
+
+-- ============================================
+-- 5.2 Warehouse Zones
+-- ============================================
+-- Vùng trong kho: khu vực nhận hàng, khu vực lưu trữ, khu vực cách ly
+CREATE TABLE warehouse_zones (
+    id SERIAL PRIMARY KEY,
+    warehouse_id INT REFERENCES warehouses(id) ON DELETE CASCADE,
+    zone_code VARCHAR(20) NOT NULL,     -- 'RECEIVING' | 'STORAGE' | 'QUARANTINE' | 'EXPIRED' | 'RETURNS'
+    zone_name VARCHAR(100) NOT NULL,
+    zone_type VARCHAR(30),               -- 'receiving' | 'storage' | 'cold_storage' | 'quarantine' | 'expired' | 'returns'
+    floor INT DEFAULT 1,
+    shelf_count INT,                    -- số kệ trong vùng
+    bin_count INT,                      -- số ngăn trong kệ
+
+    -- Storage specs
+    max_capacity_units DECIMAL(10,2),
+    current_capacity_units DECIMAL(10,2),  -- computed from inventory
+
+    -- Environment requirements
+    required_temp_min DECIMAL(5,2),
+    required_temp_max DECIMAL(5,2),
+    required_humidity_min DECIMAL(5,2),
+    required_humidity_max DECIMAL(5,2),
+
+    notes TEXT,
+    is_active BOOLEAN DEFAULT TRUE,
     created_at TIMESTAMPTZ DEFAULT NOW()
 );
 
-CREATE TABLE inventory (
+-- ============================================
+-- 5.3 Products (Danh mục sản phẩm)
+-- ============================================
+-- Tất cả sản phẩm có thể lưu trữ: cám, thuốc, equipment tiêu hao
+CREATE TABLE products (
     id SERIAL PRIMARY KEY,
-    warehouse_id INT REFERENCES warehouses(id),
-    product_id INT REFERENCES products(id),
-    quantity DOUBLE PRECISION DEFAULT 0,
-    updated_at TIMESTAMPTZ DEFAULT NOW(),
-    UNIQUE(warehouse_id, product_id)
+    product_code VARCHAR(50) UNIQUE NOT NULL,
+    barcode VARCHAR(50),
+
+    -- Classification
+    product_type VARCHAR(20) NOT NULL,  -- 'feed' | 'medication' | 'equipment' | 'consumable' | ' spare_part' | 'vaccine'
+    category VARCHAR(50),               -- 'starter_feed' | 'grower_feed' | 'finisher_feed'
+    sub_category VARCHAR(50),
+    product_name VARCHAR(200) NOT NULL,
+    brand_name VARCHAR(100),
+
+    -- Unit
+    unit VARCHAR(20) NOT NULL,         -- 'kg' | 'bag' | 'liter' | 'piece' | 'box'
+    unit_size DECIMAL(10,2),           -- kích thước đóng gói: 25kg/bag, 50kg/bag
+    conversion_factor DECIMAL(10,2),    -- số kg per unit: 1 bag = 25kg
+
+    -- Pricing
+    unit_price DECIMAL(12,2),
+    currency VARCHAR(10) DEFAULT 'VND',
+    last_purchase_price DECIMAL(12,2),
+
+    -- Stock alerts
+    min_stock_level DECIMAL(10,2),    -- mức tồn kho tối thiểu
+    max_stock_level DECIMAL(10,2),     -- mức tồn kho tối đa
+    reorder_point DECIMAL(10,2),        -- điểm đặt hàng lại
+    lead_time_days INT DEFAULT 3,       -- ngày chờ từ khi đặt đến khi nhận
+
+    -- Shelf life
+    default_shelf_life_days INT,
+    requires_expiry_tracking BOOLEAN DEFAULT FALSE,
+
+    -- Storage
+    requires_cold_storage BOOLEAN DEFAULT FALSE,
+    storage_temp_min DECIMAL(5,2),
+    storage_temp_max DECIMAL(5,2),
+
+    -- Suppliers
+    preferred_supplier_id INT REFERENCES suppliers(id),
+    supplier_product_code VARCHAR(100),  -- mã sản phẩm của nhà cung cấp
+
+    -- Status
+    is_active BOOLEAN DEFAULT TRUE,
+    is_tracked BOOLEAN DEFAULT TRUE,   -- có tracking tồn kho không
+
+    notes TEXT,
+    metadata JSONB,
+    created_at TIMESTAMPTZ DEFAULT NOW(),
+    updated_at TIMESTAMPTZ DEFAULT NOW()
 );
 
+-- ============================================
+-- 5.4 Inventory (Tồn kho hiện tại)
+-- ============================================
+CREATE TABLE inventory (
+    id SERIAL PRIMARY KEY,
+    warehouse_id INT REFERENCES warehouses(id) ON DELETE CASCADE,
+    product_id INT REFERENCES products(id) ON DELETE CASCADE,
+    zone_id INT REFERENCES warehouse_zones(id),  -- vùng lưu trữ
+
+    -- Quantity
+    quantity DECIMAL(10,2) DEFAULT 0,
+    reserved_quantity DECIMAL(10,2) DEFAULT 0,  -- đã đặt nhưng chưa xuất
+    available_quantity DECIMAL(10,2) DEFAULT 0, -- quantity - reserved_quantity
+
+    -- Batch
+    batch_number VARCHAR(100),
+    manufacturing_date DATE,
+    expiry_date DATE,
+
+    -- Cost
+    unit_cost DECIMAL(12,2),           -- chi phí hiện tại
+    total_value DECIMAL(12,2),         -- computed: quantity * unit_cost
+
+    -- Status
+    stock_status VARCHAR(20) DEFAULT 'available',  -- 'available' | 'reserved' | 'quarantine' | 'expired' | 'damaged'
+    quality_status VARCHAR(20) DEFAULT 'good',      -- 'good' | 'damaged' | 'contaminated'
+
+    -- Location
+    shelf VARCHAR(20),                 -- 'A1', 'B2'
+    bin VARCHAR(20),
+
+    updated_at TIMESTAMPTZ DEFAULT NOW(),
+    UNIQUE(warehouse_id, product_id, batch_number)
+);
+
+-- ============================================
+-- 5.5 Inventory Transactions
+-- ============================================
 CREATE TABLE inventory_transactions (
     id SERIAL PRIMARY KEY,
+    transaction_code VARCHAR(50) UNIQUE NOT NULL,  -- 'IN-2026-0001'
+
     warehouse_id INT REFERENCES warehouses(id),
     product_id INT REFERENCES products(id),
-    transaction_type VARCHAR(20) NOT NULL,  -- 'import' | 'export' | 'transfer'
-    -- Cross-domain references (fact table pattern):
+    zone_id INT REFERENCES warehouse_zones(id),
+
+    -- Transaction type
+    transaction_type VARCHAR(20) NOT NULL,  -- 'import' | 'export' | 'transfer' | 'adjust' | 'damage' | 'dispose'
+    transaction_reason VARCHAR(100),
+
+    -- Quantity
+    quantity DECIMAL(10,2) NOT NULL,        -- âm cho export
+    unit_cost DECIMAL(12,2),
+    total_value DECIMAL(12,2),
+
+    -- Reference to source (cross-domain)
     -- reference_type = 'care_feed'     → reference_id = care_feeds.id
     -- reference_type = 'care_med'      → reference_id = care_medications.id
     -- reference_type = 'care_litter'   → reference_id = care_litters.id
-    -- reference_type = 'transfer'      → reference_id = self (for transfer pairs)
+    -- reference_type = 'purchase'      → reference_id = purchase_orders.id
+    -- reference_type = 'transfer'      → reference_id = self (for paired transfer)
     reference_type VARCHAR(50),
     reference_id INT,
+
+    -- For transfers
     from_warehouse_id INT REFERENCES warehouses(id),
-    supplier VARCHAR(200),
-    unit_price DECIMAL(12,2),
+    to_warehouse_id INT REFERENCES warehouses(id),
+
+    -- Supplier
+    supplier_id INT REFERENCES suppliers(id),
+    supplier_name VARCHAR(200),
+
+    -- Batch & Expiry
     batch_number VARCHAR(100),
+    manufacturing_date DATE,
     expiry_date DATE,
+
+    -- Cost breakdown
+    unit_price DECIMAL(12,2),
+    discount_pct DECIMAL(5,2),
+    tax_pct DECIMAL(5,2),
+    shipping_cost DECIMAL(12,2),
+
+    -- Documentation
+    invoice_no VARCHAR(100),
+    delivery_note_no VARCHAR(100),
+
+    -- User
+    performed_by VARCHAR(100),
+
     notes TEXT,
-    created_by VARCHAR(100),
+    metadata JSONB,
     created_at TIMESTAMPTZ DEFAULT NOW()
+);
+
+-- ============================================
+-- 5.6 Inventory Snapshots
+-- ============================================
+-- Snapshot tồn kho định kỳ cho báo cáo
+CREATE TABLE inventory_snapshots (
+    id SERIAL PRIMARY KEY,
+    snapshot_date DATE NOT NULL,
+    warehouse_id INT REFERENCES warehouses(id),
+    product_id INT REFERENCES products(id),
+
+    -- Quantities at snapshot time
+    opening_quantity DECIMAL(10,2),
+    received_quantity DECIMAL(10,2),
+    delivered_quantity DECIMAL(10,2),
+    closing_quantity DECIMAL(10,2),
+    reserved_quantity DECIMAL(10,2),
+
+    -- Value
+    opening_value DECIMAL(12,2),
+    received_value DECIMAL(12,2),
+    delivered_value DECIMAL(12,2),
+    closing_value DECIMAL(12,2),
+
+    -- Metrics
+    stock_turnover_days INT,
+    avg_daily_consumption DECIMAL(10,2),
+    days_of_stock_remaining INT,
+
+    created_at TIMESTAMPTZ DEFAULT NOW(),
+    UNIQUE(snapshot_date, warehouse_id, product_id)
+);
+
+-- ============================================
+-- 5.7 Inventory Alerts
+-- ============================================
+CREATE TABLE inventory_alerts (
+    id SERIAL PRIMARY KEY,
+    warehouse_id INT REFERENCES warehouses(id),
+    product_id INT REFERENCES products(id),
+
+    alert_type VARCHAR(30) NOT NULL,  -- 'low_stock' | 'out_of_stock' | 'expiry_warning' | 'expiry_critical' | 'overstock' | 'damage'
+    severity VARCHAR(20) NOT NULL,    -- 'info' | 'warning' | 'critical'
+
+    message TEXT NOT NULL,
+    current_quantity DECIMAL(10,2),
+    threshold_value DECIMAL(10,2),
+
+    suggested_action TEXT,
+    suggested_order_quantity DECIMAL(10,2),
+
+    acknowledged BOOLEAN DEFAULT FALSE,
+    acknowledged_by VARCHAR(100),
+    acknowledged_at TIMESTAMPTZ,
+    resolved_at TIMESTAMPTZ,
+
+    expires_at TIMESTAMPTZ,
+    created_at TIMESTAMPTZ DEFAULT NOW()
+);
+
+-- ============================================
+-- 5.8 Suppliers
+-- ============================================
+CREATE TABLE suppliers (
+    id SERIAL PRIMARY KEY,
+    supplier_code VARCHAR(50) UNIQUE NOT NULL,
+    name VARCHAR(200) NOT NULL,
+
+    contact_name VARCHAR(100),
+    contact_phone VARCHAR(20),
+    contact_email VARCHAR(100),
+    contact_position VARCHAR(100),
+
+    address TEXT,
+    tax_code VARCHAR(50),
+    website VARCHAR(200),
+
+    -- Business info
+    payment_terms VARCHAR(100),       -- 'net30' | 'cod' | 'prepaid'
+    credit_limit DECIMAL(12,2),
+    rating INT DEFAULT 3,             -- 1-5 stars
+
+    -- Categories they supply
+    supplies_product_types VARCHAR(100)[],  -- ARRAY['feed', 'medication', 'equipment']
+
+    bank_name VARCHAR(100),
+    bank_account VARCHAR(50),
+
+    notes TEXT,
+    is_active BOOLEAN DEFAULT TRUE,
+    created_at TIMESTAMPTZ DEFAULT NOW(),
+    updated_at TIMESTAMPTZ DEFAULT NOW()
+);
+
+-- ============================================
+-- 5.9 Purchase Orders
+-- ============================================
+CREATE TABLE purchase_orders (
+    id SERIAL PRIMARY KEY,
+    order_code VARCHAR(50) UNIQUE NOT NULL,  -- 'PO-2026-0001'
+
+    supplier_id INT REFERENCES suppliers(id),
+
+    -- Order details
+    order_date DATE NOT NULL,
+    expected_delivery_date DATE,
+    actual_delivery_date DATE,
+
+    -- Status
+    status VARCHAR(20) NOT NULL DEFAULT 'draft',  -- 'draft' | 'submitted' | 'confirmed' | 'partial' | 'received' | 'cancelled'
+    fulfillment_status VARCHAR(20),  -- 'not_received' | 'partial' | 'complete'
+
+    -- Financial
+    subtotal DECIMAL(12,2),
+    discount_pct DECIMAL(5,2),
+    discount_amount DECIMAL(12,2),
+    tax_pct DECIMAL(5,2),
+    tax_amount DECIMAL(12,2),
+    total_amount DECIMAL(12,2),
+    paid_amount DECIMAL(12,2),
+    currency VARCHAR(10) DEFAULT 'VND',
+
+    -- Delivery
+    delivery_address TEXT,
+    delivery_contact VARCHAR(100),
+    delivery_phone VARCHAR(20),
+
+    -- Notes
+    internal_notes TEXT,
+    supplier_notes TEXT,
+
+    prepared_by VARCHAR(100),
+    approved_by VARCHAR(100),
+    received_by VARCHAR(100),
+
+    created_at TIMESTAMPTZ DEFAULT NOW(),
+    updated_at TIMESTAMPTZ DEFAULT NOW()
+);
+
+-- ============================================
+-- 5.10 Purchase Order Items
+-- ============================================
+CREATE TABLE purchase_order_items (
+    id SERIAL PRIMARY KEY,
+    purchase_order_id INT REFERENCES purchase_orders(id) ON DELETE CASCADE,
+    product_id INT REFERENCES products(id),
+
+    -- Quantity
+    ordered_quantity DECIMAL(10,2) NOT NULL,
+    received_quantity DECIMAL(10,2) DEFAULT 0,
+    rejected_quantity DECIMAL(10,2) DEFAULT 0,
+
+    -- Pricing
+    unit_price DECIMAL(12,2) NOT NULL,
+    discount_pct DECIMAL(5,2),
+    line_total DECIMAL(12,2),
+
+    -- Delivery
+    expected_delivery_date DATE,
+
+    -- Status
+    status VARCHAR(20) DEFAULT 'pending',  -- 'pending' | 'partial' | 'complete' | 'cancelled'
+
+    notes TEXT,
+    created_at TIMESTAMPTZ DEFAULT NOW()
+);
+
+-- ============================================
+-- 5.11 Stock Valuation
+-- ============================================
+-- Định giá tồn kho theo các phương pháp
+CREATE TABLE stock_valuation (
+    id SERIAL PRIMARY KEY,
+    valuation_date DATE NOT NULL,
+
+    warehouse_id INT REFERENCES warehouses(id),
+    product_id INT REFERENCES products(id),
+
+    -- Valuation methods
+    quantity_on_hand DECIMAL(10,2),
+    unit_cost DECIMAL(12,2),
+
+    -- FIFO
+    fifo_unit_cost DECIMAL(12,2),
+    fifo_total_value DECIMAL(12,2),
+
+    -- Average
+    avg_unit_cost DECIMAL(12,2),
+    avg_total_value DECIMAL(12,2),
+
+    -- Latest
+    latest_unit_cost DECIMAL(12,2),
+    latest_total_value DECIMAL(12,2),
+
+    created_at TIMESTAMPTZ DEFAULT NOW(),
+    UNIQUE(valuation_date, warehouse_id, product_id)
 );
 ```
 
-**Cross-Domain Pattern:**
-inventory_transactions là "fact table" - nó được tạo như **side-effect** từ các care operations.
-Dùng `reference_type` + `reference_id` để track nguồn gốc.
+**Query: "Kho tổng còn bao nhiêu thuốc?"**
+```sql
+SELECT p.product_name, p.unit, SUM(i.quantity) as total_stock, w.name as warehouse
+FROM inventory i
+JOIN products p ON i.product_id = p.id
+JOIN warehouses w ON i.warehouse_id = w.id
+WHERE p.product_type = 'medication'
+  AND w.is_central = TRUE
+GROUP BY p.id, w.id;
+```
+
+**Query: "Cảnh báo sắp hết thuốc?"**
+```sql
+SELECT p.product_name, i.quantity, p.min_stock_level, p.reorder_point
+FROM inventory i
+JOIN products p ON i.product_id = p.id
+WHERE i.quantity <= p.reorder_point
+  AND p.is_active = TRUE
+ORDER BY i.quantity ASC;
+```
+
+**Query: "Tổng giá trị tồn kho kho tổng?"**
+```sql
+SELECT SUM(i.quantity * i.unit_cost) as total_value
+FROM inventory i
+JOIN warehouses w ON i.warehouse_id = w.id
+WHERE w.is_central = TRUE;
+```
 
 ---
 
@@ -1314,9 +1759,17 @@ CREATE TABLE sync_config (
 | device_config_versions | ✅ Push | ✅ Pull | [NEW] |
 | equipment_assignment_log | ✅ Push | ✅ Pull | |
 | equipment_command_log | ✅ Push | ✅ Pull | |
-| warehouses | ✅ Push | ✅ Pull | |
+| warehouses | ✅ Push | ✅ Pull | Central + barn-specific |
+| warehouse_zones | ✅ Push | ✅ Pull | [NEW] |
+| products | ✅ Push | ✅ Pull | [NEW] |
 | inventory | ✅ Push | ✅ Pull | |
 | inventory_transactions | ✅ Push | ✅ Pull | Side-effect from care ops |
+| inventory_snapshots | ✅ Push | ✅ Pull | [NEW] |
+| inventory_alerts | ✅ Push | ✅ Pull | [NEW] |
+| suppliers | ✅ Push | ✅ Pull | Bidirectional |
+| purchase_orders | ✅ Push | ✅ Pull | [NEW] |
+| purchase_order_items | ✅ Push | ✅ Pull | [NEW] |
+| stock_valuation | ✅ Push | ✅ Pull | [NEW] |
 | equipment | ✅ Push | ✅ Pull | |
 | equipment_parts | ✅ Push | ✅ Pull | [NEW] |
 | equipment_readings | ✅ Push | ✅ Pull | [NEW] |
