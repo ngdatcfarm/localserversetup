@@ -462,7 +462,14 @@ SERVICES:   ⬜ 5 new services (Snapshot, Anomaly, EditPermission, etc.)
    - FieldMapper (map column names)
    - ConflictResolver (last-write-wins vs merge)
 
-2. **Feature Development** - proceed with IoT hybrid and farm management features
+2. **Entity Logic Roadmap** - see `docs/entity_logic_roadmap.md`
+   - Phase 1: Farm Infrastructure (Farm → Barn → Warehouse)
+   - Phase 2: IoT Infrastructure (Device → Equipment/Sensor)
+   - Phase 3: Inventory & Products (Supplier → Product → Inventory)
+   - Phase 4: Operations (Cycle → Care operations)
+   - Phase 5: Sync Integration
+
+3. **Feature Development** - proceed with IoT hybrid and farm management features
 
 ---
 
