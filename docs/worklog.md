@@ -436,7 +436,22 @@ SERVICES:   ⬜ 5 new services (Snapshot, Anomaly, EditPermission, etc.)
 ### 🔄 Current Status
 - Sync: running=true, pushed=7, pulled=4, errors=0
 - Local tables: 78 (up from 55)
-- Cloud tables: synced via bidirectional sync
+- Cloud: partial sync (schema mismatch on some tables - acceptable for hybrid)
+
+### Hybrid Architecture Notes (2026-04-04)
+
+**Local = Primary:**
+- Full IoT operations (ESP32 MQTT, relay control, sensor data)
+- Complete farm management (cycles, feeds, medications, inventory)
+- PostgreSQL with 78 tables
+- All triggers and sync_queue active
+
+**Cloud = Replica (functional, partial data):**
+- Web UI functional (same pages as local)
+- Bidirectional sync active
+- Schema mismatch on: cycles (initial_count vs initial_quantity), device_commands
+- **Acceptable for hybrid use** - cloud has ~7 synced tables, sufficient for web UI
+- LAN-only features (IP cameras) stay on local only
 
 ### ⬜ Pending
 
@@ -447,7 +462,7 @@ SERVICES:   ⬜ 5 new services (Snapshot, Anomaly, EditPermission, etc.)
    - FieldMapper (map column names)
    - ConflictResolver (last-write-wins vs merge)
 
-2. **Data Migration** - migrate existing local data into new tables
+2. **Feature Development** - proceed with IoT hybrid and farm management features
 
 ---
 
