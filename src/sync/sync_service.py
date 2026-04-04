@@ -97,10 +97,14 @@ class SyncService:
         return token == self.config["local_token"]
 
     def _auth_headers(self) -> dict:
-        """Headers for calling cloud API."""
+        """Headers for calling cloud API.
+
+        Cloud verify_token() checks sync_config.local_token.
+        So local must send local_token as Bearer token.
+        """
         headers = {"Content-Type": "application/json"}
-        if self.config["api_token"]:
-            headers["Authorization"] = f"Bearer {self.config['api_token']}"
+        if self.config.get("local_token"):
+            headers["Authorization"] = f"Bearer {self.config['local_token']}"
         return headers
 
     # ── Cloud API Client ─────────────────────────────
