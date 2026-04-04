@@ -55,6 +55,10 @@ Device (1) ───< device_config_versions
 Device (1) ───< equipment_assignment_log
 Device (1) ───< equipment_command_log
 
+Equipment (1) ───< equipment_parts
+Equipment (1) ───< equipment_readings
+Equipment (1) ───< equipment_performance
+
 Warehouse (1) ─< inventory
 Warehouse (1) ─< inventory_transactions ←── care_feeds, care_medications, care_litters
 
@@ -108,7 +112,11 @@ Farm
     │   ├── inventory
     │   └── inventory_transactions ←── care_feeds, care_medications, care_litters
     │
-    ├── Equipment [NEW]
+    ├── Equipment
+    │   ├── equipment_parts ─────────── linh kiện thay thế (bạc, dây curoa...)
+    │   ├── equipment_readings ───────── sensor readings từ equipment
+    │   └── equipment_performance ─────── snapshot hiệu suất định kỳ
+    │
     └── SensorData
 
 Reference Data (independent, Cloud→Local sync):
@@ -638,33 +646,243 @@ Dùng `reference_type` + `reference_id` để track nguồn gốc.
 
 ### 6. Equipment (Fixed Assets)
 
-**Định nghĩa:** Equipment là **vật thể vật lý** - thiết bị cố định trong barn (quạt, sưởi, đèn...).
+**Định nghĩa:** Equipment là **vật thể vật lý** - thiết bị cố định trong barn (quạt, sưởi, đèn, bạt, sensor...).
 **Equipment được điều khiển bởi Device** - thông qua device_channel.
 
 **Quy tắc:**
-- Device → điều khiển Equipment (1 Device có nhiều channels điều khiển nhiều Equipment)
-- Equipment → có thể được điều khiển bởi Device (qua device_channels.equipment_id)
-- Equipment không cần device_id/device_channel - đó là mối quan hệ ngược (reverse reference)
+- Equipment → được điều khiển bởi Device qua `device_channels.equipment_id` (reverse FK)
+- Equipment có thể có Device điều khiển hoặc không (status = 'stock')
+- Equipment có thể gắn sensor tích hợp
+
+**Equipment Types:**
+- **Active** (tiêu tốn năng lượng): quạt, sưởi, đèn, bơm nước, bạt
+- **Passive** (không tiêu tốn): khung, máng ăn, máng nước
+- **Sensor** (thu thập dữ liệu): cảm biến nhiệt, cảm biến khí
+- **Infrastructure** (kết cấu): bạt, tường, cửa
 
 ```sql
+-- ============================================
+-- 6.1 Equipment
+-- ============================================
 CREATE TABLE equipment (
     id SERIAL PRIMARY KEY,
-    barn_id VARCHAR(50) REFERENCES barns(id),
-    name VARCHAR(200) NOT NULL,
-    equipment_type VARCHAR(50),     -- 'fan' | 'heater' | 'light' | 'curtain' | 'sensor' | etc.
+    equipment_code VARCHAR(50) UNIQUE NOT NULL,  -- 'EQ-FAN-001'
+
+    -- Classification
+    equipment_type VARCHAR(50) NOT NULL,  -- 'fan' | 'heater' | 'light' | 'curtain' | 'sensor' | 'pump' | 'feeder' | 'drinker'
+    subtype VARCHAR(50),                    -- 'exhaust_fan' | 'circulation_fan' | 'pad_cooling'
+    manufacturer VARCHAR(100),              -- 'VinaFan' | 'Delta' | 'Sanyo'
     model VARCHAR(100),
+    series VARCHAR(50),
+
+    -- Identity
+    name VARCHAR(200) NOT NULL,
+    description TEXT,
     serial_no VARCHAR(100),
-    status VARCHAR(20) DEFAULT 'active',  -- 'stock' | 'installed' | 'broken' | 'disposed'
-    install_date DATE,
-    warranty_until DATE,
+    manufacturing_date DATE,
+
+    -- Location
+    barn_id VARCHAR(50) REFERENCES barns(id),
+    zone VARCHAR(50),                      -- 'zone_A' | 'zone_B'
+    location_description VARCHAR(200),     -- 'Cửa ra vào, tầng 2'
+    floor INT DEFAULT 1,
+
+    -- Physical
+    weight_kg DECIMAL(8,2),
+    dimensions_lwh_cm VARCHAR(50),         -- '100x60x150' cm
+    color VARCHAR(30),
+    material VARCHAR(50),                  -- 'metal' | 'plastic' | 'aluminum'
+
+    -- Electrical
+    voltage_v INT,                          -- 220V, 380V
+    phase INT DEFAULT 1,                   -- 1 phase, 3 phase
+    frequency_hz INT DEFAULT 50,
+    power_watts INT,                       -- công suất danh nghĩa
+    amperage_amps DECIMAL(6,2),
+    power_factor DECIMAL(4,2),
+
+    -- Performance
+    capacity_spec VARCHAR(100),            -- '5000 CFM' | '15000 BTU'
+    efficiency_rating VARCHAR(20),         -- 'A+' | 'B' | 'IP55'
+    speed_levels INT DEFAULT 1,             -- số cấp tốc độ
+    airflow_cmh INT,                        -- luồng không khí m3/h
+
+    -- Financial
+    purchase_date DATE,
     purchase_price DECIMAL(12,2),
-    -- current_assignment: biết channel nào đang điều khiển
-    -- (query qua device_channels WHERE equipment_id = this.id)
+    currency VARCHAR(10) DEFAULT 'VND',
+    vendor VARCHAR(200),
+    invoice_no VARCHAR(100),
+    depreciation_years INT DEFAULT 5,
+    depreciation_method VARCHAR(20) DEFAULT 'straight_line',  -- 'straight_line' | 'declining'
+    residual_value DECIMAL(12,2) DEFAULT 0,
+
+    -- Status & Deployment
+    status VARCHAR(20) DEFAULT 'active',  -- 'stock' | 'installed' | 'running' | 'idle' | 'broken' | 'disposed' | 'retired'
+    install_date DATE,
+    commissioning_date DATE,              -- ngày bắt đầu vận hành
+    operation_start_date DATE,            -- ngày bắt đầu sử dụng thực tế
+
+    -- Warranty & Maintenance
+    warranty_until DATE,
+    maintenance_interval_days INT,         -- khoảng cách bảo trì định kỳ (ngày)
+    last_maintenance_at TIMESTAMPTZ,
+    next_maintenance_at DATE,
+    maintenance_cost DECIMAL(12,2),
+
+    -- Performance Tracking
+    runtime_hours DECIMAL(12,2) DEFAULT 0,           -- giờ chạy hiện tại
+    total_runtime_hours DECIMAL(12,2) DEFAULT 0,     -- tổng giờ chạy
+    energy_consumption_kwh DECIMAL(10,2) DEFAULT 0,  -- kWh tiêu thụ hiện tại
+    total_energy_kwh DECIMAL(12,2) DEFAULT 0,       -- tổng kWh tiêu thụ
+    on_off_cycles INT DEFAULT 0,            -- số lần bật/tắt
+    avg_daily_runtime_hours DECIMAL(6,2),  -- tính tự động
+
+    -- Cost Tracking
+    electricity_cost DECIMAL(12,2),       -- chi phí điện
+    repair_count INT DEFAULT 0,
+    total_repair_cost DECIMAL(12,2),
+
+    -- Current Device Assignment
+    -- (query via device_channels WHERE equipment_id = this.id)
+    -- Equipment không có device_id - đó là reverse FK
+
+    -- Documentation
+    manual_url VARCHAR(500),
+    warranty_card_url VARCHAR(500),
+    photos JSONB,                         -- ['url1', 'url2']
+
+    -- Extra
+    notes TEXT,
+    metadata JSONB,
+    is_active BOOLEAN DEFAULT TRUE,
+
+    created_at TIMESTAMPTZ DEFAULT NOW(),
+    updated_at TIMESTAMPTZ DEFAULT NOW()
+);
+
+-- ============================================
+-- 6.2 Equipment Parts (linh kiện thay thế)
+-- ============================================
+-- Các parts/components của Equipment (bạc lót, dây curoa, cánh quạt...)
+CREATE TABLE equipment_parts (
+    id SERIAL PRIMARY KEY,
+    equipment_id INT REFERENCES equipment(id) ON DELETE CASCADE,
+    part_code VARCHAR(50),
+    part_name VARCHAR(200) NOT NULL,
+    part_type VARCHAR(50),               -- 'bearing' | 'belt' | 'blade' | 'motor' | 'capacitor' | 'filter'
+    serial_no VARCHAR(100),
+    quantity INT DEFAULT 1,
+    unit VARCHAR(20),
+
+    -- Replacement
+    install_date DATE,
+    replace_after_hours DECIMAL(10,2),   -- thay sau X giờ
+    replace_after_cycles INT,
+    last_replaced_at TIMESTAMPTZ,
+    next_replacement_at DATE,
+
+    -- Cost
+    unit_cost DECIMAL(10,2),
+    supplier VARCHAR(200),
+
     notes TEXT,
     created_at TIMESTAMPTZ DEFAULT NOW()
 );
--- NOTE: Equipment được điều khiển từ device_channels.equipment_id FK
---       Không cần device_id trong equipment vì đó là reverse relationship
+
+-- ============================================
+-- 6.3 Equipment Readings (sensor readings từ equipment)
+-- ============================================
+-- Equipment có sensor tích hợp (VD: biến tần đo công suất, motor có temperature sensor)
+CREATE TABLE equipment_readings (
+    id SERIAL PRIMARY KEY,
+    equipment_id INT REFERENCES equipment(id) ON DELETE CASCADE,
+    reading_type VARCHAR(50) NOT NULL,  -- 'temperature' | 'vibration' | 'current' | 'voltage' | 'rpm' | 'pressure'
+    reading_value DECIMAL(12,4) NOT NULL,
+    reading_unit VARCHAR(20),
+    reading_quality VARCHAR(20),         -- 'good' | 'warning' | 'critical'
+    threshold_min DECIMAL(12,4),
+    threshold_max DECIMAL(12,4),
+    reading_at TIMESTAMPTZ NOT NULL,
+    source VARCHAR(50),                  -- 'internal_sensor' | 'external_sensor' | 'manual'
+    notes TEXT,
+    created_at TIMESTAMPTZ DEFAULT NOW()
+);
+
+-- ============================================
+-- 6.4 Equipment Performance Summary (snapshot)
+-- ============================================
+-- Tổng hợp hiệu suất định kỳ (ngày/tuần/tháng)
+CREATE TABLE equipment_performance (
+    id SERIAL PRIMARY KEY,
+    equipment_id INT REFERENCES equipment(id) ON DELETE CASCADE,
+    period_type VARCHAR(10) NOT NULL,   -- 'daily' | 'weekly' | 'monthly'
+    period_start DATE NOT NULL,
+    period_end DATE NOT NULL,
+
+    -- Runtime
+    total_runtime_hours DECIMAL(8,2),
+    total_off_hours DECIMAL(8,2),
+    on_off_cycles INT,
+
+    -- Energy
+    total_energy_kwh DECIMAL(10,2),
+    avg_power_kw DECIMAL(8,2),
+    energy_cost DECIMAL(10,2),
+
+    -- Performance
+    avg_efficiency DECIMAL(5,2),        -- % hiệu suất trung bình
+    max_load_pct DECIMAL(5,2),         -- % tải tối đa
+    idle_time_pct DECIMAL(5,2),         -- % thời gian idle
+
+    -- Alerts
+    alert_count INT DEFAULT 0,
+    critical_alerts INT DEFAULT 0,
+
+    -- Cost
+    maintenance_cost DECIMAL(10,2),
+    electricity_cost DECIMAL(10,2),
+    total_operating_cost DECIMAL(12,2),
+
+    created_at TIMESTAMPTZ DEFAULT NOW(),
+    UNIQUE(equipment_id, period_type, period_start)
+);
+
+-- ============================================
+-- 6.5 Equipment Assignment Log (already defined above)
+-- ============================================
+-- Lịch sử gán channel → Equipment
+-- Defined in Device section as equipment_assignment_log
+
+-- ============================================
+-- 6.6 Equipment Command Log (already defined above)
+-- ============================================
+-- Lịch sử bật/tắt Equipment
+-- Defined in Device section as equipment_command_log
+```
+
+**Query: "Tổng chi phí vận hành của quạt trong tháng?"**
+```sql
+SELECT
+    e.name,
+    e.power_watts,
+    SUM(ep.total_energy_kwh) as total_kwh,
+    SUM(ep.electricity_cost) as total_electricity,
+    SUM(ep.maintenance_cost) as total_maintenance
+FROM equipment e
+JOIN equipment_performance ep ON e.id = ep.equipment_id
+WHERE e.equipment_type = 'fan'
+  AND ep.period_start >= '2026-04-01'
+GROUP BY e.id;
+```
+
+**Query: "Quạt nào cần bảo trì?"**
+```sql
+SELECT e.name, e.next_maintenance_at, e.runtime_hours
+FROM equipment e
+WHERE e.next_maintenance_at <= CURRENT_DATE
+   OR e.runtime_hours >= e.maintenance_interval_days * 24  -- approximate
+ORDER BY e.next_maintenance_at;
 ```
 
 ---
@@ -1099,7 +1317,10 @@ CREATE TABLE sync_config (
 | warehouses | ✅ Push | ✅ Pull | |
 | inventory | ✅ Push | ✅ Pull | |
 | inventory_transactions | ✅ Push | ✅ Pull | Side-effect from care ops |
-| equipment | ✅ Push | ✅ Pull | New entity |
+| equipment | ✅ Push | ✅ Pull | |
+| equipment_parts | ✅ Push | ✅ Pull | [NEW] |
+| equipment_readings | ✅ Push | ✅ Pull | [NEW] |
+| equipment_performance | ✅ Push | ✅ Pull | [NEW] |
 | sensor_data | ✅ Push | ✅ Pull | All sensor types |
 | care_feeds | ✅ Push | ✅ Pull | meal→session mapping |
 | care_deaths | ✅ Push | ✅ Pull | count→quantity, cause→reason |
