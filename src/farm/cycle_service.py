@@ -45,6 +45,22 @@ class CycleService:
         return dict(row) if row else None
 
     async def create(self, data: dict) -> dict:
+        # Check if barn exists
+        barn = await db.fetchval("SELECT 1 FROM barns WHERE id = $1", data["barn_id"])
+        if not barn:
+            return {"ok": False, "message": f"Barn '{data['barn_id']}' not found"}
+
+        # Check if barn already has an active cycle
+        active_cycle = await db.fetchval(
+            "SELECT COUNT(*) FROM cycles WHERE barn_id = $1 AND status = 'active'",
+            data["barn_id"]
+        )
+        if active_cycle > 0:
+            return {
+                "ok": False,
+                "message": f"Barn '{data['barn_id']}' already has an active cycle. Close or complete it first."
+            }
+
         row = await db.fetchrow(
             """INSERT INTO cycles
             (barn_id, name, breed, initial_count, current_count, start_date,
@@ -79,16 +95,61 @@ class CycleService:
         )
         return {"ok": True}
 
-    async def close(self, cycle_id: int, notes: str = None) -> dict:
-        """Close a cycle (kết thúc đợt nuôi)."""
+    async def close(self, cycle_id: int, notes: str = None, force: bool = False) -> dict:
+        """Close a cycle (kết thúc đợt nuôi).
+
+        Business rules:
+        - If force=False, validates that feeding records exist
+        - Updates final_quantity based on initial_count - deaths - sales
+        """
+        cycle = await self.get(cycle_id)
+        if not cycle:
+            return {"ok": False, "message": "Cycle not found"}
+
+        # Validate feeds recorded (unless force=True)
+        if not force:
+            total_feeds = await db.fetchval(
+                "SELECT COUNT(*) FROM care_feeds WHERE cycle_id = $1", cycle_id
+            ) or 0
+            if total_feeds == 0:
+                return {
+                    "ok": False,
+                    "message": "Cycle has no feeding records. Use force=true to close anyway."
+                }
+
+            # Check if feeds recorded in last 7 days (if cycle is active > 7 days)
+            cycle_age = (date.today() - cycle["start_date"]).days if cycle["start_date"] else 0
+            if cycle_age > 7:
+                recent_feeds = await db.fetchval(
+                    """SELECT COUNT(*) FROM care_feeds
+                    WHERE cycle_id = $1 AND feed_date > CURRENT_DATE - INTERVAL '7 days'""",
+                    cycle_id
+                ) or 0
+                if recent_feeds == 0:
+                    return {
+                        "ok": False,
+                        "message": "No feeding records in last 7 days. Use force=true to close anyway."
+                    }
+
+        # Calculate final_quantity: initial - deaths - sales
+        total_deaths = await db.fetchval(
+            "SELECT COALESCE(SUM(count), 0) FROM care_deaths WHERE cycle_id = $1", cycle_id
+        ) or 0
+        total_sold = await db.fetchval(
+            "SELECT COALESCE(SUM(count), 0) FROM care_sales WHERE cycle_id = $1", cycle_id
+        ) or 0
+        final_quantity = cycle["initial_count"] - total_deaths - total_sold
+
         await db.execute(
             """UPDATE cycles SET
                 status = 'closed', actual_end_date = CURRENT_DATE,
-                notes = COALESCE($1, notes), updated_at = NOW()
-            WHERE id = $2""",
-            notes, cycle_id,
+                notes = COALESCE($1, notes),
+                final_quantity = $2,
+                updated_at = NOW()
+            WHERE id = $3""",
+            notes, final_quantity, cycle_id,
         )
-        return {"ok": True}
+        return {"ok": True, "final_quantity": final_quantity}
 
     async def get_dashboard(self, cycle_id: int) -> dict:
         """Get cycle overview with KPIs."""

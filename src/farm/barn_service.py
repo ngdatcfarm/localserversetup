@@ -65,6 +65,17 @@ class BarnService:
         if not existing:
             return {"ok": False, "message": "Barn not found"}
 
+        # Check if trying to change farm_id and barn has cycles
+        if data.get("farm_id") and data["farm_id"] != existing["farm_id"]:
+            cycle_count = await db.fetchval(
+                "SELECT COUNT(*) FROM cycles WHERE barn_id = $1", barn_id
+            )
+            if cycle_count > 0:
+                return {
+                    "ok": False,
+                    "message": f"Cannot change farm_id: barn has {cycle_count} cycle(s). Delete cycles first."
+                }
+
         await db.execute(
             """UPDATE barns SET
                 name = COALESCE($1, name),
@@ -89,6 +100,7 @@ class BarnService:
 
         Business rules:
         - Cannot delete if barn has an active cycle
+        - Cannot delete if barn has devices
         """
         # Check for active cycle
         active_cycle = await db.fetchval(
@@ -99,6 +111,16 @@ class BarnService:
             return {
                 "ok": False,
                 "message": "Cannot delete barn: has an active cycle. Close or delete the cycle first.",
+            }
+
+        # Check for devices
+        device_count = await db.fetchval(
+            "SELECT COUNT(*) FROM devices WHERE barn_id = $1", barn_id
+        )
+        if device_count > 0:
+            return {
+                "ok": False,
+                "message": f"Cannot delete barn: has {device_count} device(s). Delete devices first.",
             }
 
         await db.execute("DELETE FROM barns WHERE id = $1", barn_id)

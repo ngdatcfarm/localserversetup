@@ -2,7 +2,7 @@
 
 from datetime import date
 from fastapi import APIRouter, HTTPException
-from pydantic import BaseModel
+from pydantic import BaseModel, Field
 from typing import Optional
 
 from src.farm.feed_service import feed_service
@@ -17,77 +17,77 @@ router = APIRouter(prefix="/api/farm", tags=["farm-extended"])
 # ── Request Models ──────────────────────────────────
 
 class FeedBrandRequest(BaseModel):
-    name: str
-    kg_per_bag: Optional[float] = None
-    note: Optional[str] = None
-    status: str = "active"
+    name: str = Field(..., min_length=1, max_length=200)
+    kg_per_bag: Optional[float] = Field(None, gt=0)
+    note: Optional[str] = Field(None, max_length=500)
+    status: str = Field(default="active", max_length=20)
 
 class FeedTypeRequest(BaseModel):
-    feed_brand_id: Optional[int] = None
-    code: Optional[str] = None
-    price_per_bag: Optional[float] = None
-    name: str
-    suggested_stage: Optional[str] = None
-    note: Optional[str] = None
-    status: str = "active"
+    feed_brand_id: Optional[int] = Field(None, gt=0)
+    code: Optional[str] = Field(None, max_length=50)
+    price_per_bag: Optional[float] = Field(None, ge=0)
+    name: str = Field(..., min_length=1, max_length=200)
+    suggested_stage: Optional[str] = Field(None, max_length=100)
+    note: Optional[str] = Field(None, max_length=500)
+    status: str = Field(default="active", max_length=20)
 
 class MedicationRequest(BaseModel):
-    name: str
-    unit: Optional[str] = None
-    category: Optional[str] = None
-    manufacturer: Optional[str] = None
-    price_per_unit: Optional[float] = None
-    recommended_dose: Optional[str] = None
-    note: Optional[str] = None
-    status: str = "active"
+    name: str = Field(..., min_length=1, max_length=200)
+    unit: Optional[str] = Field(None, max_length=50)
+    category: Optional[str] = Field(None, max_length=100)
+    manufacturer: Optional[str] = Field(None, max_length=200)
+    price_per_unit: Optional[float] = Field(None, ge=0)
+    recommended_dose: Optional[str] = Field(None, max_length=200)
+    note: Optional[str] = Field(None, max_length=500)
+    status: str = Field(default="active", max_length=20)
 
 class SupplierRequest(BaseModel):
-    name: str
-    phone: Optional[str] = None
-    address: Optional[str] = None
-    note: Optional[str] = None
-    status: str = "active"
+    name: str = Field(..., min_length=1, max_length=200)
+    phone: Optional[str] = Field(None, max_length=20)
+    address: Optional[str] = Field(None, max_length=500)
+    note: Optional[str] = Field(None, max_length=500)
+    status: str = Field(default="active", max_length=20)
 
 class VaccineProgramRequest(BaseModel):
-    name: str
-    note: Optional[str] = None
+    name: str = Field(..., min_length=1, max_length=200)
+    note: Optional[str] = Field(None, max_length=500)
     active: bool = True
 
 class VaccineProgramItemRequest(BaseModel):
-    vaccine_name: str
-    day_age: int
-    method: Optional[str] = None
-    remind_days: int = 1
-    sort_order: int = 0
-    vaccine_brand_id: Optional[int] = None
+    vaccine_name: str = Field(..., min_length=1, max_length=200)
+    day_age: int = Field(..., ge=0)
+    method: Optional[str] = Field(None, max_length=100)
+    remind_days: int = Field(default=1, ge=0)
+    sort_order: int = Field(default=0, ge=0)
+    vaccine_brand_id: Optional[int] = Field(None, gt=0)
 
 class VaccineScheduleRequest(BaseModel):
-    cycle_id: int
-    vaccine_name: str
+    cycle_id: int = Field(..., gt=0)
+    vaccine_name: str = Field(..., min_length=1, max_length=200)
     scheduled_date: Optional[date] = None
-    day_age_target: Optional[int] = None
-    method: Optional[str] = None
-    dosage: Optional[str] = None
-    remind_days: int = 1
-    vaccine_brand_id: Optional[int] = None
-    program_item_id: Optional[int] = None
+    day_age_target: Optional[int] = Field(None, ge=0)
+    method: Optional[str] = Field(None, max_length=100)
+    dosage: Optional[str] = Field(None, max_length=100)
+    remind_days: int = Field(default=1, ge=0)
+    vaccine_brand_id: Optional[int] = Field(None, gt=0)
+    program_item_id: Optional[int] = Field(None, gt=0)
 
 class ApplyProgramRequest(BaseModel):
-    program_id: int
+    program_id: int = Field(..., gt=0)
 
 class HealthNoteRequest(BaseModel):
-    cycle_id: int
+    cycle_id: int = Field(..., gt=0)
     recorded_at: Optional[date] = None
-    severity: str = "low"
-    symptoms: Optional[str] = None
-    image_path: Optional[str] = None
+    severity: str = Field(default="low", max_length=20)
+    symptoms: Optional[str] = Field(None, max_length=1000)
+    image_path: Optional[str] = Field(None, max_length=500)
 
 class WeightSessionRequest(BaseModel):
-    cycle_id: int
+    cycle_id: int = Field(..., gt=0)
     weighed_at: Optional[date] = None
-    sample_count: int = 0
-    avg_weight_g: Optional[float] = None
-    note: Optional[str] = None
+    sample_count: int = Field(default=0, ge=0)
+    avg_weight_g: Optional[float] = Field(None, gt=0)
+    note: Optional[str] = Field(None, max_length=500)
     details: Optional[list] = None
 
 

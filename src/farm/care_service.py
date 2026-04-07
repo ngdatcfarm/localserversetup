@@ -330,5 +330,84 @@ class CareService:
         )
         return [dict(r) for r in rows]
 
+    # ── Delete Care Logs ──────────────────────────────
+
+    async def delete_feed(self, feed_id: int) -> dict:
+        """Delete a feed log. Restores inventory if warehouse/product specified."""
+        feed = await db.fetchrow("SELECT * FROM care_feeds WHERE id = $1", feed_id)
+        if not feed:
+            return {"ok": False, "message": "Feed log not found"}
+
+        # Restore inventory if warehouse_id and product_id specified
+        if feed.get("warehouse_id") and feed.get("product_id") and feed.get("quantity"):
+            await db.execute(
+                """INSERT INTO inventory (warehouse_id, product_id, quantity, updated_at)
+                VALUES ($1, $2, $3, NOW())
+                ON CONFLICT (warehouse_id, product_id)
+                DO UPDATE SET quantity = inventory.quantity + $3, updated_at = NOW()""",
+                feed["warehouse_id"], feed["product_id"], feed["quantity"],
+            )
+
+        await db.execute("DELETE FROM care_feeds WHERE id = $1", feed_id)
+        return {"ok": True, "message": "Feed log deleted"}
+
+    async def delete_death(self, death_id: int) -> dict:
+        """Delete a death log. Restores current_count to cycle."""
+        death = await db.fetchrow("SELECT * FROM care_deaths WHERE id = $1", death_id)
+        if not death:
+            return {"ok": False, "message": "Death log not found"}
+
+        # Restore current_count to cycle
+        await db.execute(
+            "UPDATE cycles SET current_count = current_count + $1, updated_at = NOW() WHERE id = $2",
+            death["count"], death["cycle_id"],
+        )
+
+        await db.execute("DELETE FROM care_deaths WHERE id = $1", death_id)
+        return {"ok": True, "message": "Death log deleted"}
+
+    async def delete_medication(self, med_id: int) -> dict:
+        """Delete a medication log. Restores inventory if warehouse/product specified."""
+        med = await db.fetchrow("SELECT * FROM care_medications WHERE id = $1", med_id)
+        if not med:
+            return {"ok": False, "message": "Medication log not found"}
+
+        # Restore inventory if warehouse_id and product_id and quantity specified
+        if med.get("warehouse_id") and med.get("product_id") and med.get("quantity"):
+            await db.execute(
+                """INSERT INTO inventory (warehouse_id, product_id, quantity, updated_at)
+                VALUES ($1, $2, $3, NOW())
+                ON CONFLICT (warehouse_id, product_id)
+                DO UPDATE SET quantity = inventory.quantity + $3, updated_at = NOW()""",
+                med["warehouse_id"], med["product_id"], med["quantity"],
+            )
+
+        await db.execute("DELETE FROM care_medications WHERE id = $1", med_id)
+        return {"ok": True, "message": "Medication log deleted"}
+
+    async def delete_weight(self, weight_id: int) -> dict:
+        """Delete a weight log."""
+        weight = await db.fetchrow("SELECT * FROM care_weights WHERE id = $1", weight_id)
+        if not weight:
+            return {"ok": False, "message": "Weight log not found"}
+
+        await db.execute("DELETE FROM care_weights WHERE id = $1", weight_id)
+        return {"ok": True, "message": "Weight log deleted"}
+
+    async def delete_sale(self, sale_id: int) -> dict:
+        """Delete a sale log. Restores current_count to cycle."""
+        sale = await db.fetchrow("SELECT * FROM care_sales WHERE id = $1", sale_id)
+        if not sale:
+            return {"ok": False, "message": "Sale log not found"}
+
+        # Restore current_count to cycle
+        await db.execute(
+            "UPDATE cycles SET current_count = current_count + $1, updated_at = NOW() WHERE id = $2",
+            sale["count"], sale["cycle_id"],
+        )
+
+        await db.execute("DELETE FROM care_sales WHERE id = $1", sale_id)
+        return {"ok": True, "message": "Sale log deleted"}
+
 
 care_service = CareService()

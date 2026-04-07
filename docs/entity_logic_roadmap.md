@@ -2,7 +2,7 @@
 
 **Mục tiêu:** Xây dựng business logic cho từng entity theo đúng data dependency hierarchy.
 
-**Sync Status:** Hybrid sync đang hoạt động (Local ↔ Cloud, errors=0)
+**Sync Status:** Cloud sync paused (2026-04-07) - local-first architecture
 
 ---
 
@@ -13,8 +13,14 @@
 | Phase 1: Farm Infrastructure | ✅ Done | 100% |
 | Phase 2: IoT Infrastructure | ⬜ Pending | 0% |
 | Phase 3: Inventory & Products | ⬜ Pending | 0% |
-| Phase 4: Operations (Cycles & Care) | ⬜ Pending | 0% |
-| Phase 5: Sync Integration | ⬜ Pending | 0% |
+| Phase 4: Operations (Cycles & Care) | 🔄 In Progress | 75% |
+| Phase 5: Sync Integration | ⏸️ Paused | 0% |
+
+**Note:** Sync (Phase 5) paused 2026-04-07 - focusing on local-first stability.
+
+**Care Operations Test (2026-04-07 PM):** ✅ Feed, Death, Medication, Weight logs tested on Docker PostgreSQL
+
+---
 
 ---
 
@@ -288,23 +294,16 @@ GET    /api/care-weights?cycle_id=X
 
 ---
 
-## Phase 5: Sync Integration & Polish
+## Phase 5: Sync Integration & Polish (PAUSED)
 
 **Goal:** Hoàn thiện sync infrastructure
 
-### Step 5.1: FieldMapper
-- [ ] Column name mapping Local ↔ Cloud
-- [ ] Handle `initial_count` vs `initial_quantity`
-- [ ] Handle `note` vs `notes`
+**Status:** PAUSED - Tập trung local trước (2026-04-07)
 
-### Step 5.2: ConflictResolver
-- [ ] Last-write-wins strategy
-- [ ] Or merge strategy for critical data
-
-### Step 5.3: Cloud Remote Commands
-- [ ] Cloud → Local: Relay control via sync
-- [ ] Cloud → Local: Device config push
-- [ ] Test: Trigger relay from cloud UI
+### Future work:
+- [ ] FieldMapper (column name mapping Local ↔ Cloud)
+- [ ] ConflictResolver (last-write-wins strategy)
+- [ ] Cloud Remote Commands via HTTPS proxy thay vì bidirectional sync
 
 ---
 
