@@ -181,6 +181,64 @@ class SyncService:
 
     # ── Push: Local → Cloud ──────────────────────────
 
+    async def sync_barns_and_devices(self) -> dict:
+        """Sync all barns and devices to cloud.
+
+        Called when barns or devices change on local.
+        Syncs barns first (due to FK), then devices.
+        """
+        from src.farm.barn_service import barn_service
+        from src.iot.device_service import device_service
+
+        try:
+            # Get all barns and devices
+            barns = await barn_service.list_all(active_only=False)
+            devices = await device_service.list_all()
+
+            # Format barns for cloud
+            barns_payload = []
+            for b in barns:
+                barns_payload.append({
+                    "id": b["id"],
+                    "farm_id": b.get("farm_id", "farm-01"),
+                    "number": b.get("number"),
+                    "name": b.get("name"),
+                    "barn_type": b.get("barn_type"),
+                    "area_sqm": b.get("area_sqm"),
+                    "capacity": b.get("capacity"),
+                    "capacity_kg": b.get("capacity_kg"),
+                    "length_m": b.get("length_m"),
+                    "width_m": b.get("width_m"),
+                    "height_m": b.get("height_m"),
+                    "status": b.get("status", "active"),
+                    "active": b.get("active", True),
+                })
+
+            # Format devices for cloud
+            devices_payload = []
+            for d in devices:
+                devices_payload.append({
+                    "device_code": d["device_code"],
+                    "name": d.get("name"),
+                    "device_type_id": d.get("device_type_id"),
+                    "barn_id": d.get("barn_id"),
+                    "mqtt_topic": d.get("mqtt_topic"),
+                    "location": d.get("location"),
+                    "status": d.get("status", "offline"),
+                })
+
+            result = await self.cloud_request("POST", "/api/sync/farm-data", {
+                "barns": barns_payload,
+                "devices": devices_payload,
+            })
+
+            logger.info(f"Synced {len(barns_payload)} barns, {len(devices_payload)} devices to cloud")
+            return result
+
+        except Exception as e:
+            logger.error(f"Failed to sync barns/devices to cloud: {e}")
+            return {"ok": False, "error": str(e)}
+
     async def push_to_cloud(self):
         """Push pending changes from local to cloud."""
         items = await self.get_pending_queue(self.config["push_batch_size"])
@@ -346,12 +404,16 @@ class SyncService:
             "health_notes": self._sync_health_notes,
             "vaccine_schedules": self._sync_vaccine_schedules,
             "curtain_configs": self._sync_curtain_configs,
+            # Bats (Local primary → Cloud)
+            "bats": self._sync_bats,
+            "bat_logs": self._sync_bat_logs,
             # Inventory (Cloud → Local pull)
             "inventory": self._sync_inventory,
             "inventory_transactions": self._sync_inventory_transactions,
             "inventory_alerts": self._sync_inventory_alerts,
             "inventory_snapshots": self._sync_inventory_snapshots,
             "stock_valuation": self._sync_stock_valuation,
+            "barn_default_warehouses": self._sync_barn_default_warehouses,
             "purchase_orders": self._sync_purchase_orders,
             "purchase_order_items": self._sync_purchase_order_items,
             # Time-series (Cloud → Local pull)
@@ -1073,6 +1135,49 @@ class SyncService:
         elif action == "delete":
             await db.execute("DELETE FROM curtain_configs WHERE id = $1", self._to_int(p["id"]))
 
+    async def _sync_bats(self, action: str, p: dict):
+        """Sync bats table - LOCAL PRIMARY (cloud follows)."""
+        if action in ("insert", "update"):
+            await db.execute(
+                """INSERT INTO bats (id, barn_id, code, name, device_id,
+                    up_relay_channel, down_relay_channel, auto_enabled,
+                    timeout_seconds, position, created_at, updated_at)
+                VALUES ($1, $2::text, $3, $4, $5, $6, $7, $8, $9, $10, COALESCE($11, NOW()), NOW())
+                ON CONFLICT (id) DO UPDATE SET
+                    barn_id=$2::text, code=$3, name=$4, device_id=$5,
+                    up_relay_channel=$6, down_relay_channel=$7, auto_enabled=$8,
+                    timeout_seconds=$9, position=$10, updated_at=NOW()""",
+                self._to_int(p["id"]), p.get("barn_id"), p.get("code"),
+                p.get("name"), self._to_int(p.get("device_id")),
+                self._to_int(p.get("up_relay_channel")), self._to_int(p.get("down_relay_channel")),
+                self._to_bool(p.get("auto_enabled", False)),
+                self._to_int(p.get("timeout_seconds", 210)),
+                p.get("position", "stopped"),
+                self._to_dt(p.get("created_at")),
+            )
+        elif action == "delete":
+            await db.execute("DELETE FROM bats WHERE id = $1", self._to_int(p["id"]))
+
+    async def _sync_bat_logs(self, action: str, p: dict):
+        """Sync bat_logs table - LOCAL PRIMARY (cloud follows)."""
+        if action in ("insert", "update"):
+            await db.execute(
+                """INSERT INTO bat_logs (id, bat_id, cycle_id, action,
+                    duration_seconds, started_at, ended_at, created_at)
+                VALUES ($1, $2, $3, $4, $5, $6, $7, COALESCE($8, NOW()))
+                ON CONFLICT (id) DO UPDATE SET
+                    cycle_id=$3, action=$4, duration_seconds=$5,
+                    started_at=$6, ended_at=$7""",
+                self._to_int(p["id"]), self._to_int(p.get("bat_id")),
+                self._to_int(p.get("cycle_id")), p.get("action"),
+                self._to_int(p.get("duration_seconds")),
+                self._to_dt(p.get("started_at")),
+                self._to_dt(p.get("ended_at")),
+                self._to_dt(p.get("created_at")),
+            )
+        elif action == "delete":
+            await db.execute("DELETE FROM bat_logs WHERE id = $1", self._to_int(p["id"]))
+
     # ── Cycle Feed Programs ──────────────────────────────
 
     async def _sync_cycle_feed_programs(self, action: str, p: dict):
@@ -1238,6 +1343,27 @@ class SyncService:
             )
         elif action == "delete":
             await db.execute("DELETE FROM stock_valuation WHERE id = $1", self._to_int(p["id"]))
+
+    async def _sync_barn_default_warehouses(self, action: str, p: dict):
+        if action in ("insert", "update"):
+            await db.execute(
+                """INSERT INTO barn_default_warehouses
+                   (id, barn_id, warehouse_type, warehouse_id, created_at, updated_at)
+                VALUES ($1, $2::text, $3, $4, COALESCE($5, NOW()), COALESCE($6, NOW()))
+                ON CONFLICT (barn_id, warehouse_type) DO UPDATE SET
+                    warehouse_id = $4, updated_at = COALESCE($6, NOW())""",
+                self._to_int(p.get("id")),
+                p.get("barn_id"),
+                p.get("warehouse_type"),
+                self._to_int(p.get("warehouse_id")),
+                self._to_dt(p.get("created_at")),
+                self._to_dt(p.get("updated_at")),
+            )
+        elif action == "delete":
+            await db.execute(
+                "DELETE FROM barn_default_warehouses WHERE barn_id = $1 AND warehouse_type = $2",
+                str(p.get("id")), p.get("warehouse_type"),
+            )
 
     # ── Sensor Data ────────────────────────────────────
 
@@ -1537,6 +1663,25 @@ class SyncService:
             topic = f"cfarm/{device_code}/cmd"
             mqtt_client.publish(topic, {"action": "set_position", "to": position})
             return {"ok": True, "executed": "curtain", "device": device_code}
+
+        elif cmd_type == "bat":
+            from src.iot.bat_service import bat_service
+            bat_id = payload.get("bat_id")
+            action = payload.get("action")  # "up", "down", "stop"
+
+            if not bat_id or not action:
+                return {"ok": False, "message": "Missing bat_id or action"}
+
+            if action == "up":
+                result = await bat_service.move_up(bat_id)
+            elif action == "down":
+                result = await bat_service.move_down(bat_id)
+            elif action == "stop":
+                result = await bat_service.stop(bat_id)
+            else:
+                return {"ok": False, "message": f"Unknown action: {action}"}
+
+            return result
 
         elif cmd_type == "ping":
             from src.iot.mqtt_client import mqtt_client
