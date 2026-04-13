@@ -41,7 +41,7 @@ class BatService:
                 active = self._active_movements.get(bat['id'])
             if active:
                 bat['moving_state'] = active['direction']  # 'up' or 'down'
-                bat['moving_started_at'] = active['started_at'].isoformat()
+                bat['moving_started_at'] = datetime.fromtimestamp(active['started_at'], tz=timezone.utc).isoformat()
                 bat['moving_duration'] = active['duration']
                 bat['elapsed_seconds'] = time.time() - active['started_at']
             else:

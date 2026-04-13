@@ -302,7 +302,7 @@ return {
                         :class="bat.moving_state === 'up' ? 'text-green-500' : 'text-red-500'">
                     </div>
 
-                    <div class="p-5">
+                    <div class="p-6">
                         <!-- Header Card -->
                         <div class="flex items-start justify-between mb-4">
                             <div class="flex items-center gap-3">
@@ -349,29 +349,31 @@ return {
                             </div>
                         </div>
 
-                        <!-- Nút điều khiển -->
-                        <div class="flex gap-3">
+                        <!-- Nút điều khiển 3 nút -->
+                        <div class="grid grid-cols-3 gap-3 mb-3">
                             <button @click="moveUp(bat)"
-                                :disabled="isMoving(bat) || !bat.device_id || loading[bat.id]"
-                                class="flex-1 py-3 px-4 rounded-xl font-medium text-white transition-all flex items-center justify-center gap-2 disabled:opacity-50 disabled:cursor-not-allowed"
+                                :disabled="bat.moving_state === 'up' || !bat.device_id || loading[bat.id]"
+                                class="py-4 px-2 rounded-xl font-bold text-white transition-all flex flex-col items-center justify-center gap-1 disabled:opacity-40 disabled:cursor-not-allowed"
                                 :class="bat.moving_state === 'up' ? 'bg-green-600' : 'bg-green-500 hover:bg-green-600'">
-                                <span v-if="loading[bat.id] === 'up'" class="animate-spin">⏳</span>
-                                <span v-else>↑</span>
-                                LÊN
+                                <span v-if="loading[bat.id] === 'up'" class="text-xl animate-spin">⏳</span>
+                                <span v-else class="text-2xl">↑</span>
+                                <span class="text-xs">LÊN</span>
                             </button>
                             <button @click="moveDown(bat)"
-                                :disabled="isMoving(bat) || !bat.device_id || loading[bat.id]"
-                                class="flex-1 py-3 px-4 rounded-xl font-medium text-white transition-all flex items-center justify-center gap-2 disabled:opacity-50 disabled:cursor-not-allowed"
+                                :disabled="bat.moving_state === 'down' || !bat.device_id || loading[bat.id]"
+                                class="py-4 px-2 rounded-xl font-bold text-white transition-all flex flex-col items-center justify-center gap-1 disabled:opacity-40 disabled:cursor-not-allowed"
                                 :class="bat.moving_state === 'down' ? 'bg-red-600' : 'bg-red-500 hover:bg-red-600'">
-                                <span v-if="loading[bat.id] === 'down'" class="animate-spin">⏳</span>
-                                <span v-else>↓</span>
-                                XUỐNG
+                                <span v-if="loading[bat.id] === 'down'" class="text-xl animate-spin">⏳</span>
+                                <span v-else class="text-2xl">↓</span>
+                                <span class="text-xs">XUỐNG</span>
                             </button>
                             <button @click="stopBat(bat)"
                                 :disabled="!isMoving(bat) || loading[bat.id]"
-                                class="px-4 py-3 rounded-xl font-medium bg-amber-500 hover:bg-amber-600 text-white transition-all disabled:opacity-50 disabled:cursor-not-allowed">
-                                <span v-if="loading[bat.id] === 'stop'" class="animate-spin">⏳</span>
-                                <span v-else>■</span>
+                                class="py-4 px-2 rounded-xl font-bold text-white transition-all flex flex-col items-center justify-center gap-1 disabled:opacity-40 disabled:cursor-not-allowed"
+                                :class="isMoving(bat) ? 'bg-amber-500 hover:bg-amber-600' : 'bg-gray-300'">
+                                <span v-if="loading[bat.id] === 'stop'" class="text-xl animate-spin">⏳</span>
+                                <span v-else class="text-2xl">■</span>
+                                <span class="text-xs">DỪNG</span>
                             </button>
                         </div>
 
