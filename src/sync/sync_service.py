@@ -453,6 +453,9 @@ class SyncService:
             # Legacy
             "firmwares": self._sync_firmwares,
             "notification_rules": self._sync_notification_rules,
+            # Notification settings & push subscriptions
+            "notification_settings": self._sync_notification_settings,
+            "push_subscriptions": self._sync_push_subscriptions,
             "weight_sessions": self._sync_weight_sessions,
         }
 
@@ -619,6 +622,32 @@ class SyncService:
                 p["id"], p["code"], p.get("label"), p.get("level", "blue"),
                 p.get("enabled", True), p.get("interval_min", 1440), p.get("send_at_hour"),
             )
+
+    async def _sync_notification_settings(self, action: str, p: dict):
+        """Sync notification_settings key-value store."""
+        if action in ("insert", "update"):
+            await db.execute(
+                """INSERT INTO notification_settings (key, value, updated_at)
+                VALUES ($1, $2, COALESCE($3, NOW()))
+                ON CONFLICT (key) DO UPDATE SET value = $2, updated_at = NOW()""",
+                p["key"], p["value"], self._to_dt(p.get("updated_at")),
+            )
+        elif action == "delete":
+            await db.execute("DELETE FROM notification_settings WHERE key = $1", p["key"])
+
+    async def _sync_push_subscriptions(self, action: str, p: dict):
+        """Sync push_subscriptions table for Web Push."""
+        if action in ("insert", "update"):
+            await db.execute(
+                """INSERT INTO push_subscriptions (endpoint, p256dh, auth, user_label, created_at)
+                VALUES ($1, $2, $3, $4, COALESCE($5, NOW()))
+                ON CONFLICT (endpoint) DO UPDATE SET
+                    p256dh = $2, auth = $3, user_label = $4""",
+                p["endpoint"], p.get("p256dh", ""), p.get("auth", ""),
+                p.get("user_label"), self._to_dt(p.get("created_at")),
+            )
+        elif action == "delete":
+            await db.execute("DELETE FROM push_subscriptions WHERE endpoint = $1", p["endpoint"])
 
     async def _sync_vaccine_schedules(self, action: str, p: dict):
         if action in ("insert", "update"):
