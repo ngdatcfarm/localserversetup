@@ -1,16 +1,20 @@
 """Farm management API routes - barns, cycles, inventory, care operations."""
 
+import asyncio
 from datetime import date
 from fastapi import APIRouter, HTTPException
 from pydantic import BaseModel, Field
 from typing import Optional
 from enum import Enum
+from starlette.requests import Request
 
 from src.farm.farm_service import farm_service
 from src.farm.barn_service import barn_service
 from src.farm.cycle_service import cycle_service
 from src.farm.inventory_service import inventory_service
 from src.farm.care_service import care_service
+from src.services.database.db import db
+from src.sync.sync_service import sync_service
 
 router = APIRouter(prefix="/api/farm", tags=["farm"])
 
@@ -54,6 +58,12 @@ class SaleType(str, Enum):
     CULL = "cull"
 
 
+class ShiftType(str, Enum):
+    SANG = "sang"      # Morning (< 12h)
+    CHIEU = "chieu"    # Afternoon (>= 12h)
+    ALL_DAY = "all_day"
+
+
 # ── Request Models ──────────────────────────────────
 
 class FarmRequest(BaseModel):
@@ -75,6 +85,16 @@ class BarnRequest(BaseModel):
     area_sqm: Optional[float] = Field(None, gt=0)
     description: Optional[str] = Field(None, max_length=1000)
     active: Optional[bool] = True
+
+
+class UpdateBarnRequest(BaseModel):
+    """For PUT /barns/{barn_id} - id not required in body"""
+    name: Optional[str] = Field(None, min_length=1, max_length=200)
+    farm_id: Optional[str] = Field(None, max_length=50)
+    capacity: Optional[int] = Field(None, gt=0)
+    area_sqm: Optional[float] = Field(None, gt=0)
+    description: Optional[str] = Field(None, max_length=1000)
+    active: Optional[bool] = None
 
 
 class CycleRequest(BaseModel):
@@ -153,6 +173,7 @@ class DeathLogRequest(BaseModel):
     cause: Optional[DeathCause] = None
     symptoms: Optional[str] = Field(None, max_length=500)
     notes: Optional[str] = Field(None, max_length=500)
+    shift: Optional[ShiftType] = Field(default=ShiftType.ALL_DAY)
 
 
 class MedicationLogRequest(BaseModel):
@@ -166,6 +187,7 @@ class MedicationLogRequest(BaseModel):
     warehouse_id: Optional[int] = Field(None, gt=0)
     purpose: Optional[str] = Field(None, max_length=200)
     notes: Optional[str] = Field(None, max_length=500)
+    shift: Optional[ShiftType] = Field(default=ShiftType.ALL_DAY)
 
 
 class WeightLogRequest(BaseModel):
@@ -191,6 +213,27 @@ class SaleLogRequest(BaseModel):
     total_amount: Optional[float] = Field(None, ge=0)
     buyer: Optional[str] = Field(None, max_length=200)
     sale_type: SaleType = Field(default=SaleType.SALE)
+    notes: Optional[str] = Field(None, max_length=500)
+
+
+class WaterLogRequest(BaseModel):
+    cycle_id: int = Field(..., gt=0)
+    barn_id: str = Field(..., min_length=1, max_length=50)
+    water_date: date
+    consumption_liters: Optional[float] = Field(None, gt=0)
+    medicated: bool = Field(default=False)
+    notes: Optional[str] = Field(None, max_length=500)
+    shift: Optional[ShiftType] = Field(default=ShiftType.ALL_DAY)
+
+
+class HealthLogRequest(BaseModel):
+    cycle_id: int = Field(..., gt=0)
+    barn_id: Optional[str] = Field(None, min_length=1, max_length=50)
+    recorded_at: Optional[date] = Field(None)
+    day_age: Optional[int] = Field(None, ge=0)
+    severity: Optional[str] = Field(None, max_length=20)  # normal, mild, severe
+    symptoms: Optional[str] = Field(None, max_length=1000)
+    health_flags: Optional[list[str]] = Field(default_factory=list)  # cough, diarrhea, lethargy, respiratory
     notes: Optional[str] = Field(None, max_length=500)
 
 
@@ -255,6 +298,15 @@ async def create_barn(req: BarnRequest):
     result = await barn_service.create(req.model_dump())
     if not result["ok"]:
         raise HTTPException(status_code=400, detail=result.get("message"))
+    # Sync to cloud for remote device control
+    if sync_service.config.get("cloud_url"):
+        asyncio.create_task(sync_service.sync_barns_and_devices())
+        asyncio.create_task(sync_service.send_notification_to_cloud(
+            alert_type="SYSTEM_BARN_CREATED",
+            title="🏠 Chuồng mới",
+            body=f"Chuồng '{req.name}' (số {req.number}) đã được thêm vào hệ thống",
+            url="/barns"
+        ))
     return result["barn"]
 
 
@@ -267,10 +319,13 @@ async def get_barn(barn_id: str):
 
 
 @router.put("/barns/{barn_id}")
-async def update_barn(barn_id: str, req: BarnRequest):
+async def update_barn(barn_id: str, req: UpdateBarnRequest):
     result = await barn_service.update(barn_id, req.model_dump(exclude_none=True))
     if not result["ok"]:
         raise HTTPException(status_code=404, detail=result.get("message"))
+    # Sync to cloud for remote device control
+    if sync_service.config.get("cloud_url"):
+        asyncio.create_task(sync_service.sync_barns_and_devices())
     return result["barn"]
 
 
@@ -297,7 +352,36 @@ async def create_cycle(req: CycleRequest):
     result = await cycle_service.create(req.model_dump())
     if not result["ok"]:
         raise HTTPException(status_code=400, detail=result.get("message"))
-    return result["cycle"]
+
+    cycle = result["cycle"]
+    # Send notification
+    if sync_service.config.get("cloud_url"):
+        asyncio.create_task(sync_service.send_notification_to_cloud(
+            alert_type="SYSTEM_CYCLE_CREATED",
+            title="📋 Cycle mới",
+            body=f"Cycle '{cycle.get('code', cycle.get('name', 'N/A'))}' đã được tạo cho chuồng {req.barn_id}",
+            url=f"/cycles/{cycle.get('id')}"
+        ))
+        # Check if barn has bat configuration
+        asyncio.create_task(_check_barn_bat_config(req.barn_id))
+
+    return cycle
+
+
+async def _check_barn_bat_config(barn_id: str):
+    """Check if barn has bat configuration and notify if not."""
+    try:
+        bats = await db.fetch("SELECT id FROM bats WHERE barn_id = $1 LIMIT 1", barn_id)
+        if not bats:
+            await sync_service.send_notification_to_cloud(
+                alert_type="SYSTEM_BARN_MISSING_BATS",
+                title="⚠️ Chuồng chưa cấu hình bạt",
+                body=f"Chuồng {barn_id} chưa có cấu hình bạt thông gió. Vui lòng cài đặt để điều khiển thông gió.",
+                url="/bats"
+            )
+    except Exception as e:
+        logger = __import__('logging').getLogger(__name__)
+        logger.error(f"Failed to check barn bat config: {e}")
 
 
 @router.get("/cycles/{cycle_id}")
@@ -601,3 +685,267 @@ async def delete_sale(sale_id: int):
     if not result.get("ok"):
         raise HTTPException(status_code=404, detail=result.get("message"))
     return result
+
+
+# ══════════════════════════════════════════════════════
+# CARE: WATER LOGS (Nước uống)
+# ══════════════════════════════════════════════════════
+
+@router.post("/care/water")
+async def log_water(req: WaterLogRequest):
+    result = await care_service.log_water(req.model_dump())
+    return result
+
+
+@router.get("/care/water/{cycle_id}")
+async def get_water_logs(cycle_id: int, days: int = 30):
+    return await care_service.get_water_logs(cycle_id, days)
+
+
+@router.delete("/care/water/{water_id}")
+async def delete_water(water_id: int):
+    """Delete a water log."""
+    result = await care_service.delete_water(water_id)
+    if not result.get("ok"):
+        raise HTTPException(status_code=404, detail=result.get("message"))
+    return result
+
+
+# ══════════════════════════════════════════════════════
+# CARE: HEALTH NOTES (Sức khỏe)
+# ══════════════════════════════════════════════════════
+
+@router.post("/care/health")
+async def log_health(req: HealthLogRequest):
+    result = await care_service.log_health(req.model_dump())
+    return result
+
+
+@router.get("/care/health/{cycle_id}")
+async def get_health_notes(cycle_id: int, days: int = 30):
+    return await care_service.get_health_notes(cycle_id, days)
+
+
+@router.post("/care/health/{note_id}/resolve")
+async def resolve_health_note(note_id: int):
+    """Mark a health note as resolved."""
+    result = await care_service.resolve_health_note(note_id)
+    if not result.get("ok"):
+        raise HTTPException(status_code=404, detail=result.get("message"))
+    return result
+
+
+# ══════════════════════════════════════════════════════
+# BARN DEFAULT WAREHOUSES
+# ══════════════════════════════════════════════════════
+
+class BarnDefaultWarehouseRequest(BaseModel):
+    warehouse_type: str = Field(..., pattern=r"^(feed|medication)$")
+    warehouse_id: int = Field(..., gt=0)
+
+
+@router.get("/barns/{barn_id}/default-warehouses")
+async def list_barn_default_warehouses(barn_id: str):
+    """List all default warehouse assignments for a barn."""
+    return await inventory_service.list_default_warehouses(barn_id)
+
+
+@router.post("/barns/{barn_id}/default-warehouses")
+async def set_barn_default_warehouse(barn_id: str, req: BarnDefaultWarehouseRequest):
+    """Set the default warehouse for a barn + warehouse_type combination."""
+    result = await inventory_service.set_default_warehouse(
+        barn_id, req.warehouse_type, req.warehouse_id
+    )
+    if not result["ok"]:
+        raise HTTPException(status_code=400, detail=result.get("message"))
+    return result["default_warehouse"]
+
+
+@router.delete("/barns/{barn_id}/default-warehouses/{warehouse_type}")
+async def delete_barn_default_warehouse(barn_id: str, warehouse_type: str):
+    """Remove a default warehouse assignment."""
+    result = await inventory_service.delete_default_warehouse(barn_id, warehouse_type)
+    return result
+
+
+# ══════════════════════════════════════════════════════
+# SUGGESTED WAREHOUSES
+# ══════════════════════════════════════════════════════
+
+@router.get("/barns/{barn_id}/suggested-warehouses")
+async def get_suggested_warehouses(barn_id: str):
+    """Get suggested feed and medication warehouses for a barn with current stock levels.
+
+    Returns:
+    - feed_warehouse: default feed warehouse with current stock for feed products
+    - medication_warehouse: default medication warehouse with current stock for medication products
+    - Each includes: warehouse details + stock levels (quantity vs min_stock_alert)
+    """
+    # Validate barn exists
+    barn = await db.fetchrow("SELECT * FROM barns WHERE id = $1", barn_id)
+    if not barn:
+        raise HTTPException(status_code=404, detail="Barn not found")
+
+    result = {"barn_id": barn_id, "feed_warehouse": None, "medication_warehouse": None}
+
+    # Get feed warehouse
+    feed_default = await inventory_service.get_default_warehouse(barn_id, "feed")
+    if feed_default:
+        stock_rows = await db.fetch(
+            """SELECT i.*, p.name as product_name, p.product_type, p.unit,
+                      p.min_stock_alert, p.reorder_point
+               FROM inventory i
+               JOIN products p ON i.product_id = p.id
+               WHERE i.warehouse_id = $1 AND p.product_type = 'feed'
+               ORDER BY p.name""",
+            feed_default["warehouse_id"],
+        )
+        feed_default["stock"] = [dict(r) for r in stock_rows]
+        feed_default["total_quantity"] = sum(r["quantity"] or 0 for r in stock_rows)
+        feed_default["low_stock_items"] = sum(
+            1 for r in stock_rows if r["quantity"] and r["min_stock_alert"] and r["quantity"] <= r["min_stock_alert"]
+        )
+        result["feed_warehouse"] = feed_default
+
+    # Get medication warehouse
+    med_default = await inventory_service.get_default_warehouse(barn_id, "medication")
+    if med_default:
+        stock_rows = await db.fetch(
+            """SELECT i.*, p.name as product_name, p.product_type, p.unit,
+                      p.min_stock_alert, p.reorder_point
+               FROM inventory i
+               JOIN products p ON i.product_id = p.id
+               WHERE i.warehouse_id = $1 AND p.product_type IN ('medication', 'medicine')
+               ORDER BY p.name""",
+            med_default["warehouse_id"],
+        )
+        med_default["stock"] = [dict(r) for r in stock_rows]
+        med_default["total_quantity"] = sum(r["quantity"] or 0 for r in stock_rows)
+        med_default["low_stock_items"] = sum(
+            1 for r in stock_rows if r["quantity"] and r["min_stock_alert"] and r["quantity"] <= r["min_stock_alert"]
+        )
+        result["medication_warehouse"] = med_default
+
+    return result
+
+
+# ══════════════════════════════════════════════════════
+# INVENTORY ALERTS
+# ══════════════════════════════════════════════════════
+
+@router.get("/inventory/alerts")
+async def get_inventory_alerts(
+    warehouse_id: int = None,
+    alert_type: str = None,
+    unacknowledged_only: bool = True,
+):
+    """Get inventory alerts, optionally filtered."""
+    return await inventory_service.get_active_alerts(
+        warehouse_id=warehouse_id,
+        alert_type=alert_type,
+        unacknowledged_only=unacknowledged_only,
+    )
+
+
+@router.post("/inventory/alerts/check")
+async def check_low_stock_alerts(warehouse_id: int = None):
+    """Manually trigger low stock check and return triggered alerts."""
+    return await inventory_service.check_low_stock_alerts(warehouse_id)
+
+
+@router.post("/inventory/alerts/{alert_id}/acknowledge")
+async def acknowledge_alert(alert_id: int, acknowledged_by: str = None):
+    """Acknowledge an inventory alert."""
+    result = await inventory_service.acknowledge_alert(alert_id, acknowledged_by)
+    if not result["ok"]:
+        raise HTTPException(status_code=404, detail=result.get("message"))
+    return result["alert"]
+
+
+@router.post("/inventory/alerts/{alert_id}/resolve")
+async def resolve_alert(alert_id: int):
+    """Resolve an inventory alert (acknowledge + mark resolved)."""
+    result = await inventory_service.resolve_alert(alert_id)
+    if not result["ok"]:
+        raise HTTPException(status_code=404, detail=result.get("message"))
+    return result["alert"]
+
+
+@router.delete("/inventory/alerts/{alert_id}")
+async def delete_alert(alert_id: int):
+    """Soft-delete an inventory alert."""
+    result = await inventory_service.delete_alert(alert_id)
+    if not result["ok"]:
+        raise HTTPException(status_code=404, detail=result.get("message"))
+    return result["alert"]
+
+
+# ══════════════════════════════════════════════════════
+# INVENTORY ALERT RULES
+# ══════════════════════════════════════════════════════
+
+@router.get("/inventory/alerts/rules")
+async def list_alert_rules(
+    warehouse_id: int = None,
+    product_id: int = None,
+    barn_id: str = None,
+    enabled: bool = None,
+):
+    """List inventory alert rules with optional filters."""
+    return await inventory_service.list_alert_rules(
+        warehouse_id=warehouse_id,
+        product_id=product_id,
+        barn_id=barn_id,
+        enabled=enabled,
+    )
+
+
+@router.post("/inventory/alerts/rules")
+async def create_alert_rule(request: Request):
+    """Create an inventory alert rule."""
+    data = await request.json()
+    result = await inventory_service.create_alert_rule(data)
+    if not result["ok"]:
+        raise HTTPException(status_code=400, detail=result.get("message"))
+    return result["rule"]
+
+
+@router.get("/inventory/alerts/rules/{rule_id}")
+async def get_alert_rule(rule_id: int):
+    """Get a single inventory alert rule."""
+    rule = await inventory_service.get_alert_rule(rule_id)
+    if not rule:
+        raise HTTPException(status_code=404, detail="Rule not found")
+    return rule
+
+
+@router.put("/inventory/alerts/rules/{rule_id}")
+async def update_alert_rule(rule_id: int, request: Request):
+    """Update an inventory alert rule."""
+    data = await request.json()
+    result = await inventory_service.update_alert_rule(rule_id, data)
+    if not result["ok"]:
+        raise HTTPException(status_code=400, detail=result.get("message"))
+    return result["rule"]
+
+
+@router.delete("/inventory/alerts/rules/{rule_id}")
+async def delete_alert_rule(rule_id: int):
+    """Delete an inventory alert rule."""
+    result = await inventory_service.delete_alert_rule(rule_id)
+    if not result["ok"]:
+        raise HTTPException(status_code=404, detail=result.get("message"))
+    return {"message": "Rule deleted"}
+
+
+@router.post("/inventory/alerts/rules/{rule_id}/toggle")
+async def toggle_alert_rule(rule_id: int, request: Request):
+    """Enable or disable an inventory alert rule."""
+    data = await request.json()
+    enabled = data.get("enabled")
+    if enabled is None:
+        raise HTTPException(status_code=400, detail="enabled field required")
+    result = await inventory_service.toggle_alert_rule(rule_id, enabled)
+    if not result["ok"]:
+        raise HTTPException(status_code=404, detail=result.get("message"))
+    return result["rule"]

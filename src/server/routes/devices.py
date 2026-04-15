@@ -1,10 +1,12 @@
 """Device management API routes."""
 
+import asyncio
 from fastapi import APIRouter, HTTPException
 from pydantic import BaseModel
 from typing import Optional
 
 from src.iot.device_service import device_service
+from src.sync.sync_service import sync_service
 
 router = APIRouter(prefix="/api/devices", tags=["devices"])
 
@@ -12,11 +14,11 @@ router = APIRouter(prefix="/api/devices", tags=["devices"])
 # ── Request Models ──────────────────────────────────
 
 class DeviceCreateRequest(BaseModel):
-    device_code: str
+    device_code: Optional[str] = None  # Auto-generate if not provided
     name: str
     device_type_id: Optional[int] = None
     barn_id: Optional[str] = None
-    mqtt_topic: str
+    mqtt_topic: Optional[str] = None  # Auto-generate from device_code if not provided
 
 
 class DeviceUpdateRequest(BaseModel):
@@ -105,6 +107,15 @@ async def create_device(req: DeviceCreateRequest):
     result = await device_service.create(req.model_dump())
     if not result["ok"]:
         raise HTTPException(status_code=400, detail=result["message"])
+    # Sync to cloud for remote device control
+    if sync_service.config.get("cloud_url"):
+        asyncio.create_task(sync_service.sync_barns_and_devices())
+        asyncio.create_task(sync_service.send_notification_to_cloud(
+            alert_type="SYSTEM_DEVICE_CREATED",
+            title="🖥️ Thiết bị mới",
+            body=f"Thiết bị '{req.name}' đã được thêm vào hệ thống",
+            url="/devices"
+        ))
     return result["device"]
 
 
@@ -123,7 +134,11 @@ async def update_device(device_id: int, req: DeviceUpdateRequest):
     device = await device_service.get(device_id)
     if not device:
         raise HTTPException(status_code=404, detail="Device not found")
-    return await device_service.update(device_id, req.model_dump(exclude_none=True))
+    result = await device_service.update(device_id, req.model_dump(exclude_none=True))
+    # Sync to cloud for remote device control
+    if sync_service.config.get("cloud_url"):
+        asyncio.create_task(sync_service.sync_barns_and_devices())
+    return result
 
 
 @router.delete("/{device_id}")
@@ -132,6 +147,9 @@ async def delete_device(device_id: int):
     deleted = await device_service.delete(device_id)
     if not deleted:
         raise HTTPException(status_code=404, detail="Device not found")
+    # Sync to cloud for remote device control
+    if sync_service.config.get("cloud_url"):
+        asyncio.create_task(sync_service.sync_barns_and_devices())
     return {"ok": True}
 
 
