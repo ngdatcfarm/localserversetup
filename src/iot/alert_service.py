@@ -131,12 +131,26 @@ class AlertService:
 
         logger.warning(f"ALERT [{rule['severity']}]: {message}")
 
-        # Send push notification
+        # Send push notification to local subscribers
         try:
             from src.iot.notification_service import notification_service
             await notification_service.send_alert(rule["severity"], message)
         except Exception as e:
             logger.debug(f"Push notification skipped: {e}")
+
+        # Send push notification to cloud for iPhone subscribers
+        try:
+            from src.sync.sync_service import sync_service
+            icon = {"danger": "🔴", "warning": "🟡", "info": "🔵"}.get(rule["severity"], "⚪")
+            await sync_service.send_notification_to_cloud(
+                alert_type=f"ALERT_{rule['severity'].upper()}",
+                title=f"{icon} CFarm Alert",
+                body=message,
+                cycle_id=None,
+                url="/alerts"
+            )
+        except Exception as e:
+            logger.debug(f"Cloud notification skipped: {e}")
 
     # ── CRUD: Alert Rules ─────────────────────────────
 

@@ -148,6 +148,26 @@ class SyncService:
             self._sync_stats["last_error"] = str(e)
             raise
 
+    async def send_notification_to_cloud(self, alert_type: str, title: str, body: str,
+                                           cycle_id: int = None, url: str = '/') -> bool:
+        """Send push notification request to cloud for iPhone notifications.
+
+        Local detects alert → sends to cloud → cloud pushes to all subscribers (including iPhone).
+        """
+        try:
+            result = await self.cloud_request("POST", "/api/sync/notification", {
+                "type": alert_type,
+                "title": title,
+                "body": body,
+                "cycle_id": cycle_id,
+                "url": url,
+            })
+            logger.info(f"Notification sent to cloud: {alert_type} - {title}")
+            return True
+        except Exception as e:
+            logger.error(f"Failed to send notification to cloud: {e}")
+            return False
+
     # ── Sync Queue Management ────────────────────────
 
     async def queue_change(self, table_name: str, record_id: str, action: str, payload: dict):
