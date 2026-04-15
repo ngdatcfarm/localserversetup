@@ -1,6 +1,7 @@
 """Sync API routes - Cloud-Local bidirectional sync endpoints."""
 
 import logging
+from datetime import datetime
 from fastapi import APIRouter, HTTPException, Header, Request
 from pydantic import BaseModel
 from typing import Optional
@@ -101,6 +102,41 @@ async def trigger_full_sync():
     if "error" in result:
         raise HTTPException(400, result["error"])
     return {"ok": True, **result}
+
+
+@router.post("/barns-devices-sync")
+async def trigger_barns_devices_sync():
+    """Sync all barns and devices to cloud.
+
+    Called after barn or device creation/update/delete on local.
+    This ensures cloud has up-to-date device inventory for relay control.
+    """
+    if not sync_service.config["cloud_url"]:
+        raise HTTPException(400, "Cloud URL not configured")
+    result = await sync_service.sync_barns_and_devices()
+    if not result.get("ok", False):
+        raise HTTPException(500, result.get("error", "Sync failed"))
+    return {"ok": True, **result}
+
+
+@router.post("/test-notification")
+async def test_notification_to_cloud():
+    """Test sending a notification from local to cloud for iPhone push.
+
+    This simulates what alert_service does when an alert is triggered.
+    """
+    if not sync_service.config["cloud_url"]:
+        raise HTTPException(400, "Cloud URL not configured")
+    success = await sync_service.send_notification_to_cloud(
+        alert_type="TEST",
+        title="🔔 CFarm Test",
+        body="Thong bao tu local server! " + datetime.now().strftime("%H:%i:%s"),
+        cycle_id=None,
+        url="/"
+    )
+    if success:
+        return {"ok": True, "message": "Notification sent to cloud"}
+    raise HTTPException(500, "Failed to send notification to cloud")
 
 
 @router.post("/receive")
