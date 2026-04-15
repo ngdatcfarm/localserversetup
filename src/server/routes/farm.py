@@ -284,6 +284,20 @@ async def delete_farm(farm_id: str):
 
 
 # ══════════════════════════════════════════════════════
+# HELPERS
+# ══════════════════════════════════════════════════════
+
+async def _send_local_notification(severity: str, title: str, message: str):
+    """Send notification to local subscribers."""
+    try:
+        from src.iot.notification_service import notification_service
+        await notification_service.send_alert(severity, f"{title}: {message}")
+    except Exception as e:
+        logger = __import__('logging').getLogger(__name__)
+        logger.debug(f"Local notification skipped: {e}")
+
+
+# ══════════════════════════════════════════════════════
 # BARNS
 # ══════════════════════════════════════════════════════
 
@@ -307,6 +321,12 @@ async def create_barn(req: BarnRequest):
             body=f"Chuồng '{req.name}' (số {req.number}) đã được thêm vào hệ thống",
             url="/barns"
         ))
+    # Send local push notification
+    asyncio.create_task(_send_local_notification(
+        "info",
+        "Chuồng mới",
+        f"Chuồng '{req.name}' (số {req.number}) đã được thêm"
+    ))
     return result["barn"]
 
 
@@ -354,16 +374,24 @@ async def create_cycle(req: CycleRequest):
         raise HTTPException(status_code=400, detail=result.get("message"))
 
     cycle = result["cycle"]
+    cycle_name = cycle.get('code', cycle.get('name', 'N/A'))
     # Send notification
     if sync_service.config.get("cloud_url"):
         asyncio.create_task(sync_service.send_notification_to_cloud(
             alert_type="SYSTEM_CYCLE_CREATED",
             title="📋 Cycle mới",
-            body=f"Cycle '{cycle.get('code', cycle.get('name', 'N/A'))}' đã được tạo cho chuồng {req.barn_id}",
+            body=f"Cycle '{cycle_name}' đã được tạo cho chuồng {req.barn_id}",
             url=f"/cycles/{cycle.get('id')}"
         ))
         # Check if barn has bat configuration
         asyncio.create_task(_check_barn_bat_config(req.barn_id))
+
+    # Send local push notification
+    asyncio.create_task(_send_local_notification(
+        "info",
+        "Cycle mới",
+        f"Cycle '{cycle_name}' đã được tạo cho chuồng {req.barn_id}"
+    ))
 
     return cycle
 
@@ -378,6 +406,12 @@ async def _check_barn_bat_config(barn_id: str):
                 title="⚠️ Chuồng chưa cấu hình bạt",
                 body=f"Chuồng {barn_id} chưa có cấu hình bạt thông gió. Vui lòng cài đặt để điều khiển thông gió.",
                 url="/bats"
+            )
+            # Also send local notification
+            await _send_local_notification(
+                "warning",
+                "Chuồng chưa cấu hình bạt",
+                f"Chuồng {barn_id} chưa có cấu hình bạt thông gió"
             )
     except Exception as e:
         logger = __import__('logging').getLogger(__name__)

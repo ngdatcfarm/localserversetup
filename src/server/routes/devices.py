@@ -116,7 +116,23 @@ async def create_device(req: DeviceCreateRequest):
             body=f"Thiết bị '{req.name}' đã được thêm vào hệ thống",
             url="/devices"
         ))
+    # Send local push notification
+    asyncio.create_task(_send_local_notification(
+        "info",
+        "Thiết bị mới",
+        f"Thiết bị '{req.name}' đã được thêm vào hệ thống"
+    ))
     return result["device"]
+
+
+async def _send_local_notification(severity: str, title: str, message: str):
+    """Send notification to local subscribers."""
+    try:
+        from src.iot.notification_service import notification_service
+        await notification_service.send_alert(severity, f"{title}: {message}")
+    except Exception as e:
+        logger = __import__('logging').getLogger(__name__)
+        logger.debug(f"Local notification skipped: {e}")
 
 
 @router.get("/{device_id}")
