@@ -1,6 +1,7 @@
 """Cloud Sync Service - Bidirectional sync between local server and cfarm.vn cloud."""
 
 import asyncio
+import json
 import logging
 import hashlib
 import time
@@ -277,12 +278,25 @@ class SyncService:
                 } for i in items],
             })
 
-            synced_ids = [i["id"] for i in items]
-            await self.mark_synced(synced_ids)
-            self._sync_stats["pushed"] += len(synced_ids)
-            await self._log_sync("push", len(synced_ids), "ok")
-            logger.info(f"Pushed {len(synced_ids)} items to cloud")
-            return len(synced_ids)
+            # Only mark items as synced if cloud returned no errors
+            errors = result.get("errors", [])
+            if not errors:
+                synced_ids = [i["id"] for i in items]
+                await self.mark_synced(synced_ids)
+                self._sync_stats["pushed"] += len(synced_ids)
+                await self._log_sync("push", len(synced_ids), "ok")
+                logger.info(f"Pushed {len(synced_ids)} items to cloud")
+                return len(synced_ids)
+            else:
+                # Extract failed table/record pairs and mark only successful ones
+                failed_keys = {(e["table"], str(e.get("record_id", ""))) for e in errors}
+                synced_ids = [i["id"] for i in items if (i["table_name"], str(i["record_id"])) not in failed_keys]
+                if synced_ids:
+                    await self.mark_synced(synced_ids)
+                    logger.info(f"Partially synced {len(synced_ids)}/{len(items)} items")
+                error_msg = json.dumps(errors[:5])  # Log first 5 errors
+                await self._log_sync("push", len(synced_ids), "partial", error_msg)
+                return len(synced_ids)
 
         except Exception as e:
             logger.error(f"Push to cloud failed: {e}")
