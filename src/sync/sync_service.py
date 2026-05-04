@@ -169,6 +169,53 @@ class SyncService:
             logger.error(f"Failed to send notification to cloud: {e}")
             return False
 
+    # ── Immediate Push (on change, not waiting for sync interval) ───────
+
+    async def _push_notification_settings_to_cloud(self, payload: dict) -> bool:
+        """Push notification_settings change to cloud immediately."""
+        try:
+            result = await self.cloud_request("POST", "/api/sync/receive", {
+                "source": "local",
+                "items": [{
+                    "table": "notification_settings",
+                    "record_id": payload["key"],
+                    "action": "insert",
+                    "payload": payload,
+                    "created_at": datetime.now(timezone.utc).isoformat(),
+                }],
+            })
+            errors = result.get("errors", [])
+            if errors:
+                logger.error(f"Push notification_settings failed: {errors}")
+                return False
+            return True
+        except Exception as e:
+            logger.error(f"Push notification_settings error: {e}")
+            return False
+
+    async def _push_push_subscription_to_cloud(self, payload: dict) -> bool:
+        """Push push_subscription change to cloud immediately."""
+        is_delete = payload.pop("_delete", False)
+        try:
+            result = await self.cloud_request("POST", "/api/sync/receive", {
+                "source": "local",
+                "items": [{
+                    "table": "push_subscriptions",
+                    "record_id": payload["endpoint"],
+                    "action": "delete" if is_delete else "insert",
+                    "payload": payload,
+                    "created_at": datetime.now(timezone.utc).isoformat(),
+                }],
+            })
+            errors = result.get("errors", [])
+            if errors:
+                logger.error(f"Push push_subscription failed: {errors}")
+                return False
+            return True
+        except Exception as e:
+            logger.error(f"Push push_subscription error: {e}")
+            return False
+
     # ── Sync Queue Management ────────────────────────
 
     async def queue_change(self, table_name: str, record_id: str, action: str, payload: dict):
@@ -199,6 +246,10 @@ class SyncService:
             WHERE id = ANY($1::int[])""",
             queue_ids,
         )
+
+    async def clear_queue(self):
+        """Clear all pending sync queue items."""
+        await db.execute("DELETE FROM sync_queue WHERE synced = FALSE")
 
     # ── Push: Local → Cloud ──────────────────────────
 
@@ -239,6 +290,7 @@ class SyncService:
             devices_payload = []
             for d in devices:
                 devices_payload.append({
+                    "id": d.get("id"),
                     "device_code": d["device_code"],
                     "name": d.get("name"),
                     "device_type_id": d.get("device_type_id"),
@@ -267,16 +319,36 @@ class SyncService:
             return 0
 
         try:
-            result = await self.cloud_request("POST", "/api/sync/receive", {
-                "source": "local",
-                "items": [{
+            def clean_payload(p):
+                """Recursively convert datetime objects to ISO strings."""
+                if isinstance(p, dict):
+                    return {k: clean_payload(v) for k, v in p.items()}
+                elif isinstance(p, list):
+                    return [clean_payload(v) for v in p]
+                elif hasattr(p, 'isoformat'):
+                    return p.isoformat()
+                return p
+
+            items_processed = []
+            for i in items:
+                raw_payload = i["payload"]
+                parsed = json.loads(raw_payload) if isinstance(raw_payload, str) else raw_payload
+                cleaned = clean_payload(parsed)
+                items_processed.append({
                     "table": i["table_name"],
                     "record_id": i["record_id"],
                     "action": i["action"],
-                    "payload": i["payload"],
+                    "payload": cleaned,
                     "created_at": i["created_at"].isoformat() if i.get("created_at") else None,
-                } for i in items],
-            })
+                })
+
+            request_payload = {
+                "source": "local",
+                "items": items_processed,
+            }
+            # Ensure all datetime objects are converted to strings for JSON serialization
+            request_payload = json.loads(json.dumps(request_payload, default=str))
+            result = await self.cloud_request("POST", "/api/sync/receive", request_payload)
 
             # Only mark items as synced if cloud returned no errors
             errors = result.get("errors", [])
@@ -897,7 +969,7 @@ class SyncService:
                 self._to_dt(p.get("created_at")),
             )
         elif action == "delete":
-            await db.execute("DELETE FROM warehouses WHERE id = $1", str(p["id"]))
+            await db.execute("DELETE FROM warehouses WHERE id = $1", self._to_int(p["id"]))
 
     async def _sync_warehouse_zones(self, action: str, p: dict):
         if action in ("insert", "update"):
