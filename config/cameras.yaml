@@ -1,11 +1,11 @@
 server:
   host: 0.0.0.0
-  port: 8000
+  port: 8002
 mqtt:
-  host: localhost
-  port: 1883
-  username: ""
-  password: ""
+  host: 192.168.1.9
+  port: 1884
+  username: ''
+  password: ''
   client_id: cfarm_local_server
 database:
   host: localhost
@@ -13,6 +13,20 @@ database:
   database: cfarm_local
   user: cfarm
   password: cfarm_local_2026
+push_notifications:
+  vapid_public_key: 'MFkwEwYHKoZIzj0CAQYIKoZIzj0DAQcDQgAEJ2kaoQzRwM9ZbT+CJaPbH01UJTMk
+
+    e7BL7Wdqam78pkkutZ2bzTtp9x+cG+T+NAcZiXFIOc0REHh9wQB/JAWWOA==
+
+    '
+  vapid_private_key: 'MIGHAgEAMBMGByqGSM49AgEGCCqGSM49AwEHBG0wawIBAQQgyXbcXCPZW6F4SLns
+
+    l+h+4eft8FEq3hz+4lNcZf+i6vyhRANCAAQnaRqhDNHAz1ltP4Ilo9sfTVQlMyR7
+
+    sEvtZ2pqbvymSS61nZvNO2n3H5wb5P40BxmJcUg5zREQeH3BAH8kBZY4
+
+    '
+  vapid_subject: mailto:admin@cfarm.local
 cameras:
 - id: cam_001
   name: Camera c?ng
@@ -23,9 +37,9 @@ cameras:
   rtsp_path: /unicast/c1/s0/live
   enabled: true
   stream_type: main
-- id: cam_002
-  name: Camera 02
-  ip: 192.168.1.96
+- id: cam_0002
+  name: Cam 2
+  ip: 192.168.1.108
   port: 554
   username: admin
   password: Abc@@1234
@@ -36,24 +50,50 @@ presets:
   cam_001:
   - number: 1
     name: window
-    pan: -2
+    pan: 0
     tilt: 0
   - number: 2
     name: feed
-    pan: 4
-    tilt: 1
+    pan: 0
+    tilt: 0
   - number: 3
     name: chicken
-    pan: 7
-    tilt: -2
+    pan: 0
+    tilt: 0
   - number: 4
     name: daly
-    pan: 1
+    pan: 0
+    tilt: 0
+  - number: 15
+    name: test position 4,2
+    pan: 4
     tilt: 2
+  cam_0002:
+  - number: 1
+    name: overview
+    pan: 0
+    tilt: 0
+  - number: 2
+    name: feed
+    pan: 0
+    tilt: 0
+  - number: 3
+    name: water
+    pan: 0
+    tilt: 0
+  - number: 4
+    name: '1'
+    pan: 0
+    tilt: 0
+  - number: 5
+    name: '2'
+    pan: 0
+    tilt: 0
 storage:
-  snapshot_dir: data/snapshots
-  recording_dir: data/recordings
-  export_dir: data/exports
+  snapshot_dir: E:\AI\Snapshots
+  snapshot_retention_days: 7
+  recording_dir: F:\Camera
+  export_dir: data\exports
 recording:
   enabled: false
   recording_dir: F:\Camera

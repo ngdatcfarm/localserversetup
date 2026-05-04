@@ -22,9 +22,10 @@ class ConfigService:
                 "server": {"host": "0.0.0.0", "port": 8000},
                 "cameras": [],
                 "storage": {
-                    "snapshot_dir": "data/snapshots",
-                    "recording_dir": "data/recordings",
-                    "export_dir": "data/exports"
+                    "snapshot_dir": "E:\\AI\\Snapshots",
+                    "snapshot_retention_days": 7,
+                    "recording_dir": "F:\\Camera",
+                    "export_dir": "data\\exports"
                 },
                 "stream": {
                     "hls_dir": "data/hls",
@@ -115,6 +116,26 @@ class ConfigService:
         """Get storage configuration."""
         config = self.load_config()
         return config.get('storage', {})
+
+    def get_snapshot_config(self) -> dict:
+        """Get snapshot configuration."""
+        config = self.load_config()
+        storage = config.get('storage', {})
+        return {
+            "snapshot_dir": storage.get('snapshot_dir', 'E:\\AI\\Snapshots'),
+            "retention_days": storage.get('snapshot_retention_days', 7),
+        }
+
+    def update_snapshot_config(self, snapshot_dir: str = None, retention_days: int = None) -> dict:
+        """Update snapshot configuration."""
+        config = self.load_config()
+        config.setdefault('storage', {})
+        if snapshot_dir is not None:
+            config['storage']['snapshot_dir'] = snapshot_dir
+        if retention_days is not None:
+            config['storage']['snapshot_retention_days'] = retention_days
+        self.save_config(config)
+        return self.get_snapshot_config()
 
     def get_stream_config(self) -> dict:
         """Get stream configuration."""

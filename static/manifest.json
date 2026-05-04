@@ -1,0 +1,29 @@
+{
+    "name": "CFarm Local",
+    "short_name": "CFarm",
+    "description": "Điều khiển IoT & giám sát trang trại tại chỗ",
+    "start_url": "/",
+    "scope": "/",
+    "display": "standalone",
+    "background_color": "#0f172a",
+    "theme_color": "#2563eb",
+    "orientation": "any",
+    "categories": ["productivity", "utilities"],
+    "icons": [
+        {
+            "src": "/static/icons/icon-192.png",
+            "sizes": "192x192",
+            "type": "image/png",
+            "purpose": "any maskable"
+        },
+        {
+            "src": "/static/icons/icon-512.png",
+            "sizes": "512x512",
+            "type": "image/png",
+            "purpose": "any maskable"
+        }
+    ],
+    "screenshots": [],
+    "prefer_related_applications": false,
+    "related_applications": []
+}

@@ -318,14 +318,14 @@ async def create_barn(req: BarnRequest):
         asyncio.create_task(sync_service.send_notification_to_cloud(
             alert_type="SYSTEM_BARN_CREATED",
             title="🏠 Chuồng mới",
-            body=f"Chuồng '{req.name}' (số {req.number}) đã được thêm vào hệ thống",
+            body=f"Chuồng '{req.name}' ({req.id}) đã được thêm vào hệ thống",
             url="/barns"
         ))
     # Send local push notification
     asyncio.create_task(_send_local_notification(
         "info",
         "Chuồng mới",
-        f"Chuồng '{req.name}' (số {req.number}) đã được thêm"
+        f"Chuồng '{req.name}' ({req.id}) đã được thêm"
     ))
     return result["barn"]
 

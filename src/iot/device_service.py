@@ -1,6 +1,7 @@
 """Device Service - CRUD operations for IoT devices stored in PostgreSQL."""
 
 import logging
+import random
 from datetime import datetime, timezone, timedelta
 from typing import Optional
 
@@ -19,15 +20,30 @@ class DeviceService:
 
         Firmware is auto-assigned by DB trigger (trg_devices_auto_firmware).
         It prefers is_mother firmware, falls back to is_latest.
+
+        If device_code is not provided, auto-generates esp-XXXXX (5-digit random).
+        If mqtt_topic is not provided, auto-generates from device_code.
         """
+        # Auto-generate device_code if not provided
+        device_code = data.get("device_code")
+        if not device_code:
+            device_code = f"esp-{random.randint(10000, 99999)}"
+            logger.info(f"Auto-generated device_code: {device_code}")
+
+        # Auto-generate mqtt_topic from device_code if not provided
+        mqtt_topic = data.get("mqtt_topic")
+        if not mqtt_topic:
+            mqtt_topic = f"cfarm/{device_code}"
+            logger.info(f"Auto-generated mqtt_topic: {mqtt_topic}")
+
         row = await db.fetchrow(
             """INSERT INTO devices (device_code, name, device_type_id, barn_id, mqtt_topic, cycle_id)
             VALUES ($1, $2, $3, $4, $5, $6)
             RETURNING id, device_code, name, device_type_id, barn_id, mqtt_topic,
                       firmware_id, cycle_id, is_online, created_at""",
-            data["device_code"], data["name"],
+            device_code, data.get("name"),
             data.get("device_type_id"), data.get("barn_id"),
-            data["mqtt_topic"], data.get("cycle_id"),
+            mqtt_topic, data.get("cycle_id"),
         )
         if not row:
             return {"ok": False, "message": "Failed to create device"}
@@ -56,7 +72,7 @@ class DeviceService:
         """List all devices, optionally filtered by barn."""
         if barn_id:
             rows = await db.fetch(
-                """SELECT d.*, dt.code as type_code, dt.name as type_name
+                """SELECT d.*, dt.code as type_code, dt.name as type_name, dt.channel_count
                 FROM devices d
                 LEFT JOIN device_types dt ON d.device_type_id = dt.id
                 WHERE d.barn_id = $1
@@ -65,7 +81,7 @@ class DeviceService:
             )
         else:
             rows = await db.fetch(
-                """SELECT d.*, dt.code as type_code, dt.name as type_name
+                """SELECT d.*, dt.code as type_code, dt.name as type_name, dt.channel_count
                 FROM devices d
                 LEFT JOIN device_types dt ON d.device_type_id = dt.id
                 ORDER BY d.name""",

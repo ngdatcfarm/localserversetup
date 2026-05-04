@@ -245,10 +245,10 @@ class SaleLogRequest(BaseModel):
 
 | # | Entity | Update Rule | Status |
 |---|--------|-------------|--------|
-| 1 | Cycle Close | Kiểm tra tất cả feeds đã ghi nhận | ❓ |
-| 2 | Cycle Close | Cập nhật final_quantity | ❓ |
+| 1 | Cycle Close | Kiểm tra tất cả feeds đã ghi nhận | ✅ |
+| 2 | Cycle Close | Cập nhật final_quantity | ✅ |
 | 3 | Barn Update | Không đổi farm_id nếu có cycles | ✅ |
-| 4 | Barn Update | farm_id phải tồn tại | ❓ |
+| 4 | Barn Update | farm_id phải tồn tại | ✅ |
 
 ---
 

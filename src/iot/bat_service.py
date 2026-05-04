@@ -112,6 +112,12 @@ class BatService:
         if bat['is_online'] != True:
             return {"ok": False, "message": f"Device offline"}
 
+        # Safety: Check if bat is currently moving in opposite direction
+        with self._lock:
+            current_move = self._active_movements.get(bat_id)
+            if current_move and current_move.get('direction') != direction:
+                return {"ok": False, "message": f"Safety: bat is moving {current_move['direction']}, cannot move {direction}. Stop first."}
+
         # Determine relay channels
         up_channel = bat['up_relay_channel']
         down_channel = bat['down_relay_channel']
@@ -227,13 +233,24 @@ class BatService:
         """Schedule automatic stop after timeout."""
         def _auto_stop():
             try:
-                loop = asyncio.new_event_loop()
-                asyncio.set_event_loop(loop)
-                try:
-                    loop.run_until_complete(self._stop(bat_id))
-                finally:
-                    loop.close()
-                logger.info(f"Bat {bat_id} auto-stopped after {delay_seconds}s timeout")
+                # Get active movement info under lock
+                with self._lock:
+                    active = self._active_movements.get(bat_id)
+                    if not active:
+                        return
+                    device_topic = active['device_topic']
+                    active_channel = active['active_channel']
+                    inactive_channel = active['inactive_channel']
+                    # Remove from active movements
+                    self._active_movements.pop(bat_id, None)
+                    # Cancel timer
+                    timer = self._timers.pop(bat_id, None)
+                    if timer:
+                        timer.cancel()
+
+                # Turn OFF both relays (sync operation)
+                mqtt_client.send_relay_command(device_topic, active_channel, "off")
+                mqtt_client.send_relay_command(device_topic, inactive_channel, "off")
             except Exception as e:
                 logger.error(f"Bat {bat_id} auto-stop error: {e}")
 

@@ -105,7 +105,7 @@ async def set_preset(camera_id: str, preset_number: int, req: PresetSaveRequest 
 
 @router.post("/{camera_id}/ptz/presets/{preset_number}/goto")
 async def goto_preset(camera_id: str, preset_number: int):
-    """Di chuyển camera đến vị trí preset (relative position)."""
+    """Di chuyển camera đến vị trí preset (hardware preset)."""
     camera = config_service.get_camera(camera_id)
     if not camera:
         raise HTTPException(status_code=404, detail="Camera not found")
@@ -113,7 +113,7 @@ async def goto_preset(camera_id: str, preset_number: int):
     if preset_number < 1 or preset_number > 255:
         raise HTTPException(status_code=400, detail="Preset number must be 1-255")
 
-    # Lấy preset từ config (có thể chứa relative position)
+    # Verify preset exists in config
     presets = config_service.get_presets(camera_id)
     preset_data = None
     for p in presets:
@@ -125,17 +125,12 @@ async def goto_preset(camera_id: str, preset_number: int):
         raise HTTPException(status_code=404, detail="Preset not found")
 
     controller = get_ptz_controller(camera)
-
-    # Nếu có relative position thì dùng, không thì thử hardware preset
-    preset_pan = preset_data.get("pan", 0)
-    preset_tilt = preset_data.get("tilt", 0)
-
-    result = await controller.goto_preset(preset_number, preset_pan, preset_tilt)
+    result = await controller.goto_preset(preset_number)
 
     if not result["success"]:
         raise HTTPException(status_code=502, detail=result["message"])
 
-    return {"success": True, "preset_number": preset_number, "method": result.get("method"), "target": {"pan": preset_pan, "tilt": preset_tilt}}
+    return {"success": True, "preset_number": preset_number, "method": result.get("method")}
 
 
 @router.delete("/{camera_id}/ptz/presets/{preset_number}")
@@ -156,19 +151,10 @@ async def delete_preset(camera_id: str, preset_number: int):
 
 @router.get("/{camera_id}/ptz/position")
 async def get_ptz_position(camera_id: str):
-    """Lấy vị trí tương đối của camera (Pan/Tilt) - server tracked."""
-    camera = config_service.get_camera(camera_id)
-    if not camera:
-        raise HTTPException(status_code=404, detail="Camera not found")
-
-    controller = get_ptz_controller(camera)
-    pos = controller.get_relative_position()
-
+    """Position tracking đã bị loại bỏ - chỉ dùng hardware preset."""
     return {
-        "success": True,
-        "pan": pos.get("pan", 0),
-        "tilt": pos.get("tilt", 0),
-        "mode": "relative"
+        "success": False,
+        "message": "Position tracking not supported. Use hardware presets only."
     }
 
 

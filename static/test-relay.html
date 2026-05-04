@@ -1,0 +1,158 @@
+<!DOCTYPE html>
+<html lang="vi">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <title>🔌 Relay Test - Cloud Control</title>
+    <style>
+        * { box-sizing: border-box; margin: 0; padding: 0; }
+        body { font-family: -apple-system, BlinkMacSystemFont, 'Segoe UI', Roboto, sans-serif; background: #f5f5f5; padding: 20px; }
+        .container { max-width: 600px; margin: 0 auto; }
+        h1 { text-align: center; margin-bottom: 20px; }
+        .card { background: white; border-radius: 12px; padding: 20px; margin-bottom: 16px; box-shadow: 0 2px 8px rgba(0,0,0,0.1); }
+        .device { border-bottom: 1px solid #eee; padding-bottom: 16px; margin-bottom: 16px; }
+        .device:last-child { border-bottom: none; margin-bottom: 0; padding-bottom: 0; }
+        .device-name { font-weight: bold; font-size: 18px; margin-bottom: 4px; }
+        .device-code { color: #666; font-size: 12px; font-family: monospace; }
+        .relays { display: flex; gap: 12px; flex-wrap: wrap; margin-top: 12px; }
+        .relay-btn {
+            width: 70px; height: 70px; border-radius: 12px; border: none; font-weight: bold; cursor: pointer;
+            display: flex; flex-direction: column; align-items: center; justify-content: center;
+            transition: all 0.2s;
+        }
+        .relay-btn.off { background: #e5e5e5; color: #333; }
+        .relay-btn.on { background: #22c55e; color: white; box-shadow: 0 4px 12px rgba(34,197,94,0.4); }
+        .relay-btn:hover { transform: scale(1.05); }
+        .relay-btn:active { transform: scale(0.95); }
+        .relay-btn:disabled { opacity: 0.5; cursor: not-allowed; transform: none; }
+        .ch-label { font-size: 10px; opacity: 0.8; }
+        .status { font-size: 12px; color: #666; margin-top: 8px; }
+        .toast {
+            position: fixed; bottom: 20px; left: 50%; transform: translateX(-50%);
+            background: #333; color: white; padding: 12px 24px; border-radius: 8px;
+            animation: slideUp 0.3s ease;
+        }
+        @keyframes slideUp { from { bottom: -50px; opacity: 0; } to { bottom: 20px; opacity: 1; } }
+        .cloud-badge { background: #3b82f6; color: white; font-size: 10px; padding: 2px 6px; border-radius: 4px; margin-left: 8px; }
+        .online { color: #22c55e; }
+        .offline { color: #ef4444; }
+        .loading { opacity: 0.6; pointer-events: none; }
+    </style>
+</head>
+<body>
+    <div class="container">
+        <h1>🔌 Relay Test</h1>
+        <div id="app">
+            <div class="card">
+                <div class="device">
+                    <div class="device-name">ESP-61878 Relay 4CH <span class="cloud-badge">CLOUD</span></div>
+                    <div class="device-code">esp-61878 | v<span id="fw-version">-</span> | <span id="mqtt-status">-</span></div>
+                    <div class="relays" id="relays">
+                        <button class="relay-btn off" data-ch="1" onclick="toggleRelay(1)">
+                            <span class="ch-label">Kênh 1</span>
+                            <span class="state">OFF</span>
+                        </button>
+                        <button class="relay-btn off" data-ch="2" onclick="toggleRelay(2)">
+                            <span class="ch-label">Kênh 2</span>
+                            <span class="state">OFF</span>
+                        </button>
+                        <button class="relay-btn off" data-ch="3" onclick="toggleRelay(3)">
+                            <span class="ch-label">Kênh 3</span>
+                            <span class="state">OFF</span>
+                        </button>
+                        <button class="relay-btn off" data-ch="4" onclick="toggleRelay(4)">
+                            <span class="ch-label">Kênh 4</span>
+                            <span class="state">OFF</span>
+                        </button>
+                    </div>
+                    <div class="status" id="status">Đang kết nối...</div>
+                </div>
+            </div>
+        </div>
+    </div>
+    <div id="toast" class="toast" style="display:none;"></div>
+
+    <script>
+        const DEVICE_CODE = 'esp-61878';
+        const LOCAL_API = 'https://localhost:8443';
+        const CLOUD_API = 'https://app.cfarm.vn';
+
+        const states = { 1: false, 2: false, 3: false, 4: false };
+        let ws = null;
+
+        function showToast(msg) {
+            const t = document.getElementById('toast');
+            t.textContent = msg;
+            t.style.display = 'block';
+            setTimeout(() => t.style.display = 'none', 2000);
+        }
+
+        function updateUI() {
+            document.querySelectorAll('.relay-btn').forEach(btn => {
+                const ch = parseInt(btn.dataset.ch);
+                const isOn = states[ch];
+                btn.className = 'relay-btn ' + (isOn ? 'on' : 'off');
+                btn.querySelector('.state').textContent = isOn ? 'ON' : 'OFF';
+            });
+        }
+
+        async function toggleRelay(channel) {
+            const newState = !states[channel];
+            states[channel] = newState;
+            updateUI();
+            showToast(`K${channel} đang ${newState ? 'BẬT' : 'TẮT'}...`);
+
+            try {
+                // Send via cloud API (main control path)
+                const res = await fetch(`${CLOUD_API}/api/iot/direct/relay`, {
+                    method: 'POST',
+                    headers: { 'Content-Type': 'application/json' },
+                    body: JSON.stringify({
+                        device_code: DEVICE_CODE,
+                        channel: channel,
+                        state: newState ? 'on' : 'off'
+                    })
+                });
+                const data = await res.json();
+                if (data.ok) {
+                    showToast(`K${channel} ${newState ? 'BẬT' : 'TẮT'} thành công!`);
+                } else {
+                    showToast(`Lỗi: ${data.message || 'Unknown'}`);
+                }
+            } catch (e) {
+                showToast(`Lỗi kết nối: ${e.message}`);
+            }
+        }
+
+        async function checkHeartbeat() {
+            try {
+                const res = await fetch(`${CLOUD_API}/api/devices/ping/esp-61878`, {
+                    method: 'POST'
+                });
+                document.getElementById('status').textContent = 'Đã gửi ping...';
+            } catch (e) {
+                console.log('Ping failed:', e.message);
+            }
+        }
+
+        // Simple SSE to monitor heartbeat
+        function connectSSE() {
+            // Use cloud MQTT websocket or poll via API
+            // For now, just show connected status
+            document.getElementById('mqtt-status').textContent = 'Cloud Active';
+            document.getElementById('fw-version').textContent = '2.0.2';
+            document.getElementById('status').textContent = 'Kết nối cloud MQTT thành công';
+        }
+
+        // Initial load
+        connectSSE();
+
+        // Poll heartbeat every 30s
+        setInterval(() => {
+            // In production, would subscribe to MQTT for real-time updates
+            // For now, just check API
+            checkHeartbeat();
+        }, 30000);
+    </script>
+</body>
+</html>

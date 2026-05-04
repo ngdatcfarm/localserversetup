@@ -1,5 +1,9 @@
 const { ref, reactive, onMounted, onUnmounted } = Vue;
 
+const PRESET_TYPES = ['ptz_position', 'snapshot', 'video', 'alert_trigger'];
+const PRESET_TYPE_LABELS = { ptz_position: 'PTZ', snapshot: 'Snapshot', video: 'Video', alert_trigger: 'Alert' };
+const PRESET_TYPE_ICONS = { ptz_position: '🎯', snapshot: '📷', video: '🎥', alert_trigger: '⚠️' };
+
 const component = {
     template: `
     <div>
@@ -13,74 +17,9 @@ const component = {
             </div>
         </div>
 
-        <!-- Add Camera Modal -->
-        <div v-if="showModal" class="modal-overlay" @click.self="showModal = false">
-            <div class="modal">
-                <div class="flex justify-between items-center mb-4">
-                    <h3 class="text-lg font-bold">Thêm Camera</h3>
-                    <button class="text-gray-500 hover:text-gray-700 text-xl" @click="showModal = false">&times;</button>
-                </div>
-                <form @submit.prevent="saveCamera">
-                    <div class="grid grid-cols-2 gap-3">
-                        <div>
-                            <label class="block text-xs font-medium text-gray-600 mb-1">ID *</label>
-                            <input v-model="form.id" type="text" class="input" placeholder="cam_001" required>
-                        </div>
-                        <div>
-                            <label class="block text-xs font-medium text-gray-600 mb-1">Tên *</label>
-                            <input v-model="form.name" type="text" class="input" placeholder="Camera cổng" required>
-                        </div>
-                    </div>
-                    <div class="grid grid-cols-3 gap-3 mt-3">
-                        <div class="col-span-2">
-                            <label class="block text-xs font-medium text-gray-600 mb-1">IP *</label>
-                            <input v-model="form.ip" type="text" class="input" placeholder="192.168.1.72" required>
-                        </div>
-                        <div>
-                            <label class="block text-xs font-medium text-gray-600 mb-1">Port</label>
-                            <input v-model="form.port" type="number" class="input" placeholder="554">
-                        </div>
-                    </div>
-                    <div class="grid grid-cols-2 gap-3 mt-3">
-                        <div>
-                            <label class="block text-xs font-medium text-gray-600 mb-1">Username *</label>
-                            <input v-model="form.username" type="text" class="input" placeholder="admin" required>
-                        </div>
-                        <div>
-                            <label class="block text-xs font-medium text-gray-600 mb-1">Password *</label>
-                            <input v-model="form.password" type="password" class="input" placeholder="••••••••" required>
-                        </div>
-                    </div>
-                    <div class="mt-3">
-                        <label class="block text-xs font-medium text-gray-600 mb-1">RTSP Path</label>
-                        <input v-model="form.rtsp_path" type="text" class="input" placeholder="/unicast/c1/s0/live">
-                    </div>
-                    <div class="grid grid-cols-2 gap-3 mt-3">
-                        <div>
-                            <label class="block text-xs font-medium text-gray-600 mb-1">Stream Type</label>
-                            <select v-model="form.stream_type" class="input">
-                                <option value="main">Main</option>
-                                <option value="sub">Sub</option>
-                            </select>
-                        </div>
-                        <div class="flex items-center h-full pt-4">
-                            <label class="flex items-center gap-2 cursor-pointer">
-                                <input v-model="form.enabled" type="checkbox" class="w-4 h-4 text-green-600">
-                                <span class="text-sm">Kích hoạt</span>
-                            </label>
-                        </div>
-                    </div>
-                    <div class="flex gap-2 mt-4">
-                        <button type="button" class="btn btn-secondary flex-1" @click="showModal = false">Hủy</button>
-                        <button type="submit" class="btn btn-primary flex-1">Lưu</button>
-                    </div>
-                </form>
-            </div>
-        </div>
-
         <div v-if="cameras.length" class="grid grid-cols-1 md:grid-cols-2 gap-4">
             <div v-for="cam in cameras" :key="cam.id" class="card">
-                <!-- Preview: snapshot only, no live stream -->
+                <!-- Preview -->
                 <div class="bg-black rounded-lg overflow-hidden mb-3 relative cursor-pointer" style="aspect-ratio:16/9"
                      @click="openStream(cam)">
                     <img v-if="cam.enabled" :src="snapshotUrl(cam.id)" class="w-full h-full object-contain"
@@ -119,9 +58,31 @@ const component = {
                     <button v-if="getStatus(cam.id).recording" class="btn btn-danger btn-sm" @click="stopRec(cam)">Dừng ghi</button>
                 </div>
 
-                <!-- PTZ Controls -->
+                <!-- PTZ Controls + Presets -->
                 <div v-if="cam.ptz_enabled || cam.ptz" class="mt-3 border-t pt-3">
-                    <div class="text-xs font-semibold text-gray-500 mb-2">PTZ</div>
+                    <div class="flex justify-between items-center mb-2">
+                        <div class="text-xs font-semibold text-gray-500">PRESETS</div>
+                        <button class="btn btn-secondary btn-sm" style="padding:2px 8px;font-size:11px" @click="openAddPresetModal(cam)">+ Thêm</button>
+                    </div>
+
+                    <!-- Preset bar (giống stream_view.html - nhấn giữ 2s để lưu) -->
+                    <div v-if="camPresets[cam.id] && camPresets[cam.id].length" class="flex flex-wrap gap-1 mb-3">
+                        <button v-for="p in camPresets[cam.id]" :key="p.id"
+                            class="preset-quick-btn"
+                            :class="{ 'saving': p._saving }"
+                            @click="goToPreset(cam, p)"
+                            @mousedown="startSavePreset(cam, p)"
+                            @mouseup="endSavePreset(cam, p)"
+                            @mouseleave="cancelSavePreset(p)"
+                            @touchstart="startSavePreset(cam, p)"
+                            @touchend="endSavePreset(cam, p)"
+                            @touchcancel="cancelSavePreset(p)">
+                            <i class="fas fa-location-dot mr-1" style="font-size:10px"></i>{{ p.name }}
+                        </button>
+                    </div>
+                    <div v-else class="text-xs text-gray-400 mb-3">Di chuyển camera xong nhấn giữ preset 2s để lưu</div>
+
+                    <!-- Joystick -->
                     <div class="flex items-center justify-center gap-1">
                         <div class="grid grid-cols-3 gap-1" style="width:120px">
                             <div></div>
@@ -144,13 +105,37 @@ const component = {
             <p>Chưa có camera nào được cấu hình</p>
             <p class="text-sm mt-1">Cấu hình camera trong config/cameras.yaml</p>
         </div>
+
+        <!-- Add Preset Modal -->
+        <div v-if="showPresetModal" class="modal-overlay" @click.self="showPresetModal = false">
+            <div class="modal">
+                <div class="flex justify-between items-center mb-4">
+                    <h3 class="text-lg font-bold">Thêm Preset</h3>
+                    <button class="text-gray-500 hover:text-gray-700 text-xl" @click="showPresetModal = false">&times;</button>
+                </div>
+                <form @submit.prevent="savePreset">
+                    <div class="mb-3">
+                        <label class="block text-xs font-medium text-gray-600 mb-1">Tên Preset *</label>
+                        <input v-model="presetForm.name" type="text" class="input" placeholder="VD: Vị trí cổng" required>
+                    </div>
+                    <div class="flex gap-2 mt-4">
+                        <button type="button" class="btn btn-secondary flex-1" @click="showPresetModal = false">Hủy</button>
+                        <button type="submit" class="btn btn-primary flex-1">Lưu</button>
+                    </div>
+                </form>
+            </div>
+        </div>
     </div>`,
 
     setup() {
         const cameras = ref([]);
         const statuses = ref({});
         const snapTs = ref(Date.now());
+        const camPresets = ref({});  // camera_id -> presets array
+        const showPresetModal = ref(false);
+        const presetForm = ref({ name: '', camera_id: '' });
         let refreshTimer = null;
+        let saveTimer = null;
 
         // Modal state
         const showModal = ref(false);
@@ -218,6 +203,42 @@ const component = {
 
         async function loadCameras() {
             try { cameras.value = await API.cameras.list(); } catch { cameras.value = []; }
+            // Load presets for all PTZ cameras
+            for (const cam of cameras.value) {
+                if (cam.ptz_enabled || cam.ptz) {
+                    await loadPresetsForCamera(cam.id);
+                }
+            }
+        }
+
+        async function loadPresetsForCamera(cameraId) {
+            try {
+                const data = await API.cameras.presets.list(cameraId);
+                // API returns {local: [...], hardware: [...]} - use local presets
+                const list = data.local || [];
+                camPresets.value[cameraId] = list;
+            } catch { camPresets.value[cameraId] = []; }
+        }
+
+        function openAddPresetModal(cam) {
+            presetForm.value = { name: '', camera_id: cam.id };
+            showPresetModal.value = true;
+        }
+
+        async function savePreset() {
+            if (!presetForm.value.name.trim()) { showToast('Nhập tên preset', 'error'); return; }
+            try {
+                // Find next available preset number
+                const existing = camPresets.value[presetForm.value.camera_id] || [];
+                let nextNum = 1;
+                while (existing.some(p => p.number === nextNum)) nextNum++;
+
+                // Use set endpoint with new number (this creates if not exists)
+                await API.cameras.presets.set(presetForm.value.camera_id, nextNum, presetForm.value.name.trim());
+                showPresetModal.value = false;
+                showToast('Đã thêm preset "' + presetForm.value.name + '"');
+                await loadPresetsForCamera(presetForm.value.camera_id);
+            } catch(e) { showToast(e.message, 'error'); }
         }
 
         async function loadStatuses() {
@@ -269,6 +290,46 @@ const component = {
             try { await API.cameras.ptz.stop(cam.id); } catch { /* ignore */ }
         }
 
+        // ── Preset quick actions (giống stream_view.html) ──
+        function startSavePreset(cam, p) {
+            p._saving = false;
+            p._longPressed = false;
+            saveTimer = setTimeout(() => {
+                p._saving = true;
+                savePresetPosition(cam, p);
+            }, 2000);
+        }
+
+        function endSavePreset(cam, p) {
+            clearTimeout(saveTimer);
+            if (!p._longPressed) {
+                goToPreset(cam, p);
+            }
+            p._saving = false;
+        }
+
+        function cancelSavePreset(p) {
+            clearTimeout(saveTimer);
+            p._saving = false;
+        }
+
+        async function goToPreset(cam, p) {
+            try {
+                const r = await API.cameras.presets.goto(cam.id, p.number);
+                showToast(r.success ? '→ ' + p.name : 'Lỗi: ' + r.message);
+            } catch(e) { showToast(e.message, 'error'); }
+        }
+
+        async function savePresetPosition(cam, p) {
+            p._saving = true;
+            try {
+                const r = await API.cameras.presets.set(cam.id, p.number, p.name);
+                showToast(r.success ? '💾 Đã lưu "' + p.name + '"' : 'Lỗi: ' + r.message);
+                await loadPresetsForCamera(cam.id);
+            } catch(e) { showToast(e.message, 'error'); }
+            p._saving = false;
+        }
+
         onMounted(async () => {
             await Promise.all([loadCameras(), loadStatuses()]);
             refreshTimer = setInterval(loadStatuses, 10000);
@@ -276,11 +337,14 @@ const component = {
 
         onUnmounted(() => {
             if (refreshTimer) clearInterval(refreshTimer);
+            if (saveTimer) clearTimeout(saveTimer);
         });
 
         return { cameras, statuses, snapTs, getStatus, snapshotUrl, onImgError, openStream, refreshSnapshots,
             startCam, stopCam, testCam, startRec, stopRec, recAll, ptzMove, ptzStop,
-            showModal, form, openAddModal, saveCamera };
+            showModal, form, openAddModal, saveCamera,
+            showPresetModal, presetForm, openAddPresetModal, savePreset,
+            camPresets, goToPreset, startSavePreset, endSavePreset, cancelSavePreset, loadPresetsForCamera };
     }
 };
 

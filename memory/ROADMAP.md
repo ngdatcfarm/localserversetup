@@ -34,11 +34,16 @@ ESP32 Sensors/Relays
 
 **Mục tiêu**: Dựng nền tảng hạ tầng local - MQTT broker và database
 
+### Update 2026-04-07: Docker PostgreSQL
+- **Database**: Docker PostgreSQL (port 5434) thay vì Windows native
+- **Lý do**: Dễ backup/restore, tránh port conflict với Windows services
+- **Port**: 5434 (port 5432 bị 2 Windows PostgreSQL services chiếm)
+
 ### Checklist
-- [x] Mosquitto MQTT Broker (Windows native, port 1883)
+- [x] Mosquitto MQTT Broker (Docker, port 1883)
 - [x] Cấu hình Mosquitto (auth 3 users: server/device/cloud, ACL, persistence)
-- [x] PostgreSQL 18 (Windows native, port 5432)
-- [x] Database schema cho IoT data (devices, sensor_data, device_states, commands, sync_queue)
+- [x] PostgreSQL (Docker TimescaleDB, port 5434)
+- [x] Database schema cho IoT data (77 tables)
 - [x] Cập nhật MQTT client kết nối local broker (thay cloud)
 - [x] MQTT listener service nhận heartbeat + sensor data từ ESP32
 - [x] Database service async (asyncpg connection pool)
@@ -46,10 +51,10 @@ ESP32 Sensors/Relays
 - [x] Test kết nối thành công: DB Connected + MQTT Connected + Camera 1280x720@25fps
 
 ### Quyết định kỹ thuật
-- **MQTT Broker**: Mosquitto 2.x (Windows native installer)
-- **Database**: PostgreSQL 18 (Windows native installer, TimescaleDB optional)
+- **MQTT Broker**: Mosquitto 2.x (Docker)
+- **Database**: TimescaleDB (Docker, port 5434)
 - **DB Driver**: asyncpg (async connection pool, tương thích FastAPI)
-- **Deployment**: Windows native (không Docker, không VM)
+- **Deployment**: Docker Compose
 
 ### Kết quả test (2026-03-26)
 ```
@@ -90,22 +95,26 @@ CFarm Local Server ready!
 | 8 | **Care Operations** - cho ăn, tử vong, thuốc/vaccine, cân, bán | HIGH | ✅ Done |
 | 9 | **Device Type CRUD** - tạo/sửa device type từ API | MEDIUM | ✅ Done |
 | 10 | **Device Test Command** - gửi test kiểm tra kết nối | MEDIUM | ✅ Done |
-| 11 | **Push Notifications** - WebPush alerts | LOW | ✅ Done |
+| 11 | **Push Notifications** - WebPush alerts (Android ✅, iOS 🔲 FCM) | LOW | 🔄 Partial |
 
 ---
 
-## Phase 3: Cloud Sync Service
+## Phase 3: Cloud Sync Service (PAUSED)
 
 **Mục tiêu**: Đồng bộ data từ local lên cloud, nhận remote commands
 
-### Checklist
-- [ ] Sync protocol design (batch + event-driven)
-- [ ] Local → Cloud: batch sync sensor data (mỗi 5-15 phút)
-- [ ] Local → Cloud: real-time device state changes
-- [ ] Cloud → Local: remote command forwarding
-- [ ] Conflict resolution (local = source of truth)
-- [ ] Sync queue với retry logic
-- [ ] API authentication giữa local ↔ cloud
+### Status: PAUSED (2026-04-07)
+Quyết định: Tạm dừng sync, tập trung hoàn thiện local server trước.
+
+**Lý do**:
+- Sync bidirectional phức tạp, nhiều lỗi
+- Local-first architecture không cần sync ngay lập tức
+- Cloud đơn giản chỉ cần là read-only backup
+
+### Sau này sẽ làm
+- [ ] Cloud reset + schema alignment
+- [ ] Unidirectional sync (Local → Cloud only)
+- [ ] Remote command proxy qua HTTPS thay vì sync
 
 ---
 
@@ -124,6 +133,7 @@ CFarm Local Server ready!
 - [x] Chăm sóc: cho ăn, tử vong, thuốc, cân, bán
 - [x] Cảnh báo: xem/đánh dấu đọc + CRUD quy tắc
 - [x] Tự động hóa: CRUD rules (cron + sensor trigger)
+- [x] Push Notifications: WebPush cho Alert (Android ✅, iOS 🔲)
 - [ ] Auto-detect LAN vs Cloud
 - [ ] Service Worker cho offline capability
 - [ ] Real-time updates via WebSocket
@@ -231,3 +241,27 @@ CFarm Local Server ready!
 - Existing tables enhanced with cloud columns (ALTER TABLE ADD COLUMN)
 - Backward compatible: old local columns kept, new cloud columns added
 - Purpose: Enable future cloud-to-local full data migration
+
+---
+
+## Push Notification System (2026-04-08)
+
+### Status
+| Platform | Browser | Push Status |
+|----------|---------|-------------|
+| Windows | Chrome | ✅ Works |
+| Windows | Firefox | ✅ Works |
+| Android | Chrome | ✅ Works |
+| Android | Firefox | ✅ Works |
+| iPhone | Safari | ❌ Needs CA or FCM |
+
+### Implementation
+- **SSL**: Self-signed certificate (port 8443) + download via `/cfarm.crt`
+- **VAPID**: SPKI → Raw P-256 key conversion for browser compatibility
+- **Service Worker**: `static/sw.js` handles push events
+- **Frontend**: Tab "Thong bao" in Alerts page
+
+### Pending for iOS
+- [ ] Firebase Cloud Messaging (FCM) integration
+- [ ] iOS Push Certificate setup
+- [ ] PWA for iOS Safari support (if possible)

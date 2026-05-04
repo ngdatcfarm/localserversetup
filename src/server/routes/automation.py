@@ -156,3 +156,10 @@ async def acknowledge_alert(alert_id: int):
 @router.post("/alerts/acknowledge-all")
 async def acknowledge_all_alerts(barn_id: str = None):
     return await alert_service.acknowledge_all(barn_id)
+
+
+@router.post("/alerts/check")
+async def trigger_alert_check():
+    """Manually trigger sensor alert check."""
+    await alert_service._check_alerts()
+    return {"ok": True, "message": "Alert check triggered"}

@@ -197,4 +197,18 @@ async def get_sync_logs(limit: int = 20):
         for k, v in log.items():
             if hasattr(v, 'isoformat'):
                 log[k] = v.isoformat()
-    return {"count": len(logs), "logs": logs}
+    return {"count": len(log), "logs": logs}
+
+
+@router.delete("/queue")
+async def clear_sync_queue():
+    """Clear all pending sync queue items (for debugging)."""
+    await sync_service.clear_queue()
+    return {"ok": True, "message": "Sync queue cleared"}
+
+
+@router.post("/queue/clear")
+async def clear_sync_queue_post():
+    """Clear all pending sync queue items (POST alternative)."""
+    await sync_service.clear_queue()
+    return {"ok": True, "message": "Sync queue cleared"}

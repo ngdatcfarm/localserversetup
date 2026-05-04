@@ -4,13 +4,15 @@ import asyncio
 import logging
 from pathlib import Path
 
-from fastapi import FastAPI
+from fastapi import FastAPI, HTTPException
 from fastapi.staticfiles import StaticFiles
 from fastapi.responses import HTMLResponse, FileResponse
 from fastapi.templating import Jinja2Templates
 
 from src.server.routes import cameras_router, ptz_router, recording_router
+from src.server.routes.preset_automation import router as preset_automation_router
 from src.server.routes.iot import router as iot_router
+from src.server.routes.snapshots import router as snapshots_router
 from src.server.routes.devices import router as devices_router
 from src.server.routes.sensors import router as sensors_router
 from src.server.routes.automation import router as automation_router
@@ -18,6 +20,8 @@ from src.server.routes.firmware import router as firmware_router
 from src.server.routes.farm import router as farm_router
 from src.server.routes.farm_extended import router as farm_extended_router
 from src.server.routes.notifications import router as notifications_router
+from src.server.routes.bats import router as bats_router
+from src.server.routes.equipment import router as equipment_router
 from src.server.routes.sync import router as sync_router
 from src.server.routes.database import router as database_router
 from src.sync.sync_service import sync_service
@@ -26,12 +30,24 @@ from src.cameras.stream.mjpeg_stream import router as stream_router, setup_mjpeg
 from src.cameras.capture.camera_manager import camera_manager
 from src.services.storage.config_service import ConfigService
 from src.services.storage.recording_service import recording_service
+from src.services.storage.snapshot_service import snapshot_service
 from src.iot.mqtt_client import mqtt_client
 from src.iot.mqtt_listener import mqtt_listener
 from src.iot.device_service import device_service
 from src.iot.automation_service import automation_service
 from src.iot.alert_service import alert_service
 from src.iot.notification_service import notification_service
+from src.iot.vaccine_notification_service import vaccine_notification_service
+from src.iot.care_notification_service import care_notification_service
+from src.iot.weight_notification_service import weight_notification_service
+from src.iot.ai_logic_service import ai_logic_service
+from src.server.routes.ai_logic import router as ai_logic_router
+from src.server.routes.ml_dataset import router as ml_dataset_router
+from src.server.routes.ml_training import router as ml_training_router
+from src.server.routes.density import router as density_router
+from src.server.routes.ai_detection import router as ai_detection_router
+from src.server.routes.dataset_capture import router as dataset_capture_router
+from src.server.routes.capture_scheduler_routes import router as capture_scheduler_router
 from src.services.database.db import db
 
 # Logging
@@ -103,6 +119,10 @@ async def startup_event():
 
     await automation_service.start()
     await alert_service.start()
+    await vaccine_notification_service.start()
+    await care_notification_service.start()
+    await weight_notification_service.start()
+    await ai_logic_service.start()
 
     # 4b. Start cloud sync service
     await sync_service.start()
@@ -131,6 +151,15 @@ async def startup_event():
     )
     camera_manager.add_frame_callback(recording_service.on_frame)
 
+    # 7b. Setup snapshot service from config
+    snap_config = config_service.get_snapshot_config()
+    snapshot_service.update_settings(
+        snapshot_dir=snap_config.get("snapshot_dir", "E:\\AI\\Snapshots"),
+        retention_days=snap_config.get("retention_days", 7),
+    )
+    # Run initial cleanup
+    snapshot_service.cleanup_old()
+
     # 8. Start all enabled cameras
     cameras = config_service.get_cameras()
     started = 0
@@ -152,6 +181,10 @@ async def shutdown_event():
     await sync_service.stop()
     await automation_service.stop()
     await alert_service.stop()
+    await vaccine_notification_service.stop()
+    await care_notification_service.stop()
+    await weight_notification_service.stop()
+    await ai_logic_service.stop()
     recording_service.stop_all()
     for camera_id in list(camera_manager.get_all_cameras().keys()):
         camera_manager.stop_camera(camera_id)
@@ -168,8 +201,38 @@ static_dir = BASE_DIR / "static"
 if static_dir.exists():
     app.mount("/static", StaticFiles(directory=str(static_dir)), name="static")
 
+# Mount snapshot folder for debug images
+snapshot_dir = Path("E:/AI/Snapshots")
+if snapshot_dir.exists():
+    app.mount("/snapshots", StaticFiles(directory=str(snapshot_dir)), name="snapshots")
+
+# Mount dataset folder for ML training images
+dataset_dir = Path("E:/AI/Dataset")
+if dataset_dir.exists():
+    app.mount("/dataset", StaticFiles(directory=str(dataset_dir)), name="dataset")
+
+# Serve service worker at root (required for push notifications)
+@app.get("/sw.js")
+async def serve_sw():
+    from fastapi.responses import FileResponse
+    sw_path = static_dir / "sw.js"
+    if sw_path.exists():
+        return FileResponse(str(sw_path), media_type="application/javascript")
+    raise HTTPException(status_code=404, detail="Service Worker not found")
+
+# Serve SSL certificate for mobile device installation
+@app.get("/cfarm.crt")
+async def serve_cert():
+    """Download SSL certificate for installing on mobile devices."""
+    from fastapi.responses import FileResponse
+    cert_path = BASE_DIR / "cert.pem"
+    if cert_path.exists():
+        return FileResponse(str(cert_path), media_type="application/x-x509-ca-cert", filename="cfarm.crt")
+    raise HTTPException(status_code=404, detail="Certificate not found")
+
 # Include routers
 app.include_router(cameras_router)
+app.include_router(preset_automation_router)
 app.include_router(ptz_router)
 app.include_router(sync_router)
 app.include_router(stream_router)
@@ -183,6 +246,16 @@ app.include_router(farm_router)
 app.include_router(farm_extended_router)
 app.include_router(notifications_router)
 app.include_router(database_router)
+app.include_router(bats_router)
+app.include_router(equipment_router)
+app.include_router(snapshots_router)
+app.include_router(ai_logic_router)
+app.include_router(ml_dataset_router)
+app.include_router(ml_training_router)
+app.include_router(density_router)
+app.include_router(ai_detection_router)
+app.include_router(dataset_capture_router)
+app.include_router(capture_scheduler_router)
 
 
 @app.get("/", response_class=HTMLResponse)

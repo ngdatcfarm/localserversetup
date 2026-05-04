@@ -77,7 +77,7 @@ class MqttListener:
             logger.warning(f"MqttListener: Invalid heartbeat payload from {topic}")
             return
 
-        logger.info(f"MqttListener: Queuing heartbeat from {device_topic}")
+        logger.warning(f"MqttListener: >>> HEARTBEAT RECEIVED from {device_topic}, payload={payload}")
         self._queue_work("_store_heartbeat", device_topic, payload)
 
     async def _store_heartbeat(self, device_topic: str, payload: dict):

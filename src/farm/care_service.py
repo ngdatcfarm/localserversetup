@@ -12,15 +12,55 @@ class CareService:
     # ── Feed Logs (Cho ăn) ────────────────────────────
 
     async def log_feed(self, data: dict) -> dict:
-        """Log a feeding event and deduct from warehouse."""
+        """Log a feeding event and deduct from warehouse.
+
+        Validates:
+        - warehouse_type must be 'feed' or have warehouse_type 'mixed'
+        - If warehouse_id not provided, auto-lookup from barn_default_warehouses
+        - Product product_type must be 'feed'
+        - Warehouse must be active
+        """
+        barn_id = data.get("barn_id")
+        warehouse_id = data.get("warehouse_id")
+        product_id = data.get("product_id")
+
+        # ── Auto-lookup default warehouse if not specified ──
+        if not warehouse_id and barn_id:
+            try:
+                default_wh = await inventory_service.get_default_warehouse(barn_id, "feed")
+                if default_wh:
+                    warehouse_id = default_wh["warehouse_id"]
+                    data = {**data, "warehouse_id": warehouse_id}
+            except Exception:
+                # barn_default_warehouses table may not exist - skip auto-lookup
+                pass
+
+        # ── Validate warehouse if specified or resolved ──
+        if warehouse_id:
+            warehouse = await inventory_service.get_warehouse(warehouse_id)
+            if not warehouse:
+                return {"ok": False, "message": f"Warehouse {warehouse_id} not found"}
+            if not warehouse.get("active"):
+                return {"ok": False, "message": "Warehouse is not active"}
+            if warehouse.get("warehouse_type") not in ("feed", "mixed"):
+                return {"ok": False, "message": f"Warehouse type '{warehouse['warehouse_type']}' is not valid for feed operations. Must be 'feed' or 'mixed'."}
+
+        # ── Validate product type matches ──
+        if product_id:
+            product = await db.fetchrow("SELECT * FROM products WHERE id = $1", product_id)
+            if not product:
+                return {"ok": False, "message": f"Product {product_id} not found"}
+            if product.get("product_type") not in ("feed", None):
+                return {"ok": False, "message": f"Product type '{product['product_type']}' is not valid for feed operations. Must be 'feed'."}
+
         # Deduct from warehouse if specified
-        if data.get("warehouse_id") and data.get("product_id"):
+        if warehouse_id and product_id:
             result = await inventory_service.export_stock({
-                "warehouse_id": data["warehouse_id"],
-                "product_id": data["product_id"],
+                "warehouse_id": warehouse_id,
+                "product_id": product_id,
                 "quantity": data["quantity"],
                 "reference_type": "feed_log",
-                "notes": f"Cho ăn {data.get('barn_id', '')} {data.get('feed_date', '')}",
+                "notes": f"Cho ăn {barn_id} {data.get('feed_date', '')}",
             })
             if not result["ok"]:
                 return result
@@ -53,7 +93,10 @@ class CareService:
             "warehouse_id": row.get("warehouse_id"),
             "notes": row.get("notes"),
         }
-        await sync_service.queue_change("care_feeds", row["id"], "insert", payload)
+        try:
+            await sync_service.queue_change("care_feeds", row["id"], "insert", payload)
+        except Exception:
+            pass  # Sync may fail if cloud not reachable
 
         return {"ok": True, "feed": dict(row)}
 
@@ -110,7 +153,10 @@ class CareService:
             "symptoms": row.get("symptoms"),
             "notes": row.get("notes"),
         }
-        await sync_service.queue_change("care_deaths", row["id"], "insert", payload)
+        try:
+            await sync_service.queue_change("care_deaths", row["id"], "insert", payload)
+        except Exception:
+            pass  # Sync may fail if cloud not reachable
 
         return {"ok": True, "death": dict(row)}
 
@@ -136,14 +182,55 @@ class CareService:
     # ── Medication (Thuốc/Vaccine) ────────────────────
 
     async def log_medication(self, data: dict) -> dict:
+        """Log a medication/vaccination event and deduct from warehouse.
+
+        Validates:
+        - warehouse_type must be 'medication' or have warehouse_type 'mixed'
+        - If warehouse_id not provided, auto-lookup from barn_default_warehouses
+        - Product product_type must be 'medication' or 'medicine'
+        - Warehouse must be active
+        """
+        barn_id = data.get("barn_id")
+        warehouse_id = data.get("warehouse_id")
+        product_id = data.get("product_id")
+
+        # ── Auto-lookup default warehouse if not specified ──
+        if not warehouse_id and barn_id:
+            try:
+                default_wh = await inventory_service.get_default_warehouse(barn_id, "medication")
+                if default_wh:
+                    warehouse_id = default_wh["warehouse_id"]
+                    data = {**data, "warehouse_id": warehouse_id}
+            except Exception:
+                # barn_default_warehouses table may not exist - skip auto-lookup
+                pass
+
+        # ── Validate warehouse if specified or resolved ──
+        if warehouse_id:
+            warehouse = await inventory_service.get_warehouse(warehouse_id)
+            if not warehouse:
+                return {"ok": False, "message": f"Warehouse {warehouse_id} not found"}
+            if not warehouse.get("active"):
+                return {"ok": False, "message": "Warehouse is not active"}
+            if warehouse.get("warehouse_type") not in ("medication", "mixed"):
+                return {"ok": False, "message": f"Warehouse type '{warehouse['warehouse_type']}' is not valid for medication operations. Must be 'medication' or 'mixed'."}
+
+        # ── Validate product type matches ──
+        if product_id:
+            product = await db.fetchrow("SELECT * FROM products WHERE id = $1", product_id)
+            if not product:
+                return {"ok": False, "message": f"Product {product_id} not found"}
+            if product.get("product_type") not in ("medication", "medicine", None):
+                return {"ok": False, "message": f"Product type '{product['product_type']}' is not valid for medication operations. Must be 'medication' or 'medicine'."}
+
         # Deduct from warehouse if specified
-        if data.get("warehouse_id") and data.get("product_id") and data.get("quantity"):
+        if warehouse_id and product_id and data.get("quantity"):
             result = await inventory_service.export_stock({
-                "warehouse_id": data["warehouse_id"],
-                "product_id": data["product_id"],
+                "warehouse_id": warehouse_id,
+                "product_id": product_id,
                 "quantity": data["quantity"],
                 "reference_type": "medication",
-                "notes": f"{data.get('med_type', '')} {data.get('barn_id', '')}",
+                "notes": f"{data.get('med_type', '')} {barn_id}",
             })
             if not result["ok"]:
                 return result
@@ -176,7 +263,10 @@ class CareService:
             "purpose": row.get("purpose"),
             "notes": row.get("notes"),
         }
-        await sync_service.queue_change("care_medications", row["id"], "insert", payload)
+        try:
+            await sync_service.queue_change("care_medications", row["id"], "insert", payload)
+        except Exception:
+            pass  # Sync may fail if cloud not reachable
 
         return {"ok": True, "medication": dict(row)}
 
@@ -201,16 +291,70 @@ class CareService:
         if cycle:
             day_age = (data["weigh_date"] - cycle["start_date"]).days
 
+        # Get samples array (individual bird weights in grams)
+        samples = data.get("samples", [])
+        gender = data.get("gender", "mixed")  # 'male', 'female', 'mixed'
+
+        # If individual samples provided, calculate aggregates
+        if samples:
+            total_weight = sum(s["weight_g"] for s in samples)
+            sample_count = len(samples)
+
+            # Calculate gender-specific stats if gender markers present
+            male_samples = [s for s in samples if s.get("gender") == "male"]
+            female_samples = [s for s in samples if s.get("gender") == "female"]
+
+            sample_male = len(male_samples)
+            sample_female = len(female_samples)
+            total_weight_male = sum(s["weight_g"] for s in male_samples) if male_samples else None
+            total_weight_female = sum(s["weight_g"] for s in female_samples) if female_samples else None
+
+            # Calculate min/max/uniformity from all samples
+            weights = [s["weight_g"] for s in samples]
+            min_weight = min(weights) if weights else None
+            max_weight = max(weights) if weights else None
+
+            # Uniformity: % of birds within ±10% of avg
+            avg_weight = total_weight / sample_count if sample_count > 0 else 0
+            if avg_weight > 0:
+                within_range = sum(1 for w in weights if abs(w - avg_weight) / avg_weight <= 0.10)
+                uniformity = (within_range / sample_count * 100) if sample_count > 0 else 0
+            else:
+                uniformity = 0
+        else:
+            # Use aggregate values from form
+            total_weight = data.get("total_weight", 0)
+            sample_count = data.get("sample_count", 0)
+            min_weight = data.get("min_weight")
+            max_weight = data.get("max_weight")
+            uniformity = data.get("uniformity")
+            sample_male = data.get("sample_male", 0)
+            sample_female = data.get("sample_female", 0)
+            total_weight_male = data.get("total_weight_male")
+            total_weight_female = data.get("total_weight_female")
+
         row = await db.fetchrow(
             """INSERT INTO care_weights
             (cycle_id, barn_id, weigh_date, sample_count, total_weight,
-             min_weight, max_weight, uniformity, day_age, notes)
-            VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10) RETURNING *""",
+             min_weight, max_weight, uniformity, day_age, notes,
+             gender, sample_male, sample_female, total_weight_male, total_weight_female)
+            VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10, $11, $12, $13, $14, $15) RETURNING *""",
             data["cycle_id"], data["barn_id"], data["weigh_date"],
-            data["sample_count"], data["total_weight"],
-            data.get("min_weight"), data.get("max_weight"),
-            data.get("uniformity"), day_age, data.get("notes"),
+            sample_count, total_weight,
+            min_weight, max_weight, uniformity, day_age, data.get("notes"),
+            gender, sample_male, sample_female, total_weight_male, total_weight_female,
         )
+
+        weight_id = row["id"]
+
+        # Insert individual samples if provided
+        if samples:
+            for s in samples:
+                await db.execute(
+                    """INSERT INTO weight_samples (weight_id, weight_g, gender)
+                    VALUES ($1, $2, $3)""",
+                    weight_id, s["weight_g"], s.get("gender"),
+                )
 
         # Update next weight reminder
         reminder = await db.fetchrow(
@@ -238,8 +382,16 @@ class CareService:
             "max_weight": row.get("max_weight"),
             "uniformity": row.get("uniformity"),
             "notes": row.get("notes"),
+            "gender": row.get("gender"),
+            "sample_male": row.get("sample_male"),
+            "sample_female": row.get("sample_female"),
+            "avg_weight_male": row.get("avg_weight_male"),
+            "avg_weight_female": row.get("avg_weight_female"),
         }
-        await sync_service.queue_change("weight_sessions", row["id"], "insert", payload)
+        try:
+            await sync_service.queue_change("weight_sessions", row["id"], "insert", payload)
+        except Exception:
+            pass  # Sync may fail if cloud not reachable
 
         return {"ok": True, "weight": dict(row)}
 
@@ -249,7 +401,16 @@ class CareService:
             ORDER BY weigh_date DESC""",
             cycle_id,
         )
-        return [dict(r) for r in rows]
+        weights = []
+        for r in rows:
+            w = dict(r)
+            # Get individual samples if any
+            samples = await db.fetch(
+                "SELECT * FROM weight_samples WHERE weight_id = $1 ORDER BY id", r["id"]
+            )
+            w["samples"] = [dict(s) for s in samples]
+            weights.append(w)
+        return weights
 
     async def get_weight_reminders(self, cycle_id: int = None) -> list[dict]:
         """Get upcoming weight reminders."""
@@ -319,7 +480,10 @@ class CareService:
             "sale_type": row.get("sale_type"),
             "notes": row.get("notes"),
         }
-        await sync_service.queue_change("care_sales", row["id"], "insert", payload)
+        try:
+            await sync_service.queue_change("care_sales", row["id"], "insert", payload)
+        except Exception:
+            pass  # Sync may fail if cloud not reachable
 
         return {"ok": True, "sale": dict(row)}
 
@@ -408,6 +572,143 @@ class CareService:
 
         await db.execute("DELETE FROM care_sales WHERE id = $1", sale_id)
         return {"ok": True, "message": "Sale log deleted"}
+
+    # ── Water Logs (Nước uống) ───────────────────────────
+
+    async def log_water(self, data: dict) -> dict:
+        """Log water consumption."""
+        row = await db.fetchrow(
+            """INSERT INTO care_water_logs
+            (cycle_id, barn_id, water_date, shift, consumption_liters, medicated, notes)
+            VALUES ($1, $2, $3, $4, $5, $6, $7) RETURNING *""",
+            data["cycle_id"],
+            data["barn_id"],
+            data["water_date"],
+            data.get("shift", "all_day"),
+            data.get("consumption_liters"),
+            data.get("medicated", False),
+            data.get("notes"),
+        )
+
+        # Queue sync to cloud - convert Decimal to float for JSON serialization
+        from decimal import Decimal
+        def to_float(val):
+            if val is None:
+                return None
+            if isinstance(val, Decimal):
+                return float(val)
+            return val
+
+        payload = {
+            "id": int(row["id"]),
+            "cycle_id": int(row["cycle_id"]),
+            "barn_id": row["barn_id"],
+            "water_date": row["water_date"].isoformat() if row.get("water_date") else None,
+            "shift": row["shift"],
+            "consumption_liters": to_float(row["consumption_liters"]),
+            "medicated": bool(row["medicated"]),
+            "notes": row.get("notes"),
+        }
+        try:
+            await sync_service.queue_change("care_water_logs", row["id"], "insert", payload)
+        except Exception:
+            pass  # Sync may fail if cloud not reachable
+
+        return {"ok": True, "water": dict(row)}
+
+    async def get_water_logs(self, cycle_id: int, days: int = 30) -> list[dict]:
+        """Get water logs for a cycle."""
+        rows = await db.fetch(
+            """SELECT * FROM care_water_logs WHERE cycle_id = $1
+            ORDER BY water_date DESC, created_at DESC LIMIT $2""",
+            cycle_id, days * 2,  # ~2 logs per day
+        )
+        return [dict(r) for r in rows]
+
+    async def delete_water(self, water_id: int) -> dict:
+        """Delete a water log."""
+        water = await db.fetchrow("SELECT * FROM care_water_logs WHERE id = $1", water_id)
+        if not water:
+            return {"ok": False, "message": "Water log not found"}
+
+        await db.execute("DELETE FROM care_water_logs WHERE id = $1", water_id)
+        return {"ok": True, "message": "Water log deleted"}
+
+    # ── Health Notes (Ghi nhận sức khỏe) ─────────────────
+
+    async def log_health(self, data: dict) -> dict:
+        """Log health observations with flags."""
+        import json
+        health_flags = data.get("health_flags", [])
+        # Convert list to JSON string for JSONB column
+        health_flags_json = json.dumps(health_flags) if isinstance(health_flags, list) else health_flags
+
+        row = await db.fetchrow(
+            """INSERT INTO health_notes
+            (cycle_id, barn_id, recorded_at, day_age, severity, symptoms, health_flags, resolved)
+            VALUES ($1, $2, $3, $4, $5, $6, $7, $8) RETURNING *""",
+            data["cycle_id"],
+            data.get("barn_id"),
+            data.get("recorded_at", date.today()),
+            data.get("day_age"),
+            data.get("severity", "normal"),
+            data.get("symptoms"),
+            health_flags_json,
+            False,
+        )
+
+        # Queue sync to cloud - health_flags from JSONB needs parsing
+        from decimal import Decimal
+        def to_float(val):
+            if val is None:
+                return None
+            if isinstance(val, Decimal):
+                return float(val)
+            return val
+
+        # Parse health_flags if it's a string
+        flags = row["health_flags"]
+        if isinstance(flags, str):
+            flags = json.loads(flags) if flags else []
+
+        payload = {
+            "id": int(row["id"]),
+            "cycle_id": int(row["cycle_id"]),
+            "barn_id": row["barn_id"],
+            "recorded_at": row["recorded_at"].isoformat() if row.get("recorded_at") else None,
+            "day_age": row["day_age"],
+            "severity": row["severity"],
+            "symptoms": row["symptoms"],
+            "health_flags": flags,
+            "resolved": bool(row["resolved"]),
+        }
+        try:
+            await sync_service.queue_change("health_notes", row["id"], "insert", payload)
+        except Exception:
+            pass  # Sync may fail if cloud not reachable
+
+        return {"ok": True, "health": dict(row)}
+
+    async def get_health_notes(self, cycle_id: int, days: int = 30) -> list[dict]:
+        """Get health notes for a cycle."""
+        rows = await db.fetch(
+            """SELECT * FROM health_notes WHERE cycle_id = $1
+            ORDER BY recorded_at DESC LIMIT $2""",
+            cycle_id, days,
+        )
+        return [dict(r) for r in rows]
+
+    async def resolve_health_note(self, note_id: int) -> dict:
+        """Mark a health note as resolved."""
+        from datetime import datetime
+        row = await db.fetchrow(
+            """UPDATE health_notes SET resolved = TRUE, resolved_at = $1
+            WHERE id = $2 RETURNING *""",
+            datetime.utcnow(), note_id,
+        )
+        if not row:
+            return {"ok": False, "message": "Health note not found"}
+        return {"ok": True, "health": dict(row)}
 
 
 care_service = CareService()

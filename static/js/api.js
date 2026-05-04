@@ -24,6 +24,15 @@ const API = {
     // Health
     health() { return this.get('/health'); },
 
+    // Farms
+    farms: {
+        list() { return API.get('/api/farm/farms'); },
+        get(id) { return API.get(`/api/farm/farms/${id}`); },
+        create(d) { return API.post('/api/farm/farms', d); },
+        update(id, d) { return API.put(`/api/farm/farms/${id}`, d); },
+        del(id) { return API.del(`/api/farm/farms/${id}`); },
+    },
+
     // Barns
     barns: {
         list() { return API.get('/api/farm/barns'); },
@@ -31,6 +40,10 @@ const API = {
         create(d) { return API.post('/api/farm/barns', d); },
         update(id, d) { return API.put(`/api/farm/barns/${id}`, d); },
         del(id) { return API.del(`/api/farm/barns/${id}`); },
+        defaultWarehouses(id) { return API.get(`/api/farm/barns/${id}/default-warehouses`); },
+        setDefaultWarehouse(barnId, d) { return API.post(`/api/farm/barns/${barnId}/default-warehouses`, d); },
+        deleteDefaultWarehouse(barnId, whType) { return API.del(`/api/farm/barns/${barnId}/default-warehouses/${whType}`); },
+        suggestedWarehouses(id) { return API.get(`/api/farm/barns/${id}/suggested-warehouses`); },
     },
 
     // Cycles
@@ -61,6 +74,49 @@ const API = {
         },
     },
 
+    // Bats (ventilation curtains)
+    bats: {
+        listByBarn(barnId) { return API.get(`/api/bats/barns/${barnId}`); },
+        get(batId) { return API.get(`/api/bats/${batId}`); },
+        update(batId, d) { return API.put(`/api/bats/${batId}`, d); },
+        moveUp(batId) { return API.post(`/api/bats/${batId}/up`); },
+        moveDown(batId) { return API.post(`/api/bats/${batId}/down`); },
+        stop(batId) { return API.post(`/api/bats/${batId}/stop`); },
+        logs(batId, limit) { return API.get(`/api/bats/${batId}/logs${limit ? '?limit=' + limit : ''}`); },
+        logsByBarn(barnId, limit) { return API.get(`/api/bats/barns/${barnId}/logs${limit ? '?limit=' + limit : ''}`); },
+    },
+
+    // Equipment
+    equipment: {
+        listTypes() { return API.get('/api/equipment/types'); },
+        getType(id) { return API.get(`/api/equipment/types/${id}`); },
+        createType(d) { return API.post('/api/equipment/types', d); },
+        updateType(id, d) { return API.put(`/api/equipment/types/${id}`, d); },
+        deleteType(id) { return API.del(`/api/equipment/types/${id}`); },
+        list(barnId, typeId) {
+            let url = '/api/equipment';
+            const params = [];
+            if (barnId) params.push(`barn_id=${barnId}`);
+            if (typeId) params.push(`equipment_type_id=${typeId}`);
+            if (params.length) url += '?' + params.join('&');
+            return API.get(url);
+        },
+        get(id) { return API.get(`/api/equipment/${id}`); },
+        create(d) { return API.post('/api/equipment', d); },
+        update(id, d) { return API.put(`/api/equipment/${id}`, d); },
+        delete(id) { return API.del(`/api/equipment/${id}`); },
+        assign(id, d) { return API.post(`/api/equipment/${id}/assign`, d); },
+        unassign(id) { return API.post(`/api/equipment/${id}/unassign`); },
+        logs(id) { return API.get(`/api/equipment/${id}/logs`); },
+        commands(id) { return API.get(`/api/equipment/${id}/commands`); },
+    },
+
+    // Firmware
+    firmware: {
+        generate(deviceId) { return API.get(`/api/firmware/generate/${deviceId}`); },
+        list(deviceTypeCode) { return API.get(`/api/firmware${deviceTypeCode ? '?device_type_code=' + deviceTypeCode : ''}`); },
+    },
+
     // Warehouses & Products
     warehouses: {
         list() { return API.get('/api/farm/warehouses'); },
@@ -75,11 +131,23 @@ const API = {
         del(id) { return API.del(`/api/farm/products/${id}`); },
     },
     inventory: {
-        list(whId) { return API.get(`/api/farm/inventory/${whId}`); },
+        list(whId) { return API.get(`/api/farm/inventory${whId ? '?warehouse_id=' + whId : ''}`); },
         import(d) { return API.post('/api/farm/inventory/import', d); },
         export(d) { return API.post('/api/farm/inventory/export', d); },
         transfer(d) { return API.post('/api/farm/inventory/transfer', d); },
-        transactions(whId) { return API.get(`/api/farm/inventory/${whId}/transactions`); },
+        transactions(whId, limit) { return API.get(`/api/farm/inventory/transactions${whId ? '?warehouse_id=' + whId : ''}${limit ? (whId ? '&' : '?') + 'limit=' + limit : ''}`); },
+        alerts(whId) { return API.get(`/api/farm/inventory/alerts${whId ? '?warehouse_id=' + whId : ''}`); },
+        checkAlerts(whId) { return API.post(`/api/farm/inventory/alerts/check${whId ? '?warehouse_id=' + whId : ''}`); },
+        ackAlert(id, by) { return API.post(`/api/farm/inventory/alerts/${id}/acknowledge${by ? '?acknowledged_by=' + by : ''}`); },
+        resolveAlert(id) { return API.post(`/api/farm/inventory/alerts/${id}/resolve`); },
+        deleteAlert(id) { return API.del(`/api/farm/inventory/alerts/${id}`); },
+        // Alert rules
+        alertRules(params) { return API.get('/api/farm/inventory/alerts/rules', params); },
+        createAlertRule(d) { return API.post('/api/farm/inventory/alerts/rules', d); },
+        getAlertRule(id) { return API.get(`/api/farm/inventory/alerts/rules/${id}`); },
+        updateAlertRule(id, d) { return API.put(`/api/farm/inventory/alerts/rules/${id}`, d); },
+        deleteAlertRule(id) { return API.del(`/api/farm/inventory/alerts/rules/${id}`); },
+        toggleAlertRule(id, enabled) { return API.post(`/api/farm/inventory/alerts/rules/${id}/toggle`, { enabled }); },
     },
 
     // Care
@@ -94,12 +162,21 @@ const API = {
         weightHistory(cycleId) { return API.get(`/api/farm/care/weight/${cycleId}`); },
         logSale(d) { return API.post('/api/farm/care/sale', d); },
         saleHistory(cycleId) { return API.get(`/api/farm/care/sale/${cycleId}`); },
+        // Water logs
+        logWater(d) { return API.post('/api/farm/care/water', d); },
+        waterHistory(cycleId) { return API.get(`/api/farm/care/water/${cycleId}`); },
+        // Health notes
+        logHealth(d) { return API.post('/api/farm/care/health', d); },
+        healthHistory(cycleId) { return API.get(`/api/farm/care/health/${cycleId}`); },
+        resolveHealth(noteId) { return API.post(`/api/farm/care/health/${noteId}/resolve`); },
+        // DELETE methods (using API.del)
     },
 
     // Sensors
     sensors: {
-        latest() { return API.get('/api/sensors/latest'); },
-        history(deviceId, type, hours) { return API.get(`/api/sensors/history?device_id=${deviceId}&sensor_type=${type}&hours=${hours || 24}`); },
+        latest(params) { return API.get('/api/sensors/latest' + (params || '')); },
+        history(deviceId, type, hours) { return API.get(`/api/sensors/history/${deviceId}/${type}?hours=${hours || 24}`); },
+        hourly(deviceId, type, hours) { return API.get(`/api/sensors/hourly/${deviceId}/${type}?hours=${hours || 24}`); },
         barnSummary(barnId) { return API.get(`/api/sensors/barn/${barnId}`); },
     },
 
@@ -214,6 +291,69 @@ const API = {
         timed(d) { return API.post('/api/iot/relay/timed', d); },
     },
 
+    // Sensor Alert Rules
+    sensorAlerts: {
+        rules: {
+            list(barnId) { return API.get(`/api/alerts/rules${barnId ? '?barn_id=' + barnId : ''}`); },
+            get(id) { return API.get(`/api/alerts/rules/${id}`); },
+            create(d) { return API.post('/api/alerts/rules', d); },
+            update(id, d) { return API.put(`/api/alerts/rules/${id}`, d); },
+            delete(id) { return API.del(`/api/alerts/rules/${id}`); },
+        },
+        // Alerts (triggered)
+        list(acknowledged, barnId) {
+            let url = '/api/alerts';
+            const params = [];
+            if (acknowledged !== undefined) params.push('acknowledged=' + acknowledged);
+            if (barnId) params.push('barn_id=' + barnId);
+            if (params.length) url += '?' + params.join('&');
+            return API.get(url);
+        },
+        active(barnId) { return API.get('/api/alerts/active' + (barnId ? '?barn_id=' + barnId : '')); },
+        ack(id) { return API.post(`/api/alerts/${id}/acknowledge`); },
+        ackAll(barnId) { return API.post('/api/alerts/acknowledge-all' + (barnId ? '?barn_id=' + barnId : '')); },
+    },
+
+    // Notifications / Push
+    notifications: {
+        status() { return API.get('/api/notifications/status'); },
+        vapidKey() { return API.get('/api/notifications/vapid-public-key'); },
+        subscribe(sub) { return API.post('/api/notifications/subscribe', sub); },
+        unsubscribe(endpoint) { return API.post('/api/notifications/unsubscribe', { endpoint }); },
+        subscriptions() { return API.get('/api/notifications/subscriptions'); },
+        test(title, body) { return API.post('/api/notifications/test', { title, body }); },
+        getVaccineSetting() { return API.get('/api/notifications/vaccine-notification-setting'); },
+        setVaccineSetting(enabled) { return API.put('/api/notifications/vaccine-notification-setting', { enabled }); },
+        // General settings
+        getSettings() { return API.get('/api/notifications/settings'); },
+        setSettings(settings) { return API.put('/api/notifications/settings', { settings }); },
+        getCareStatus() { return API.get('/api/notifications/care-status'); },
+        // History + dismiss
+        getHistory() { return API.get('/api/notifications/history'); },
+        dismissAlert(payload) { return API.post('/api/notifications/dismiss', payload); },
+        getDismissed() { return API.get('/api/notifications/dismissed'); },
+    },
+
+    // Snapshots
+    snapshots: {
+        config() { return API.get('/api/snapshots/config'); },
+        updateConfig(d) { return API.put('/api/snapshots/config', d); },
+        cleanup() { return API.post('/api/snapshots/cleanup'); },
+        storage() { return API.get('/api/snapshots/storage'); },
+    },
+
+    // AI Logic
+    ai_logic: {
+        list() { return API.get('/api/ai-logic/rules'); },
+        get(id) { return API.get(`/api/ai-logic/rules/${id}`); },
+        create(d) { return API.post('/api/ai-logic/rules', d); },
+        update(id, d) { return API.put(`/api/ai-logic/rules/${id}`, d); },
+        del(id) { return API.del(`/api/ai-logic/rules/${id}`); },
+        execute(id) { return API.post(`/api/ai-logic/rules/${id}/execute`); },
+        toggle(id, enabled) { return API.post(`/api/ai-logic/rules/${id}/toggle`, { enabled }); },
+        countTest(d) { return API.post('/api/ai-logic/count-test', d); },
+    },
+
     // Cameras
     cameras: {
         list() { return API.get('/api/cameras'); },
@@ -227,6 +367,13 @@ const API = {
             move(id, dir, speed) { return API.post(`/api/cameras/${id}/ptz/move`, { direction: dir, speed: speed || 6 }); },
             stop(id) { return API.post(`/api/cameras/${id}/ptz/stop`); },
         },
+        // Presets (system 1 - config-based)
+        presets: {
+            list(cameraId) { return API.get(`/api/cameras/${cameraId}/ptz/presets`); },
+            set(cameraId, presetNumber, name) { return API.post(`/api/cameras/${cameraId}/ptz/presets/${presetNumber}/set`, { name }); },
+            goto(cameraId, presetNumber) { return API.post(`/api/cameras/${cameraId}/ptz/presets/${presetNumber}/goto`); },
+            delete(cameraId, presetNumber) { return API.del(`/api/cameras/${cameraId}/ptz/presets/${presetNumber}`); },
+        },
     },
 
     // Recording
@@ -236,5 +383,44 @@ const API = {
         startAll() { return API.post('/api/recording/start-all'); },
         stopAll() { return API.post('/api/recording/stop-all'); },
         status() { return API.get('/api/recording/status'); },
+    },
+
+    // ML Training
+    ml_training: {
+        status() { return API.get('/api/ml/training/status'); },
+        export() { return API.post('/api/ml/training/export'); },
+        train(config) { return API.post('/api/ml/training/train', config); },
+        modelInfo() { return API.get('/api/ml/training/model'); },
+    },
+
+    // Density counting (HSV-based, no ML)
+    density: {
+        count(data) { return API.post('/api/density/count', data); },
+        calibrate(data) { return API.post('/api/density/calibrate', data); },
+    },
+
+    // AI Detection (YOLO-based)
+    ai: {
+        detect(data) { return API.post('/api/ai/detect', data); },
+        getStatus() { return API.get('/api/ai/detect/status'); },
+        loadModel(modelPath) { return API.post('/api/ai/detect/load-model', { model_path: modelPath }); },
+    },
+
+    // ML Dataset
+    ml_dataset: {
+        images(status) {
+            const url = status ? `/api/ml/dataset/images?status=${status}` : '/api/ml/dataset/images';
+            return API.get(url);
+        },
+        getImage(id) { return API.get(`/api/ml/dataset/images/${id}`); },
+        upload(formData) { return fetch('/api/ml/dataset/upload', { method: 'POST', body: formData }); },
+        uploadBatch(formData) { return fetch('/api/ml/dataset/upload-batch', { method: 'POST', body: formData }); },
+        addLabel(imageId, label) { return API.post(`/api/ml/dataset/images/${imageId}/labels`, label); },
+        addLabelsBulk(imageId, labels) { return API.post(`/api/ml/dataset/images/${imageId}/labels-bulk`, labels); },
+        deleteLabel(imageId, labelId) { return API.del(`/api/ml/dataset/images/${imageId}/labels/${labelId}`); },
+        updateStatus(imageId, status) { return API.post(`/api/ml/dataset/images/${imageId}/status`, { status }); },
+        deleteImage(id) { return API.del(`/api/ml/dataset/images/${id}`); },
+        export() { return fetch('/api/ml/dataset/export'); },
+        stats() { return API.get('/api/ml/dataset/stats'); },
     },
 };

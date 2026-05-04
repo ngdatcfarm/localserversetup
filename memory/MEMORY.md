@@ -387,3 +387,140 @@ Subscribed to: cfarm/esp32-01/cmd
 SELECT * FROM devices WHERE device_code = 'esp32-01';
 -- id=4, type=relay_8ch, barn_id=6, is_online=FALSE
 ```
+
+---
+
+## 2026-04-06: Disk Failure & Recovery
+
+### Vấn đề
+- Ổ cứng C:\ bị die
+- Backup trên GitHub + F:/Backup + E:/Local-server (partial)
+
+### Recovery Steps
+1. Clone repo từ GitHub về C:\Local server
+2. Copy Docker volumes từ E:/Local-server/docker/db/data (corrupted)
+3. Restore Mosquitto password file
+4. Clear corrupted DB, reinitialize với scripts/001_create_tables.sql
+5. Chạy migrations 002-031 để tạo schema
+6. Cập nhật config/cameras.yaml với MQTT credentials
+7. Update port từ 8000 → 8002 (port 8000 bị zombie)
+
+### Trạng thái hiện tại (2026-04-07 PM)
+```
+Server:        port 8002 ✅
+Database:      Docker PostgreSQL port 5434, 77 tables
+MQTT:          Mosquitto Docker, 3 users (cfarm_server, cfarm_device, cfarm_cloud)
+Cloud Sync:    disabled (tạm thời - theo quyết định tập trung local trước)
+Cameras:       cam_001 (192.168.1.72), cam_0002 (192.168.1.108)
+Care Ops:      ✅ Đã test Feed, Death, Medication, Weight trên cycle 1
+```
+
+### Docker PostgreSQL Setup (2026-04-07 PM)
+- **Port:** 5434 (port 5432 bị Windows PostgreSQL chiếm)
+- **Config:** `config/cameras.yaml` → database.port = 5434
+- **Backup:** `docker cp cfarm-db:/var/lib/postgresql/data F:/Backup/cfarm_db`
+
+### Care Operations Test (2026-04-07 PM)
+- Farm: farm-test → Barn: barn-01 → Cycle: 1 (Dot 1 - 2026, 3000 con)
+- Log Feed: 100kg ✅ | Log Death: -3 con ✅ | Log Medication: 50g ✅ | Log Weight: 2.5kg ✅
+- Dashboard: mortality_rate=0.1%, feed_per_bird=33.4g ✅
+
+### Files đã tạo
+- `start_server.bat` - Startup script (port 8002)
+- `scripts/backup.ps1` - Backup script to F:\Backup\cfarm_backup
+
+### Port 8000 Issue
+Port 8000 bị zombie processes từ các lần test trước. Giải pháp:
+- Dùng port 8002 tạm thời
+- Hoặc reboot máy để clear hoàn toàn
+
+---
+
+## 2026-04-08: Push Notification System
+
+### Kiến trúc
+```
+Alert Trigger → AlertService._check_alerts()
+             → notification_service.send_alert()
+             → WebPush to all subscribers
+             → Service Worker shows notification
+```
+
+### Components
+1. **Backend:** `src/server/routes/notifications.py` - Push notification APIs
+2. **Service:** `src/iot/notification_service.py` - WebPush via pywebpush
+3. **Service Worker:** `static/sw.js` - Handle push events
+4. **Frontend:** `static/js/pages/alerts.js` - Tab "Thong bao"
+
+### SSL Certificate
+- Self-signed certificate cho LAN: `cert.pem`, `cert.key`
+- CN: `cfarm-local`
+- Port: **8443** (HTTPS)
+- File download: `/cfarm.crt`
+
+### VAPID Configuration
+```yaml
+push_notifications:
+  vapid_public_key: |
+    MFkwEwYHKoZIzj0CAQYIKoZIzj0DAQcDQgAEJ2kaoQzRwM9ZbT+CJaPbH01UJTMke7BL7Wdqam78pkkutZ2bzTtp9x+cG+T+NAcZiXFIOc0REHh9wQB/JAWWOA==
+  vapid_private_key: |
+    MIGHAgEAMBMGByqGSM49AgEGCCqGSM49AwEHBG0wawIBAQQgyXbcXCPZW6F4SLns...
+```
+
+### Push Notification APIs
+| Method | Path | Mô tả |
+|--------|------|--------|
+| GET | /api/notifications/status | Check readiness |
+| GET | /api/notifications/vapid-public-key | Get VAPID key |
+| POST | /api/notifications/subscribe | Register subscription |
+| POST | /api/notifications/unsubscribe | Remove subscription |
+| GET | /api/notifications/subscriptions | List subscriptions |
+| POST | /api/notifications/test | Send test notification |
+
+### Server Commands
+```bash
+# Start với HTTPS
+python -m uvicorn src.server.main:app --host 0.0.0.0 --port 8443 --ssl-keyfile cert.key --ssl-certfile cert.pem
+
+# Test notification API
+curl https://localhost:8443/api/notifications/status
+```
+
+### Platform Support
+| Platform | Browser | Certificate | Status |
+|----------|---------|-------------|--------|
+| Windows | Chrome | Self-signed + Proceed | ✅ Works |
+| Windows | Firefox | Self-signed + Accept | ✅ Works |
+| Android | Chrome | Self-signed + Import to System | ✅ Works |
+| Android | Firefox | Self-signed + Import to System | ✅ Works |
+| iPhone | Safari | Cần CA thật (Let's Encrypt) | ❌ Not supported |
+
+### Giải pháp cho iOS
+- **Let's Encrypt** (miễn phí) - Cần domain + port 80
+- **Firebase Cloud Messaging (FCM)** - Push qua Google, iOS supported
+- **PWA** - Vẫn cần CA thật
+
+### Cần làm sau
+1. Firebase Cloud Messaging cho iOS
+2. PWA Enhancement
+3. Let's Encrypt (optional)
+
+---
+
+## Cloud Server (app.cfarm.vn)
+
+### MySQL Credentials
+- **User:** cfarm_user
+- **Pass:** cfarm_pass
+- **Database:** cfarm
+- **SSH:** root@103.166.183.215:24700
+
+### Cloud Role
+- Remote control via MQTT (cfarm.vn/{device_code}/cmd)
+- View synced data from local server
+- Push notifications (WebPush)
+
+### Local Server Role (Local Server - C:\Local server)
+- Full farm management (barns, cycles, care ops, inventory)
+- Direct MQTT control of ESP32 devices
+- Database: PostgreSQL on Docker port 5434

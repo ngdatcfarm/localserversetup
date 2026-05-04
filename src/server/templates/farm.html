@@ -11,6 +11,9 @@
     <script>window.VueRouter || document.write('<script src="https://unpkg.com/vue-router@4/dist/vue-router.global.prod.js"><\/script>')</script>
     <link href="/static/vendor/tailwind.min.css" rel="stylesheet" onerror="this.onerror=null;this.href='https://cdn.jsdelivr.net/npm/tailwindcss@2.2.19/dist/tailwind.min.css'">
     <link rel="stylesheet" href="/static/css/app.css">
+    <link rel="manifest" href="/static/manifest.json">
+    <link rel="apple-touch-icon" href="/static/icons/icon-192.png">
+    <script src="https://cdn.jsdelivr.net/npm/chart.js@4.4.0/dist/chart.umd.min.js"></script>
 </head>
 <body class="bg-gray-100 min-h-screen">
 <div id="app">
@@ -41,7 +44,7 @@
 
         <!-- Sidebar -->
         <aside :class="[sidebarOpen ? 'translate-x-0' : '-translate-x-full', 'lg:translate-x-0']"
-               class="sidebar fixed lg:static inset-y-0 left-0 z-40 w-60 text-white transform transition-transform duration-200 flex flex-col">
+               class="sidebar fixed lg:static inset-y-0 left-0 z-50 w-60 text-white transform transition-transform duration-200 flex flex-col">
             <!-- Logo -->
             <div class="sidebar-logo">
                 <h1 class="flex items-center gap-2">
@@ -113,5 +116,13 @@
 
 <script src="/static/js/api.js"></script>
 <script src="/static/js/app.js"></script>
+<script>
+    // Service Worker for PWA
+    if ('serviceWorker' in navigator) {
+        navigator.serviceWorker.register('/static/sw.js')
+            .then(reg => console.log('[SW] Registered', reg.scope))
+            .catch(err => console.log('[SW] Registration failed:', err));
+    }
+</script>
 </body>
 </html>

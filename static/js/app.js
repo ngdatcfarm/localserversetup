@@ -33,16 +33,23 @@ const router = createRouter({
         { path: '/cycles', component: () => loadPage('cycles') },
         { path: '/cycles/:id', component: () => loadPage('cycle-detail'), props: true },
         { path: '/devices', component: () => loadPage('devices') },
+        { path: '/relays', component: () => loadPage('relays') },
+        { path: '/bats', component: () => loadPage('bats') },
+        { path: '/equipment', component: () => loadPage('equipment') },
+        { path: '/sensors', component: () => loadPage('sensors') },
         { path: '/inventory', component: () => loadPage('inventory') },
         { path: '/care', component: () => loadPage('care') },
         { path: '/feeds', component: () => loadPage('feeds') },
         { path: '/medications', component: () => loadPage('medications') },
         { path: '/suppliers', component: () => loadPage('suppliers') },
         { path: '/vaccines', component: () => loadPage('vaccines') },
+        { path: '/notifications', component: () => loadPage('notifications') },
         { path: '/alerts', component: () => loadPage('alerts') },
         { path: '/automation', component: () => loadPage('automation') },
+        { path: '/tech', component: () => loadPage('tech') },
         { path: '/cameras', component: () => loadPage('cameras') },
         { path: '/sync', component: () => loadPage('sync') },
+        { path: '/density-label', component: () => loadPage('density_label') },
     ],
 });
 
@@ -78,16 +85,23 @@ const app = createApp({
             { path: '/barns', icon: '🏠', label: 'Chuồng trại' },
             { path: '/cycles', icon: '🔄', label: 'Đợt nuôi' },
             { path: '/devices', icon: '📡', label: 'Thiết bị' },
+            { path: '/relays', icon: '🔌', label: 'Điều khiển' },
+            { path: '/bats', icon: '🪟', label: 'Bạt' },
+            { path: '/equipment', icon: '⚙️', label: 'Cơ cấu' },
+            { path: '/sensors', icon: '🌡️', label: 'Môi trường' },
             { path: '/feeds', icon: '🌾', label: 'Thức ăn' },
             { path: '/medications', icon: '💊', label: 'Thuốc' },
             { path: '/vaccines', icon: '💉', label: 'Vaccine' },
             { path: '/inventory', icon: '📦', label: 'Kho' },
             { path: '/suppliers', icon: '🏭', label: 'Nhà cung cấp' },
             { path: '/care', icon: '🩺', label: 'Chăm sóc' },
+            { path: '/notifications', icon: '🔔', label: 'Thông báo' },
             { path: '/alerts', icon: '🔔', label: 'Cảnh báo' },
             { path: '/automation', icon: '⚡', label: 'Tự động hóa' },
+            { path: '/tech', icon: '⚙️', label: 'TECH' },
             { path: '/cameras', icon: '📹', label: 'Camera' },
             { path: '/sync', icon: '☁️', label: 'Cloud Sync' },
+            { path: '/density-label', icon: '🎯', label: 'Density Label' },
         ];
 
         const externalLinks = [
@@ -108,6 +122,22 @@ const app = createApp({
         onMounted(() => {
             checkHealth();
             setInterval(checkHealth, 30000);
+
+            // Register service worker for push notifications
+            if ('serviceWorker' in navigator) {
+                console.log('[App] Registering SW at /sw.js');
+                navigator.serviceWorker.register('/sw.js')
+                    .then(reg => {
+                        console.log('[App] Service Worker registered:', reg.scope);
+                        console.log('[App] SW state:', reg.active ? 'active' : 'installing');
+                    })
+                    .catch(err => {
+                        console.error('[App] SW registration failed:', err);
+                        console.error('[App] SW Error name:', err.name, 'message:', err.message);
+                    });
+            } else {
+                console.warn('[App] ServiceWorker not supported');
+            }
         });
 
         return { sidebarOpen, serverStatus, viewMode, setView, navItems, externalLinks, toast };

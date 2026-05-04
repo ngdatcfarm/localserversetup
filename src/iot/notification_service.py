@@ -50,6 +50,17 @@ class NotificationService:
             endpoint, keys.get("p256dh", ""), keys.get("auth", ""),
             user_label,
         )
+        # Push to cloud immediately
+        try:
+            from src.sync.sync_service import sync_service
+            await sync_service._push_push_subscription_to_cloud({
+                "endpoint": endpoint,
+                "p256dh": keys.get("p256dh", ""),
+                "auth": keys.get("auth", ""),
+                "user_label": user_label,
+            })
+        except Exception as e:
+            logger.warning(f"Immediate push push_subscription failed: {e}")
         return {"ok": True}
 
     async def unsubscribe(self, endpoint: str) -> dict:
@@ -57,6 +68,18 @@ class NotificationService:
         await db.execute(
             "DELETE FROM push_subscriptions WHERE endpoint = $1", endpoint
         )
+        # Push delete to cloud immediately
+        try:
+            from src.sync.sync_service import sync_service
+            await sync_service._push_push_subscription_to_cloud({
+                "endpoint": endpoint,
+                "p256dh": "",
+                "auth": "",
+                "user_label": None,
+                "_delete": True,
+            })
+        except Exception as e:
+            logger.warning(f"Immediate push unsubscribe failed: {e}")
         return {"ok": True}
 
     async def list_subscriptions(self) -> list[dict]:
@@ -68,14 +91,16 @@ class NotificationService:
 
     # ── Send Notifications ─────────────────────────────
 
-    async def send_to_all(self, title: str, body: str, data: dict = None):
+    async def send_to_all(self, title: str, body: str, data: dict = None, notification_type: str = "TEST"):
         """Send push notification to all subscribers."""
+        logger.debug(f"[send_to_all] notification_type={notification_type}, title={title[:50] if title else 'None'}")
         if not self.is_ready():
             logger.debug("Push notifications not configured, skipping")
             return
 
         subs = await db.fetch("SELECT endpoint, p256dh, auth FROM push_subscriptions")
         if not subs:
+            logger.debug(f"[send_to_all] No subscribers found for {notification_type}")
             return
 
         payload = json.dumps({
@@ -108,8 +133,29 @@ class NotificationService:
 
         # Clean up expired subscriptions
         for ep in failed_endpoints:
-            await db.execute("DELETE FROM push_subscriptions WHERE endpoint = $1", ep)
-            logger.info(f"Removed expired push subscription")
+            try:
+                # Truncate endpoint to 100 chars to prevent VARCHAR(100) overflow
+                ep_safe = ep[:100] if ep else ""
+                await db.execute("DELETE FROM push_subscriptions WHERE endpoint = $1", ep_safe)
+                logger.info(f"Removed expired push subscription")
+            except Exception as delete_err:
+                logger.error(f"Failed to remove expired subscription {ep[:50]}...: {delete_err}")
+
+        # Log to notification_history
+        try:
+            cycle_id = data.get("cycle_id") if data else None
+            # Truncate title/body to prevent VARCHAR(100) overflow in notification_history
+            safe_title = title[:100] if title else ""
+            safe_body = body[:500] if body else ""
+            logger.debug(f"[send_to_all] INSERT notification_history: type={notification_type}(len={len(notification_type)}), title={safe_title}(len={len(safe_title)}), body={safe_body[:50]}...")
+            await db.execute(
+                """INSERT INTO notification_history (type, title, body, cycle_id, sent_count, failed_count)
+                VALUES ($1, $2, $3, $4, $5, $6)""",
+                notification_type, safe_title, safe_body, cycle_id,
+                len(subs) - len(failed_endpoints), len(failed_endpoints),
+            )
+        except Exception as e:
+            logger.error(f"Failed to log notification history [{notification_type}]: {e}")
 
     async def send_alert(self, severity: str, message: str):
         """Send an alert as push notification."""

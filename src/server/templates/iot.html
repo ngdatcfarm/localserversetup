@@ -4,6 +4,8 @@
     <meta charset="UTF-8">
     <meta name="viewport" content="width=device-width, initial-scale=1.0">
     <meta name="theme-color" content="#1e3a5f">
+    <link rel="manifest" href="/static/manifest.json">
+    <link rel="apple-touch-icon" href="/static/icons/icon-192.png">
     <title>IoT - Firmware & Devices</title>
     <script src="https://cdn.tailwindcss.com"></script>
     <link rel="stylesheet" href="https://cdnjs.cloudflare.com/ajax/libs/font-awesome/6.5.1/css/all.min.css">
@@ -1388,6 +1390,13 @@
             toast.classList.remove('hidden');
             clearTimeout(toast._timer);
             toast._timer = setTimeout(() => toast.classList.add('hidden'), 4000);
+        }
+
+        // Service Worker for PWA
+        if ('serviceWorker' in navigator) {
+            navigator.serviceWorker.register('/static/sw.js')
+                .then(reg => console.log('[SW] Registered', reg.scope))
+                .catch(err => console.log('[SW] Registration failed:', err));
         }
     </script>
 </body>

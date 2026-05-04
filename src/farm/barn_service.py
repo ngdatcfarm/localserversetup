@@ -65,8 +65,16 @@ class BarnService:
         if not existing:
             return {"ok": False, "message": "Barn not found"}
 
-        # Check if trying to change farm_id and barn has cycles
+        # Check if trying to change farm_id
         if data.get("farm_id") and data["farm_id"] != existing["farm_id"]:
+            # Validate new farm_id exists
+            farm_exists = await db.fetchval(
+                "SELECT 1 FROM farms WHERE id = $1", data["farm_id"]
+            )
+            if not farm_exists:
+                return {"ok": False, "message": f"Farm '{data['farm_id']}' not found"}
+
+            # Check if barn has cycles
             cycle_count = await db.fetchval(
                 "SELECT COUNT(*) FROM cycles WHERE barn_id = $1", barn_id
             )

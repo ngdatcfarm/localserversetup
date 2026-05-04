@@ -44,12 +44,12 @@ class MqttClient:
         self.client_id = config.get("client_id", "cfarm_local_server")
 
     def configure_local_default(self):
-        """Quick configure for local Mosquitto broker (Docker)."""
+        """Quick configure for local Mosquitto broker."""
         self.configure({
-            "host": "localhost",
-            "port": 1883,
-            "username": "cfarm_server",
-            "password": "cfarm_server_2026",
+            "host": "192.168.1.9",
+            "port": 1884,
+            "username": "",
+            "password": "",
             "client_id": "cfarm_local_server",
         })
 
@@ -60,7 +60,7 @@ class MqttClient:
             return
 
         self.client = mqtt.Client(
-            client_id=self.client_id,
+            client_id=f"{self.client_id}_{id(self)}",
             protocol=mqtt.MQTTv311,
             clean_session=True,
         )
@@ -71,13 +71,8 @@ class MqttClient:
         self.client.on_disconnect = self._on_disconnect
         self.client.on_message = self._on_message
 
-        # Will message - server offline notification
-        self.client.will_set(
-            "cfarm/server/status",
-            json.dumps({"status": "offline", "timestamp": time.time()}),
-            qos=1,
-            retain=True,
-        )
+        # No will message - avoid broker conflicts
+        # self.client.will_set(...)  # removed to prevent rc=7 disconnects
 
         try:
             self.client.connect(self.host, self.port, keepalive=60)
@@ -106,6 +101,12 @@ class MqttClient:
             logger.info(f"MQTT: Connected to {self.host}")
             # Subscribe to all cfarm topics
             client.subscribe("cfarm/#", qos=1)
+            # Re-subscribe all registered callbacks
+            with self._lock:
+                pending = getattr(self, '_pending_subscriptions', [])
+                logger.info(f"MQTT: Flushing {len(pending)} pending subscriptions")
+                for pattern in self._callbacks.keys():
+                    client.subscribe(pattern, qos=1)
             # Announce server online
             self.publish("cfarm/server/status", {
                 "status": "online",
@@ -124,9 +125,11 @@ class MqttClient:
 
     def _on_disconnect(self, client, userdata, rc):
         self.connected = False
-        if rc != 0:
-            logger.warning(f"MQTT: Unexpected disconnect (rc={rc})")
-            self._schedule_reconnect()
+        logger.warning(f"MQTT: Disconnected (rc={rc})")
+        # NOTE: paho-mqtt's loop_start() already handles auto-reconnect internally.
+        # We don't need to call reconnect() manually - that causes rc=7 (session taken over)
+        # because paho reconnects async while our _schedule_reconnect also calls reconnect().
+        # Just log and let paho's built-in mechanism handle it.
 
     def _schedule_reconnect(self):
         """Auto-reconnect in background with exponential backoff."""
@@ -160,6 +163,9 @@ class MqttClient:
         self._message_count += 1
         self._last_message_at = time.time()
 
+        logger.info(f"MQTT message: topic={topic}")
+        if "heartbeat" in topic:
+            logger.warning(f"MQTT HEARTBEAT message on {topic}: {payload}")
         with self._lock:
             for pattern, handlers in self._callbacks.items():
                 if self._topic_matches(pattern, topic):
@@ -173,10 +179,20 @@ class MqttClient:
         """Register a callback for a topic pattern."""
         with self._lock:
             self._callbacks.setdefault(topic_pattern, []).append(callback)
-        # Actually subscribe to the MQTT broker
+        # Actually subscribe to the MQTT broker (also queues if not yet connected)
+        self._subscribe_to_broker(topic_pattern)
+        logger.info(f"MQTT: Registered handler for {topic_pattern}")
+
+    def _subscribe_to_broker(self, topic_pattern: str):
+        """Send subscription to broker, or queue if not yet connected."""
         if self.client and self.connected:
             self.client.subscribe(topic_pattern, qos=1)
-        logger.info(f"MQTT: Registered handler for {topic_pattern}")
+        # Track pending subscriptions for when we connect
+        with self._lock:
+            if not hasattr(self, '_pending_subscriptions'):
+                self._pending_subscriptions = []
+            if topic_pattern not in self._pending_subscriptions:
+                self._pending_subscriptions.append(topic_pattern)
 
     def publish(self, topic: str, payload: dict, qos: int = 1, retain: bool = False) -> bool:
         """Publish a message."""

@@ -11,14 +11,28 @@
 | Phase | Status | Progress |
 |-------|--------|----------|
 | Phase 1: Farm Infrastructure | ✅ Done | 100% |
-| Phase 2: IoT Infrastructure | ⬜ Pending | 0% |
+| Phase 2: IoT Infrastructure | ✅ Done | 100% |
 | Phase 3: Inventory & Products | ⬜ Pending | 0% |
-| Phase 4: Operations (Cycles & Care) | 🔄 In Progress | 75% |
+| Phase 4: Operations (Cycles & Care) | ✅ Done | 100% |
 | Phase 5: Sync Integration | ⏸️ Paused | 0% |
+
+**Phase 2 Components:** Device ✅ | Bats ✅ (2026-04-10) | Equipment ✅ (2026-04-13) | Sensor ✅
 
 **Note:** Sync (Phase 5) paused 2026-04-07 - focusing on local-first stability.
 
 **Care Operations Test (2026-04-07 PM):** ✅ Feed, Death, Medication, Weight logs tested on Docker PostgreSQL
+
+**Phase 1 Full Validation Results (2026-04-07):**
+| Test | Result |
+|------|--------|
+| Default warehouse assignment | ✅ PASS |
+| Auto-lookup (feed without warehouse_id) | ✅ PASS |
+| Auto-lookup (medication without warehouse_id) | ✅ PASS |
+| Warehouse type validation (feed vs medication) | ✅ PASS |
+| Product type validation | ✅ PASS |
+| Inactive warehouse rejection | ✅ PASS |
+| Insufficient stock rejection | ✅ PASS |
+| Low stock alert detection | ✅ PASS |
 
 ---
 
@@ -91,37 +105,193 @@ DELETE /api/warehouse-zones/{zone_id} - Delete zone ✅
 - POST /api/farm/warehouses → creates warehouse with is_central=true
 - POST /api/farm/warehouse-zones → creates zone successfully
 
+### Step 1.4: Barn-Warehouse Linkage ✅ DONE (2026-04-07)
+- [x] Barn default warehouse assignment (feed/medication per barn)
+- [x] Auto-lookup default warehouse in care operations
+- [x] Warehouse type validation (feed vs medication)
+- [x] Product type validation in care operations
+- [x] Low stock alert system (inventory_alerts table)
+- [x] Suggested warehouses API with stock levels
+
+**New Tables:**
+- `barn_default_warehouses` - default warehouse per barn + type (UNIQUE barn_id+warehouse_type)
+- `inventory_alerts` - low stock, out of stock tracking with severity
+
+**New API Endpoints:**
+```
+GET  /api/farm/barns/{barn_id}/default-warehouses
+POST /api/farm/barns/{barn_id}/default-warehouses
+DELETE /api/farm/barns/{barn_id}/default-warehouses/{warehouse_type}
+
+GET  /api/farm/barns/{barn_id}/suggested-warehouses
+
+GET  /api/farm/inventory/alerts
+POST /api/farm/inventory/alerts/check
+POST /api/farm/inventory/alerts/{alert_id}/acknowledge
+POST /api/farm/inventory/alerts/{alert_id}/resolve
+```
+
+**Business Rules Enforced:**
+- Feed log: warehouse_type must be 'feed' or 'mixed', product_type must be 'feed'
+- Medication log: warehouse_type must be 'medication' or 'mixed', product_type must be 'medication' or 'medicine'
+- Auto-lookup default warehouse if warehouse_id not provided
+- Low stock alerts triggered when inventory.quantity <= products.min_stock_alert
+
+**Bug Fix (2026-04-07 PM):**
+- `scripts/034_fix_inventory_alerts_unique.sql` - Thêm unique constraint `(warehouse_id, product_id)` cho inventory_alerts UPSERT
+- `src/farm/inventory_service.py:533` - Sửa `ON CONFLICT DO UPDATE` → `ON CONFLICT (warehouse_id, product_id) DO UPDATE SET`
+- `src/farm/inventory_service.py:139` - Sửa `list_warehouse_zones` warehouse_id string→int cast với `$1::int`
+
+**UI Updates (2026-04-07 PM):**
+- `static/js/pages/inventory.js` - Thêm barn selector cho tabs:
+  - Tab "Ton kho": dropdown chọn barn → lọc kho của barn + kho trung tâm, auto-select default warehouse
+  - Tab "Nhap/Xuat/Chuyen": dropdown chọn barn → lọc kho theo barn + kho trung tâm
+  - Modal "Them kho": field "Chuong" từ text input → dropdown chọn barn
+
+**Pending (cần restart server 8010 để fix):**
+- `warehouse-zones?warehouse_id=X` API - đã fix code nhưng cần restart
+
 ---
 
 ## Phase 2: IoT Infrastructure
 
 **Goal:** Device → Equipment/Sensor hierarchy với MQTT integration
 
-### Step 2.1: Device Type Entity
-- [ ] CRUD DeviceType (relay count, config template)
-- [ ] MQTT protocol schema definition
-- [ ] Test: Create device type, verify template
+### Step 2.1: Device Type Entity ✅ DONE
+- [x] CRUD DeviceType (relay count, config template)
+- [x] MQTT protocol schema definition
+- [x] Test: Create device type, verify template
 
-### Step 2.2: Device Entity
-- [ ] CRUD Device (gán Barn nào)
-- [ ] Device code (ESP32 serial from MQTT)
-- [ ] Online/heartbeat status (already exists via MQTT listener)
-- [ ] Device firmware link
-- [ ] Test: Verify MQTT heartbeat updates device status
+### Step 2.2: Device Entity ✅ DONE
+- [x] CRUD Device (gán Barn nào)
+- [x] Device code (ESP32 serial from MQTT)
+- [x] Online/heartbeat status (already exists via MQTT listener)
+- [x] Device firmware link
+- [x] Test: Verify MQTT heartbeat updates device status
 
-### Step 2.3: Equipment Type + Equipment
-- [ ] CRUD EquipmentType
-- [ ] CRUD Equipment (fans, feeders, lights)
-- [ ] Link Equipment to Device Channel
-- [ ] Equipment assignment log
-- [ ] Test: Assign equipment to device channel
+### Step 2.5: Bats System (Ventilation Curtains) ✅ DONE (2026-04-10)
 
-### Step 2.4: Sensor Type + Sensor
-- [ ] CRUD SensorType (temp, humidity, nhiet do)
-- [ ] CRUD Sensor (gán location, Device)
-- [ ] Sensor calibration tracking
-- [ ] Threshold configs
-- [ ] Test: Create sensor, verify telemetry
+**Mô tả:** Mỗi barn có 4 bạt (bạt trái trên, bạt trái dưới, bạt phải trên, bạt phải dưới). Mỗi bạt có relay UP và relay DOWN để điều khiển lên/xuống.
+
+**Tables:**
+- `bats` - cấu hình bạt cho mỗi barn (code, name, up/down relay channel, device_id, timeout)
+- `bat_logs` - lịch sử hoạt động (bat_id, cycle_id, action, duration_seconds, started_at, ended_at)
+
+**Tính năng:**
+- Điều khiển LÊN/XUỐNG/STOP cho từng bạt
+- Auto-stop sau timeout (mặc định 3.5 phút / 210 giây)
+- Safety lock: không cho UP và DOWN cùng ON
+- Log lịch sử với cycle_id (NULL nếu không có active cycle)
+- Auto-refresh UI khi bạt đang chuyển động
+- Cài đặt kênh relay và timeout per bat
+- Chế độ Auto (dành cho ML - tương lai)
+
+**Relay 8ch mapping:**
+```
+Bạt trái trên:   UP=K1, DOWN=K2
+Bạt trái dưới:  UP=K3, DOWN=K4
+Bạt phải trên:  UP=K5, DOWN=K6
+Bạt phải dưới:  UP=K7, DOWN=K8
+```
+
+**Files:**
+- `src/iot/bat_service.py` (NEW)
+- `src/server/routes/bats.py` (NEW)
+- `scripts/037_add_bats_system.sql` (NEW)
+- `static/js/pages/bats.js` (NEW)
+- `static/js/api.js` (ADDED bats API)
+
+**API Endpoints:**
+```
+GET    /api/bats/barns/{barn_id}           - List 4 bats trong barn
+GET    /api/bats/{bat_id}                 - Bat details
+PUT    /api/bats/{bat_id}                 - Update config (kênh relay, timeout, device_id)
+POST   /api/bats/{bat_id}/up               - Move UP
+POST   /api/bats/{bat_id}/down             - Move DOWN
+POST   /api/bats/{bat_id}/stop             - Stop
+GET    /api/bats/{bat_id}/logs             - Bat movement history
+GET    /api/bats/barns/{barn_id}/logs      - All bat logs trong barn
+```
+
+**Frontend UI (`/bats`):**
+- Grid 2x2 cho 4 bạt
+- Nút LÊN/XUỐNG/STOP to
+- Thanh tiến trình khi đang chạy
+- Panel cài đặt (Esp32, kênh relay, timeout)
+- Lịch sử hoạt động bên dưới
+
+### Step 2.3: Equipment Type + Equipment ✅ DONE (2026-04-13)
+
+**Files:**
+- `src/iot/equipment_service.py` (267 lines) - Equipment CRUD service
+- `src/server/routes/equipment.py` (191 lines) - REST API routes
+- `static/js/pages/equipment.js` - Vue 3 UI
+- `scripts/038_equipment_system.sql` - Database schema
+
+**Features:**
+- [x] CRUD EquipmentType (code, name, power, voltage, mqtt_protocol)
+- [x] CRUD Equipment instances (fans, feeders, lights)
+- [x] Link Equipment to Device Channel (device_id + channel_number)
+- [x] Equipment assignment with device binding
+- [x] Maintenance tracking (interval days, warranty dates)
+- [x] Runtime hours tracking per equipment
+- [x] Energy consumption monitoring
+- [x] Equipment parts/maintenance system
+
+**Tables:**
+- `equipment_types` - Catalog of equipment types
+- `equipment` - Actual installed equipment instances
+- `equipment_parts` - Maintainable components
+- `maintenance_logs` - Maintenance history
+
+**API Endpoints:**
+```
+GET    /api/equipment/types              - List equipment types
+POST   /api/equipment/types             - Create equipment type
+GET    /api/equipment/types/{id}         - Get type details
+PUT    /api/equipment/types/{id}         - Update type
+DELETE /api/equipment/types/{id}         - Delete type
+
+GET    /api/equipment?barn_id=X          - List equipment (filter by barn)
+POST   /api/equipment                    - Create equipment
+GET    /api/equipment/{id}               - Equipment details
+PUT    /api/equipment/{id}               - Update equipment
+DELETE /api/equipment/{id}               - Delete equipment
+POST   /api/equipment/{id}/assign-channel - Assign to device channel
+GET    /api/equipment/by-device/{device_id} - List equipment by device
+```
+
+### Step 2.4: Sensor Type + Sensor ✅ DONE
+
+**Files:**
+- `src/iot/sensor_service.py` (103 lines) - Sensor CRUD service
+- `src/server/routes/sensors.py` (34 lines) - REST API routes
+- `static/js/pages/sensors.js` - Vue 3 UI
+
+**Features:**
+- [x] CRUD SensorType (temperature, humidity, etc.)
+- [x] CRUD Sensor (gán location, Device)
+- [x] Sensor threshold configurations
+- [x] Sensor calibration tracking
+- [x] Telemetry data handling via MQTT
+
+**Tables:**
+- `sensor_types` - Catalog of sensor types
+- `sensors` - Physical sensor instances
+- `sensor_thresholds` - Alert thresholds per sensor
+- `sensor_calibrations` - Calibration history
+
+**API Endpoints:**
+```
+GET    /api/sensors/types                - List sensor types
+POST   /api/sensors/types                - Create sensor type
+GET    /api/sensors?barn_id=X            - List sensors
+POST   /api/sensors                      - Create sensor
+GET    /api/sensors/{id}                 - Sensor details
+PUT    /api/sensors/{id}                 - Update sensor
+DELETE /api/sensors/{id}                 - Delete sensor
+GET    /api/sensors/by-device/{device_id} - Sensors by device
+```
 
 **Data Flow:**
 ```
@@ -337,4 +507,4 @@ barn_overview_view     - Barn với active cycle, device count
 
 ---
 
-**Last Updated:** 2026-04-04
+**Last Updated:** 2026-04-15 (Phase 2 complete: Equipment + Sensor)

@@ -1,7 +1,10 @@
 """Vaccine Service - Vaccine programs, items, and schedules."""
 
+import logging
 from datetime import date, timedelta
 from src.services.database.db import db
+
+logger = logging.getLogger(__name__)
 
 
 class VaccineService:
@@ -186,13 +189,64 @@ class VaccineService:
             """SELECT vs.*, c.code as cycle_code, b.name as barn_name
             FROM vaccine_schedules vs
             JOIN cycles c ON vs.cycle_id = c.id
-            LEFT JOIN barns b ON c.barn_id::int = b.id::int
+            LEFT JOIN barns b ON c.barn_id = b.id
             WHERE c.status = 'active' AND vs.done = FALSE AND vs.skipped = FALSE
-              AND vs.scheduled_date <= CURRENT_DATE + ($1::text || ' days')::interval
+              AND vs.scheduled_date <= CURRENT_DATE + (($1::text || ' days')::interval)
             ORDER BY vs.scheduled_date""",
             str(days),
         )
         return [dict(r) for r in rows]
+
+    async def get_vaccines_due_for_notification(self) -> list[dict]:
+        """Get vaccines that are due for notification (scheduled_date <= today + remind_days, not yet notified)."""
+        try:
+            rows = await db.fetch(
+                """SELECT vs.*, c.code as cycle_code, b.name as barn_name,
+                   (vs.scheduled_date - CURRENT_DATE) as days_until,
+                   vs.remind_days
+                FROM vaccine_schedules vs
+                JOIN cycles c ON vs.cycle_id = c.id
+                LEFT JOIN barns b ON c.barn_id = b.id
+                WHERE c.status = 'active'
+                  AND vs.done = FALSE
+                  AND vs.skipped = FALSE
+                  AND vs.notified_at IS NULL
+                  AND vs.scheduled_date <= CURRENT_DATE + (vs.remind_days || ' days')::interval
+                ORDER BY vs.scheduled_date""",
+            )
+            return [dict(r) for r in rows]
+        except Exception as e:
+            # If notified_at column doesn't exist, fall back to querying without notified filter
+            if "notified_at" in str(e) and "does not exist" in str(e):
+                logger.warning("vaccine_schedules.notified_at column missing, using fallback query")
+                rows = await db.fetch(
+                    """SELECT vs.*, c.code as cycle_code, b.name as barn_name,
+                       (vs.scheduled_date - CURRENT_DATE) as days_until,
+                       vs.remind_days
+                    FROM vaccine_schedules vs
+                    JOIN cycles c ON vs.cycle_id = c.id
+                    LEFT JOIN barns b ON c.barn_id = b.id
+                    WHERE c.status = 'active'
+                      AND vs.done = FALSE
+                      AND vs.skipped = FALSE
+                      AND vs.scheduled_date <= CURRENT_DATE + (vs.remind_days || ' days')::interval
+                    ORDER BY vs.scheduled_date""",
+                )
+                return [dict(r) for r in rows]
+            raise
+
+    async def mark_notified(self, schedule_id: int):
+        """Mark a vaccine schedule as notified."""
+        try:
+            await db.execute(
+                "UPDATE vaccine_schedules SET notified_at = NOW() WHERE id = $1",
+                schedule_id,
+            )
+        except Exception as e:
+            if "notified_at" in str(e) and "does not exist" in str(e):
+                logger.warning(f"vaccine_schedules.notified_at missing, skipping mark_notified for {schedule_id}")
+            else:
+                raise
 
 
 vaccine_service = VaccineService()
