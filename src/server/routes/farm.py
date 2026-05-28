@@ -13,6 +13,7 @@ from src.farm.barn_service import barn_service
 from src.farm.cycle_service import cycle_service
 from src.farm.inventory_service import inventory_service
 from src.farm.care_service import care_service
+from src.farm.feed_service import feed_service
 from src.services.database.db import db
 from src.sync.sync_service import sync_service
 
@@ -983,3 +984,110 @@ async def toggle_alert_rule(rule_id: int, request: Request):
     if not result["ok"]:
         raise HTTPException(status_code=404, detail=result.get("message"))
     return result["rule"]
+
+
+# ═══════════════════════════════════════════════════════════════════
+# FEED BRANDS & FEED TYPES
+# ═══════════════════════════════════════════════════════════════════
+
+# ── Feed Brands ────────────────────────────────────────────────────
+
+class FeedBrandRequest(BaseModel):
+    name: str = Field(..., min_length=1, max_length=200)
+    kg_per_bag: Optional[float] = Field(None, ge=0)
+    note: Optional[str] = Field(None, max_length=500)
+    status: Optional[str] = Field("active", pattern=r"^(active|inactive)$")
+
+
+@router.get("/feeds/brands")
+async def list_feed_brands(status: str = None):
+    """List all feed brands, optionally filtered by status."""
+    return await feed_service.list_brands(status)
+
+
+@router.get("/feeds/brands/{brand_id}")
+async def get_feed_brand(brand_id: int):
+    """Get a single feed brand."""
+    brand = await feed_service.get_brand(brand_id)
+    if not brand:
+        raise HTTPException(status_code=404, detail="Brand not found")
+    return brand
+
+
+@router.post("/feeds/brands")
+async def create_feed_brand(req: FeedBrandRequest):
+    """Create a new feed brand."""
+    result = await feed_service.create_brand(req.model_dump())
+    return result
+
+
+@router.put("/feeds/brands/{brand_id}")
+async def update_feed_brand(brand_id: int, req: FeedBrandRequest):
+    """Update a feed brand."""
+    data = {k: v for k, v in req.model_dump().items() if v is not None}
+    result = await feed_service.update_brand(brand_id, data)
+    if not result.get("ok"):
+        raise HTTPException(status_code=404, detail=result.get("message"))
+    return result
+
+
+@router.delete("/feeds/brands/{brand_id}")
+async def delete_feed_brand(brand_id: int):
+    """Delete a feed brand (fails if feed types reference it)."""
+    result = await feed_service.delete_brand(brand_id)
+    if not result.get("ok"):
+        raise HTTPException(status_code=409, detail=result.get("message"))
+    return {"ok": True}
+
+
+# ── Feed Types ─────────────────────────────────────────────────────
+
+class FeedTypeRequest(BaseModel):
+    feed_brand_id: int
+    code: Optional[str] = Field(None, max_length=50)
+    name: str = Field(..., min_length=1, max_length=200)
+    price_per_bag: Optional[float] = Field(None, ge=0)
+    suggested_stage: Optional[str] = Field(None, max_length=50)
+    note: Optional[str] = Field(None, max_length=500)
+    status: Optional[str] = Field("active", pattern=r"^(active|inactive)$")
+
+
+@router.get("/feeds/types")
+async def list_feed_types(brand_id: int = None, status: str = None):
+    """List all feed types, optionally filtered by brand or status."""
+    return await feed_service.list_types(brand_id, status)
+
+
+@router.get("/feeds/types/{type_id}")
+async def get_feed_type(type_id: int):
+    """Get a single feed type."""
+    ftype = await feed_service.get_type(type_id)
+    if not ftype:
+        raise HTTPException(status_code=404, detail="Feed type not found")
+    return ftype
+
+
+@router.post("/feeds/types")
+async def create_feed_type(req: FeedTypeRequest):
+    """Create a new feed type."""
+    result = await feed_service.create_type(req.model_dump())
+    return result
+
+
+@router.put("/feeds/types/{type_id}")
+async def update_feed_type(type_id: int, req: FeedTypeRequest):
+    """Update a feed type."""
+    data = {k: v for k, v in req.model_dump().items() if v is not None}
+    result = await feed_service.update_type(type_id, data)
+    if not result.get("ok"):
+        raise HTTPException(status_code=404, detail=result.get("message"))
+    return result
+
+
+@router.delete("/feeds/types/{type_id}")
+async def delete_feed_type(type_id: int):
+    """Delete a feed type (fails if care_feed records reference it)."""
+    result = await feed_service.delete_type(type_id)
+    if not result.get("ok"):
+        raise HTTPException(status_code=409, detail=result.get("message"))
+    return {"ok": True}

@@ -203,18 +203,18 @@ const API = {
 
     // Feed Brands & Types
     feedBrands: {
-        list() { return API.get('/api/farm/feed-brands'); },
-        get(id) { return API.get(`/api/farm/feed-brands/${id}`); },
-        create(d) { return API.post('/api/farm/feed-brands', d); },
-        update(id, d) { return API.put(`/api/farm/feed-brands/${id}`, d); },
-        del(id) { return API.del(`/api/farm/feed-brands/${id}`); },
+        list() { return API.get('/api/farm/feeds/brands'); },
+        get(id) { return API.get(`/api/farm/feeds/brands/${id}`); },
+        create(d) { return API.post('/api/farm/feeds/brands', d); },
+        update(id, d) { return API.put(`/api/farm/feeds/brands/${id}`, d); },
+        del(id) { return API.del(`/api/farm/feeds/brands/${id}`); },
     },
     feedTypes: {
-        list(brandId) { return API.get(`/api/farm/feed-types${brandId ? '?brand_id=' + brandId : ''}`); },
-        get(id) { return API.get(`/api/farm/feed-types/${id}`); },
-        create(d) { return API.post('/api/farm/feed-types', d); },
-        update(id, d) { return API.put(`/api/farm/feed-types/${id}`, d); },
-        del(id) { return API.del(`/api/farm/feed-types/${id}`); },
+        list(brandId) { return API.get(`/api/farm/feeds/types${brandId ? '?brand_id=' + brandId : ''}`); },
+        get(id) { return API.get(`/api/farm/feeds/types/${id}`); },
+        create(d) { return API.post('/api/farm/feeds/types', d); },
+        update(id, d) { return API.put(`/api/farm/feeds/types/${id}`, d); },
+        del(id) { return API.del(`/api/farm/feeds/types/${id}`); },
     },
 
     // Medications
