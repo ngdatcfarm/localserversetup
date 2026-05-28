@@ -99,7 +99,7 @@ class UpdateBarnRequest(BaseModel):
 
 class CycleRequest(BaseModel):
     barn_id: str = Field(..., min_length=1, max_length=50)
-    name: str = Field(..., min_length=1, max_length=200)
+    name: Optional[str] = Field(None, max_length=200)
     breed: Optional[str] = Field(None, max_length=100)
     initial_count: int = Field(..., gt=0)
     start_date: date

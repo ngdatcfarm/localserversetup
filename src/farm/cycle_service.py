@@ -1,6 +1,6 @@
 """Cycle Service - Manage farming cycles (đợt nuôi)."""
 
-from datetime import date, timedelta
+from datetime import date, datetime, timedelta
 from typing import Optional
 from src.services.database.db import db
 
@@ -45,9 +45,9 @@ class CycleService:
         return dict(row) if row else None
 
     async def create(self, data: dict) -> dict:
-        # Check if barn exists
-        barn = await db.fetchval("SELECT 1 FROM barns WHERE id = $1", data["barn_id"])
-        if not barn:
+        # Check if barn exists and get barn name for auto-generation
+        barn_row = await db.fetchrow("SELECT id, name FROM barns WHERE id = $1", data["barn_id"])
+        if not barn_row:
             return {"ok": False, "message": f"Barn '{data['barn_id']}' not found"}
 
         # Check if barn already has an active cycle
@@ -61,12 +61,18 @@ class CycleService:
                 "message": f"Barn '{data['barn_id']}' already has an active cycle. Close or complete it first."
             }
 
+        # Auto-generate name if not provided
+        cycle_name = data.get("name")
+        if not cycle_name or not cycle_name.strip():
+            now = datetime.now()
+            cycle_name = f"Lứa {barn_row['name']} {now.strftime('%d/%m/%Y %H:%M')}"
+
         row = await db.fetchrow(
             """INSERT INTO cycles
             (barn_id, name, breed, initial_count, current_count, start_date,
              expected_end_date, notes)
             VALUES ($1, $2, $3, $4, $4, $5, $6, $7) RETURNING *""",
-            data["barn_id"], data["name"], data.get("breed"),
+            data["barn_id"], cycle_name, data.get("breed"),
             data["initial_count"], data["start_date"],
             data.get("expected_end_date"), data.get("notes"),
         )
