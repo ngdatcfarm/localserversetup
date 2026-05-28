@@ -1,307 +1,15 @@
 /**
- * Devices Page - Device Management organized by Barn
+ * Devices Page V2 - Quản lý thiết bị IoT & Tủ điều khiển ESP32
+ * - Quản lý thiết bị theo chuồng (Grid) và Danh sách (List)
+ * - Quản lý Danh mục Loại thiết bị IoT
+ * - Tự động sinh Firmware ESP32 (.ino C++) trực tuyến
+ * - Semantic .cf-* CSS classes
  */
-const { ref, computed, onMounted } = Vue;
+const { ref, reactive, computed, onMounted } = Vue;
 
-const component = {
-    template: `
-    <div class="devices-page">
-        <div class="page-header">
-            <div class="header-icon">📡</div>
-            <div>
-                <h2 class="page-title">Quản lý Thiết bị</h2>
-                <p class="page-subtitle">Danh mục thiết bị IoT</p>
-            </div>
-            <button class="btn btn-primary" @click="openForm()">+ Thêm thiết bị</button>
-        </div>
-
-        <div class="tabs mb-4">
-            <div class="tab" :class="{active: tab==='grid'}" @click="tab='grid'">
-                <i class="fas fa-grid-2 mr-1"></i> Theo chuồng
-            </div>
-            <div class="tab" :class="{active: tab==='list'}" @click="tab='list'">
-                <i class="fas fa-list mr-1"></i> Danh sách
-            </div>
-            <div class="tab" :class="{active: tab==='types'}" @click="tab='types'">
-                <i class="fas fa-microchip mr-1"></i> Loại thiết bị
-            </div>
-        </div>
-
-        <!-- Grid View by Barn -->
-        <div v-if="tab==='grid'">
-            <div v-if="barnsWithDevices.length" class="space-y-6">
-                <div v-for="barn in barnsWithDevices" :key="barn.id" class="card p-4">
-                    <div class="flex items-center justify-between mb-4">
-                        <h3 class="font-semibold text-lg flex items-center gap-2">
-                            <span class="text-2xl">{{ barn.icon || '🏠' }}</span>
-                            {{ barn.name || barn.id }}
-                            <span class="text-sm font-normal text-gray-500">({{ barn.devices.length }} thiết bị)</span>
-                        </h3>
-                        <div class="flex gap-2">
-                            <span class="badge badge-green" v-if="barn.onlineCount > 0">
-                                {{ barn.onlineCount }} online
-                            </span>
-                            <span class="badge badge-red" v-if="barn.offlineCount > 0">
-                                {{ barn.offlineCount }} offline
-                            </span>
-                        </div>
-                    </div>
-
-                    <div class="grid grid-cols-1 md:grid-cols-2 lg:grid-cols-3 gap-4">
-                        <div v-for="d in barn.devices" :key="d.id"
-                             class="border border-gray-200 rounded-xl p-4 hover:shadow-md transition-shadow"
-                             :class="d.is_online ? 'bg-green-50' : 'bg-gray-50'">
-                            <!-- Device Header -->
-                            <div class="flex items-start justify-between mb-3">
-                                <div class="flex items-center gap-2">
-                                    <span class="online-dot" :class="d.is_online ? 'on' : 'off'"></span>
-                                    <span class="font-medium">{{ d.name }}</span>
-                                </div>
-                                <div class="dropdown relative">
-                                    <button class="btn btn-ghost btn-sm" @click="toggleDropdown(d.id)">
-                                        <i class="fas fa-ellipsis"></i>
-                                    </button>
-                                    <div v-if="activeDropdown === d.id"
-                                         class="dropdown-menu absolute right-0 top-full mt-1 bg-white border rounded-lg shadow-lg z-10 min-w-[160px]">
-                                        <button class="dropdown-item" @click="openFirmwareModal(d); activeDropdown=null">
-                                            <i class="fas fa-microchip mr-2"></i>Lấy code ESP32
-                                        </button>
-                                        <button class="dropdown-item" @click="openForm(d); activeDropdown=null">
-                                            <i class="fas fa-edit mr-2"></i>Sửa
-                                        </button>
-                                        <button class="dropdown-item" @click="testDevice(d); activeDropdown=null">
-                                            <i class="fas fa-paper-plane mr-2"></i>Test
-                                        </button>
-                                        <button class="dropdown-item text-red-600" @click="remove(d); activeDropdown=null">
-                                            <i class="fas fa-trash mr-2"></i>Xóa
-                                        </button>
-                                    </div>
-                                </div>
-                            </div>
-
-                            <!-- Device Info -->
-                            <div class="text-sm text-gray-600 space-y-1 mb-3">
-                                <div class="flex items-center gap-2">
-                                    <i class="fas fa-hashtag w-4 text-gray-400"></i>
-                                    <span class="font-mono text-xs">{{ d.device_code }}</span>
-                                </div>
-                                <div class="flex items-center gap-2">
-                                    <i class="fas fa-layer-group w-4 text-gray-400"></i>
-                                    <span>{{ d.type_name || 'Chưa phân loại' }}</span>
-                                </div>
-                                <div class="flex items-center gap-2">
-                                    <i class="fas fa-tower-cell w-4 text-gray-400"></i>
-                                    <span class="font-mono text-xs">{{ d.mqtt_topic }}</span>
-                                </div>
-                            </div>
-
-                            <!-- Relay Control (if device has channels) -->
-                            <div v-if="d.channel_count > 0" class="mb-3">
-                                <div class="text-xs text-gray-500 mb-2">Điều khiển relay:</div>
-                                <div class="flex gap-2 flex-wrap">
-                                    <button v-for="ch in d.channel_count" :key="ch"
-                                            class="relay-btn"
-                                            :class="getRelayState(d, ch) ? 'relay-on' : 'relay-off'"
-                                            @click="toggleRelay(d, ch)">
-                                        K{{ ch }}
-                                    </button>
-                                </div>
-                            </div>
-
-                            <!-- Last Seen -->
-                            <div class="text-xs text-gray-400">
-                                <i class="fas fa-clock mr-1"></i>
-                                {{ timeAgo(d.last_seen) }}
-                            </div>
-                        </div>
-                    </div>
-                </div>
-            </div>
-            <div v-else class="empty-state">
-                <div class="icon">📡</div>
-                <p>Chưa có thiết bị nào</p>
-                <p class="text-sm text-gray-500 mt-1">Thêm thiết bị để bắt đầu</p>
-            </div>
-        </div>
-
-        <!-- List View -->
-        <div v-if="tab==='list'">
-            <div v-if="devices.length" class="table-wrap">
-                <table>
-                    <thead>
-                        <tr>
-                            <th>Trạng thái</th>
-                            <th>Mã</th>
-                            <th>Tên</th>
-                            <th>Loại</th>
-                            <th>Chuồng</th>
-                            <th>MQTT Topic</th>
-                            <th>Thao tác</th>
-                        </tr>
-                    </thead>
-                    <tbody>
-                        <tr v-for="d in devices" :key="d.id">
-                            <td>
-                                <span class="online-dot" :class="d.is_online ? 'on' : 'off'"></span>
-                                {{ d.is_online ? 'Online' : 'Offline' }}
-                            </td>
-                            <td class="font-mono text-xs">{{ d.device_code }}</td>
-                            <td class="font-medium">{{ d.name }}</td>
-                            <td>{{ d.type_name || '-' }}</td>
-                            <td>{{ d.barn_id || '-' }}</td>
-                            <td class="font-mono text-xs">{{ d.mqtt_topic }}</td>
-                            <td class="flex gap-1">
-                                <button class="btn btn-blue btn-sm" @click="openFirmwareModal(d)">
-                                    <i class="fas fa-microchip mr-1"></i>ESP32
-                                </button>
-                                <button class="btn btn-primary btn-sm" @click="testDevice(d)">Test</button>
-                                <button class="btn btn-secondary btn-sm" @click="openForm(d)">Sửa</button>
-                                <button class="btn btn-danger btn-sm" @click="remove(d)">Xóa</button>
-                            </td>
-                        </tr>
-                    </tbody>
-                </table>
-            </div>
-            <div v-else class="empty-state">
-                <div class="icon">📡</div>
-                <p>Chưa có thiết bị</p>
-            </div>
-        </div>
-
-        <!-- Device Types -->
-        <div v-if="tab==='types'">
-            <div class="mb-3">
-                <button class="btn btn-primary btn-sm" @click="openTypeForm()">+ Thêm loại</button>
-            </div>
-            <div v-if="types.length" class="table-wrap">
-                <table>
-                    <thead>
-                        <tr>
-                            <th>Code</th>
-                            <th>Tên</th>
-                            <th>Số kênh</th>
-                            <th>Mô tả</th>
-                            <th>Thao tác</th>
-                        </tr>
-                    </thead>
-                    <tbody>
-                        <tr v-for="t in types" :key="t.id">
-                            <td class="font-mono">{{ t.code }}</td>
-                            <td>{{ t.name }}</td>
-                            <td>{{ t.channel_count }}</td>
-                            <td class="text-gray-500">{{ t.description || '-' }}</td>
-                            <td class="flex gap-1">
-                                <button class="btn btn-secondary btn-sm" @click="openTypeForm(t)">Sửa</button>
-                                <button class="btn btn-danger btn-sm" @click="removeType(t)">Xóa</button>
-                            </td>
-                        </tr>
-                    </tbody>
-                </table>
-            </div>
-        </div>
-
-        <!-- ESP32 Firmware Modal -->
-        <div v-if="showFirmwareModal" class="modal-overlay" @click.self="showFirmwareModal=false">
-            <div class="modal" style="max-width: 800px; max-height: 90vh;">
-                <div class="flex justify-between items-center mb-4">
-                    <div>
-                        <h3 class="text-lg font-semibold">ESP32 Firmware</h3>
-                        <p class="text-sm text-gray-500">{{ firmwareDevice ? firmwareDevice.name : '' }} - {{ firmwareDevice ? firmwareDevice.device_code : '' }}</p>
-                    </div>
-                    <div class="flex gap-2">
-                        <button v-if="firmwareCode" class="btn btn-secondary" @click="downloadFirmware">
-                            <i class="fas fa-download mr-1"></i>Tải .ino
-                        </button>
-                        <button class="btn btn-ghost" @click="showFirmwareModal=false">
-                            <i class="fas fa-xmark"></i>
-                        </button>
-                    </div>
-                </div>
-
-                <div v-if="firmwareLoading" class="text-center py-8">
-                    <i class="fas fa-spinner fa-spin text-2xl text-blue-500"></i>
-                    <p class="mt-2 text-gray-500">Đang tạo firmware...</p>
-                </div>
-
-                <div v-else-if="firmwareError" class="text-center py-8 text-red-500">
-                    <i class="fas fa-exclamation-triangle text-2xl"></i>
-                    <p class="mt-2">{{ firmwareError }}</p>
-                </div>
-
-                <div v-else-if="firmwareCode" class="bg-gray-900 rounded-lg p-4 overflow-auto" style="max-height: 60vh;">
-                    <pre class="text-xs text-green-400 whitespace-pre-wrap font-mono">{{ firmwareCode }}</pre>
-                </div>
-
-                <div class="mt-4 text-xs text-gray-500">
-                    <i class="fas fa-info-circle mr-1"></i>
-                    Copy code và paste vào Arduino IDE, compile và flash vào ESP32
-                </div>
-            </div>
-        </div>
-
-        <!-- Device Modal -->
-        <div v-if="showModal" class="modal-overlay" @click.self="showModal=false">
-            <div class="modal">
-                <h3>{{ form.id ? 'Sửa thiết bị' : 'Thêm thiết bị' }}</h3>
-
-                <!-- Auto-generated fields (read-only, shown for reference) -->
-                <div v-if="!form.id" class="form-group">
-                    <label class="text-xs text-gray-500">Mã thiết bị (tự động)</label>
-                    <div class="bg-gray-100 px-3 py-2 rounded font-mono text-sm">
-                        {{ form.device_code }}
-                    </div>
-                </div>
-                <div v-if="!form.id" class="form-group">
-                    <label class="text-xs text-gray-500">MQTT Topic (tự động)</label>
-                    <div class="bg-gray-100 px-3 py-2 rounded font-mono text-sm">
-                        {{ form.mqtt_topic }}
-                    </div>
-                </div>
-
-                <div class="form-group"><label>Tên thiết bị</label><input v-model="form.name" placeholder="VD: Relay bơm nước"></div>
-                <div class="form-group"><label>Loại thiết bị</label>
-                    <select v-model="form.device_type_id" class="w-full border rounded px-3 py-2">
-                        <option :value="null">-- Chọn loại --</option>
-                        <option v-for="t in types" :key="t.id" :value="t.id">{{ t.name }}</option>
-                    </select>
-                </div>
-                <div class="form-group"><label>Chuồng</label>
-                    <select v-model="form.barn_id" class="w-full border rounded px-3 py-2">
-                        <option value="">-- Chọn chuồng --</option>
-                        <option v-for="b in barns" :key="b.id" :value="b.id">{{ b.name || b.id }}</option>
-                    </select>
-                </div>
-
-                <!-- Editable fields when editing existing device -->
-                <div v-if="form.id">
-                    <div class="form-group"><label>Mã thiết bị</label><input v-model="form.device_code" class="font-mono"></div>
-                    <div class="form-group"><label>MQTT Topic</label><input v-model="form.mqtt_topic" class="font-mono"></div>
-                </div>
-
-                <div class="flex justify-end gap-2 mt-4">
-                    <button class="btn btn-secondary" @click="showModal=false">Huỷ</button>
-                    <button class="btn btn-primary" @click="save">Lưu</button>
-                </div>
-            </div>
-        </div>
-
-        <!-- Type Modal -->
-        <div v-if="showTypeModal" class="modal-overlay" @click.self="showTypeModal=false">
-            <div class="modal">
-                <h3>{{ typeForm.id ? 'Sửa loại' : 'Thêm loại thiết bị' }}</h3>
-                <div class="form-group"><label>Code</label><input v-model="typeForm.code" placeholder="VD: relay_4ch"></div>
-                <div class="form-group"><label>Tên</label><input v-model="typeForm.name" placeholder="VD: Relay 4 Channel"></div>
-                <div class="form-group"><label>Số kênh</label><input v-model.number="typeForm.channel_count" type="number"></div>
-                <div class="form-group"><label>Mô tả</label><input v-model="typeForm.description"></div>
-                <div class="flex justify-end gap-2 mt-4">
-                    <button class="btn btn-secondary" @click="showTypeModal=false">Huỷ</button>
-                    <button class="btn btn-primary" @click="saveType">Lưu</button>
-                </div>
-            </div>
-        </div>
-    </div>`,
-
+return {
     setup() {
+        // ── State ──────────────────────────────────────
         const devices = ref([]);
         const types = ref([]);
         const barns = ref([]);
@@ -318,17 +26,16 @@ const component = {
         const firmwareLoading = ref(false);
         const firmwareError = ref('');
 
-        // Group devices by barn
+        // ── Computed ───────────────────────────────────
         const barnsWithDevices = computed(() => {
             const groups = {};
             devices.value.forEach(d => {
                 const barnId = d.barn_id || '_unassigned';
                 if (!groups[barnId]) {
-                    const barn = barns.value.find(b => b.id === barnId);
+                    const barnObj = barns.value.find(b => b.id === barnId);
                     groups[barnId] = {
                         id: barnId,
-                        name: barn ? barn.name : 'Chưa gán chuồng',
-                        icon: barn ? barn.icon : '📍',
+                        name: barnObj ? barnObj.name : 'Chưa gán chuồng',
                         devices: [],
                         onlineCount: 0,
                         offlineCount: 0
@@ -341,6 +48,7 @@ const component = {
             return Object.values(groups);
         });
 
+        // ── Methods ────────────────────────────────────
         function toggleDropdown(id) {
             activeDropdown.value = activeDropdown.value === id ? null : id;
         }
@@ -352,27 +60,31 @@ const component = {
 
         async function toggleRelay(device, channel) {
             const key = `${device.id}-${channel}`;
-            const currentState = deviceStates.value[key] || false;
-            const newState = !currentState;
+            const curState = deviceStates.value[key] || false;
+            const newState = !curState;
 
             try {
                 await API.relay.send({
                     device_topic: device.mqtt_topic,
                     channel: channel,
-                    state: newState
+                    state: newState ? 'on' : 'off'
                 });
                 deviceStates.value[key] = newState;
-                showToast(`Relay ${channel} đã ${newState ? 'BẬT' : 'TẮT'}`);
-            } catch(e) {
-                showToast(e.message, 'error');
+                if (typeof showToast === 'function') {
+                    showToast(`K${channel} → ${newState ? 'BẬT' : 'TẮT'} thành công`, 'success');
+                }
+            } catch (e) {
+                if (typeof showToast === 'function') {
+                    showToast(e.message || 'Lỗi gửi lệnh rơ-le', 'error');
+                }
             }
         }
 
         function timeAgo(time) {
-            if (!time) return 'Chưa có dữ liệu';
+            if (!time) return 'Chưa có tín hiệu';
             const diff = Date.now() - new Date(time).getTime();
             const mins = Math.floor(diff / 60000);
-            if (mins < 1) return 'Vừa xong';
+            if (mins < 1) return 'Vừa nhận';
             if (mins < 60) return `${mins} phút trước`;
             const hours = Math.floor(mins / 60);
             if (hours < 24) return `${hours} giờ trước`;
@@ -380,22 +92,46 @@ const component = {
         }
 
         async function load() {
-            [devices.value, types.value, barns.value] = await Promise.all([
-                API.devices.list().catch(() => []),
-                API.devices.types.list().catch(() => []),
-                API.barns.list().catch(() => [])
-            ]);
-            // Load device states for relay control
-            for (const d of devices.value) {
-                if (d.channel_count > 0) {
-                    try {
-                        const states = await API.devices.states(d.id);
-                        for (let ch = 1; ch <= d.channel_count; ch++) {
-                            const key = `${d.id}-${ch}`;
-                            deviceStates.value[key] = states[ch] || false;
+            try {
+                const [devsRes, typesRes, barnsRes] = await Promise.all([
+                    API.devices.list(),
+                    API.devices.types.list(),
+                    API.barns.list()
+                ]);
+                devices.value = devsRes || [];
+                types.value = typesRes || [];
+                barns.value = barnsRes || [];
+
+                devices.value.forEach(d => {
+                    const found = barns.value.find(b => b.id === d.barn_id);
+                    d.barn_name = found ? found.name : 'Chưa gán';
+                    const tFound = types.value.find(t => t.id === d.device_type_id);
+                    d.type_name = tFound ? tFound.name : 'Không xác định';
+                    d.channel_count = tFound ? tFound.channel_count : 0;
+                });
+
+                for (const d of devices.value) {
+                    if (d.channel_count > 0) {
+                        try {
+                            const states = await API.devices.states(d.id);
+                            for (let ch = 1; ch <= d.channel_count; ch++) {
+                                const key = `${d.id}-${ch}`;
+                                if (deviceStates.value[key] === undefined) {
+                                    deviceStates.value[key] = states[ch] || false;
+                                }
+                            }
+                        } catch (e) {
+                            for (let ch = 1; ch <= d.channel_count; ch++) {
+                                const key = `${d.id}-${ch}`;
+                                if (deviceStates.value[key] === undefined) {
+                                    deviceStates.value[key] = false;
+                                }
+                            }
                         }
-                    } catch(e) {}
+                    }
                 }
+            } catch (e) {
+                console.error('Lỗi nạp thiết bị IoT:', e);
             }
         }
 
@@ -408,13 +144,13 @@ const component = {
 
             try {
                 const result = await API.firmware.generate(d.id);
-                if (result.code) {
+                if (result && result.code) {
                     firmwareCode.value = result.code;
                 } else {
-                    firmwareError.value = result.message || 'Không có firmware cho thiết bị này';
+                    firmwareError.value = result.message || 'Thiết bị chưa có cấu hình chân rơ-le';
                 }
-            } catch(e) {
-                firmwareError.value = e.message || 'Lỗi khi tạo firmware';
+            } catch (e) {
+                firmwareError.value = e.message || 'Lỗi khởi tạo mã firmware';
             } finally {
                 firmwareLoading.value = false;
             }
@@ -422,88 +158,495 @@ const component = {
 
         function downloadFirmware() {
             if (!firmwareCode.value || !firmwareDevice.value) return;
-
             const blob = new Blob([firmwareCode.value], { type: 'text/plain' });
             const url = URL.createObjectURL(blob);
             const a = document.createElement('a');
             a.href = url;
-            a.download = `${firmwareDevice.value.device_code}.ino`;
+            a.download = `${firmwareDevice.value.device_code}_firmware.ino`;
             document.body.appendChild(a);
             a.click();
             document.body.removeChild(a);
             URL.revokeObjectURL(url);
-            showToast('Đã tải firmware');
+            if (typeof showToast === 'function') showToast('Đã tải file firmware ESP32 (.ino)!', 'success');
         }
 
-        function openForm(d) {
+        function openForm(d = null) {
             if (d) {
-                // Edit mode - use existing values
                 form.value = { ...d };
             } else {
-                // Create mode - auto-generate device_code and mqtt_topic
-                const randomId = Math.floor(10000 + Math.random() * 90000); // 5-digit random
-                const deviceCode = `esp-${randomId}`;
+                const randomId = Math.floor(1000 + Math.random() * 9000);
+                const code = `esp32-${randomId}`;
                 form.value = {
-                    device_code: deviceCode,
+                    device_code: code,
                     name: '',
-                    device_type_id: null,
-                    barn_id: '',
-                    mqtt_topic: `cfarm/${deviceCode}`
+                    device_type_id: types.value.length > 0 ? types.value[0].id : '',
+                    barn_id: barns.value.length > 0 ? barns.value[0].id : '',
+                    mqtt_topic: `cfarm/${code}/control`
                 };
             }
             showModal.value = true;
         }
 
+        function closeModal() { showModal.value = false; }
+
         async function save() {
             try {
-                if (form.value.id) { await API.devices.update(form.value.id, form.value); showToast('Đã cập nhật'); }
-                else { await API.devices.create(form.value); showToast('Đã thêm thiết bị'); }
-                showModal.value = false; await load();
-            } catch(e) { showToast(e.message, 'error'); }
+                if (form.value.id) {
+                    await API.devices.update(form.value.id, form.value);
+                    if (typeof showToast === 'function') showToast('Cập nhật thiết bị thành công!', 'success');
+                } else {
+                    await API.devices.create(form.value);
+                    if (typeof showToast === 'function') showToast('Tạo thiết bị IoT mới thành công!', 'success');
+                }
+                closeModal();
+                await load();
+            } catch (e) {
+                if (typeof showToast === 'function') showToast(e.message || 'Lỗi lưu thiết bị', 'error');
+            }
         }
 
-        async function remove(d) {
-            if (!confirm('Xóa thiết bị ' + d.name + '?')) return;
-            try { await API.devices.del(d.id); showToast('Đã xóa'); await load(); }
-            catch(e) { showToast(e.message, 'error'); }
+        async function removeDevice(d) {
+            if (!confirm(`Thu hồi thiết bị "${d.name}" (${d.device_code}) khỏi mạng lưới?`)) return;
+            try {
+                await API.devices.del(d.id);
+                if (typeof showToast === 'function') showToast('Đã thu hồi thiết bị IoT!', 'success');
+                await load();
+            } catch (e) {
+                if (typeof showToast === 'function') showToast(e.message || 'Lỗi khi xóa', 'error');
+            }
         }
 
         async function testDevice(d) {
-            try { await API.devices.test(d.id); showToast('Đã gửi test command tới ' + d.name); }
-            catch(e) { showToast(e.message, 'error'); }
+            try {
+                await API.devices.test(d.id);
+                if (typeof showToast === 'function') showToast(`Test gửi tới "${d.name}" thành công!`, 'success');
+            } catch (e) {
+                if (typeof showToast === 'function') showToast(e.message || 'Lỗi gửi test', 'error');
+            }
         }
 
-        function openTypeForm(t) {
-            typeForm.value = t ? { ...t } : { code: '', name: '', channel_count: 0, description: '' };
+        function openTypeForm(t = null) {
+            typeForm.value = t ? { ...t } : { code: '', name: '', channel_count: 4, description: '' };
             showTypeModal.value = true;
         }
 
+        function closeTypeModal() { showTypeModal.value = false; }
+
         async function saveType() {
             try {
-                if (typeForm.value.id) { await API.devices.types.update(typeForm.value.id, typeForm.value); showToast('Đã cập nhật'); }
-                else { await API.devices.types.create(typeForm.value); showToast('Đã thêm loại thiết bị'); }
-                showTypeModal.value = false; await load();
-            } catch(e) { showToast(e.message, 'error'); }
+                if (typeForm.value.id) {
+                    await API.devices.types.update(typeForm.value.id, typeForm.value);
+                    if (typeof showToast === 'function') showToast('Cập nhật loại thiết bị thành công!', 'success');
+                } else {
+                    await API.devices.types.create(typeForm.value);
+                    if (typeof showToast === 'function') showToast('Thêm mới loại thiết bị!', 'success');
+                }
+                closeTypeModal();
+                await load();
+            } catch (e) {
+                if (typeof showToast === 'function') showToast(e.message || 'Lỗi lưu loại thiết bị', 'error');
+            }
         }
 
         async function removeType(t) {
-            if (!confirm('Xóa loại ' + t.name + '?')) return;
-            try { await API.devices.types.del(t.id); showToast('Đã xóa'); await load(); }
-            catch(e) { showToast(e.message, 'error'); }
+            if (!confirm(`Xóa loại thiết bị "${t.name}"?`)) return;
+            try {
+                await API.devices.types.del(t.id);
+                if (typeof showToast === 'function') showToast('Đã xóa loại thiết bị!', 'success');
+                await load();
+            } catch (e) {
+                if (typeof showToast === 'function') showToast(e.message || 'Lỗi khi xóa', 'error');
+            }
         }
 
-        onMounted(load);
-        // Auto-refresh device status every 30 seconds
-        const refreshInterval = setInterval(load, 30000);
+        let poller = null;
+        onMounted(async () => {
+            await load();
+            poller = setInterval(load, 15000);
+        });
 
         return {
-            devices, types, barns, tab, showModal, showTypeModal, showFirmwareModal,
-            form, typeForm, barnsWithDevices, activeDropdown, toggleDropdown,
+            devices, types, barns, tab,
+            showModal, showTypeModal, showFirmwareModal,
+            form, typeForm, barnsWithDevices,
+            activeDropdown, toggleDropdown,
             getRelayState, toggleRelay, timeAgo,
-            openFirmwareModal, downloadFirmware, firmwareDevice, firmwareCode, firmwareLoading, firmwareError,
-            openForm, save, remove, testDevice, openTypeForm, saveType, removeType
+            openFirmwareModal, downloadFirmware,
+            firmwareDevice, firmwareCode, firmwareLoading, firmwareError,
+            openForm, closeModal, save, removeDevice, testDevice,
+            openTypeForm, closeTypeModal, saveType, removeType
         };
-    }
-};
+    },
 
-return component;
+    template: `
+    <div class="cf-container">
+
+        <!-- Header -->
+        <div class="cf-header-bar">
+            <div class="cf-header-left">
+                <div class="cf-header-icon" style="background-color: #0ea5e9;">
+                    <svg xmlns="http://www.w3.org/2000/svg" width="22" height="22" viewBox="0 0 24 24" fill="none" stroke="white" stroke-width="2.2" stroke-linecap="round" stroke-linejoin="round">
+                        <path d="M11 22a10 10 0 0 1-10-10"/>
+                        <path d="M14 22a13 13 0 0 0-13-13"/>
+                        <circle cx="12" cy="12" r="2"/>
+                        <path d="M12 2a10 10 0 0 1 10 10"/>
+                        <path d="M12 5a7 7 0 0 1 7 7"/>
+                        <path d="M12 8a4 4 0 0 1 4 4"/>
+                    </svg>
+                </div>
+                <div>
+                    <h1 class="cf-h1">Quản lý Thiết bị IoT & Gateway</h1>
+                    <p class="cf-subtitle">Cấu hình mạng lưới ESP32, rơ-le chấp hành & xuất firmware tự động</p>
+                </div>
+            </div>
+            <button @click="openForm()" class="cf-btn-primary" style="background-color: #0ea5e9;">
+                + Thêm thiết bị mới
+            </button>
+        </div>
+
+        <!-- Tab Switcher -->
+        <div class="cf-dev-tabs">
+            <button @click="tab = 'grid'" :class="['cf-tab-btn', tab === 'grid' ? 'active' : '']">
+                🗂️ Theo chuồng
+            </button>
+            <button @click="tab = 'list'" :class="['cf-tab-btn', tab === 'list' ? 'active' : '']">
+                📋 Danh sách
+            </button>
+            <button @click="tab = 'types'" :class="['cf-tab-btn', tab === 'types' ? 'active' : '']">
+                ⚙️ Loại phần cứng
+            </button>
+        </div>
+
+        <!-- ── TAB 1: GRID BY BARN ── -->
+        <div v-if="tab === 'grid'">
+            <div v-if="barnsWithDevices.length">
+                <div v-for="barn in barnsWithDevices" :key="barn.id" class="cf-card" style="padding: 1.5rem; margin-bottom: 1.5rem;">
+                    <div class="cf-dev-barn-header">
+                        <div class="cf-dev-barn-title">
+                            <span>🏡</span>
+                            {{ barn.name }}
+                            <span class="cf-tab-btn-badge" style="background: #f1f5f9; color: #64748b;">{{ barn.devices.length }} Nodes</span>
+                        </div>
+                        <div class="cf-dev-barn-badges">
+                            <span v-if="barn.onlineCount > 0" class="cf-dev-badge online">{{ barn.onlineCount }} Trực tuyến</span>
+                            <span v-if="barn.offlineCount > 0" class="cf-dev-badge offline">{{ barn.offlineCount }} Ngắt kết nối</span>
+                        </div>
+                    </div>
+
+                    <div class="cf-dev-grid">
+                        <div v-for="d in barn.devices" :key="d.id"
+                             :class="['cf-dev-card', d.is_online ? 'is-online' : '']">
+
+                            <div class="cf-dev-card-header">
+                                <div class="cf-dev-card-title-row">
+                                    <span :class="['cf-dev-online-dot', d.is_online ? 'online' : 'offline']"></span>
+                                    <span class="cf-primary-text">{{ d.name }}</span>
+                                </div>
+                                <div v-if="activeDropdown === d.id" class="cf-dev-dropdown">
+                                    <button @click.stop="openFirmwareModal(d); activeDropdown = null">💾 Lấy code ESP32</button>
+                                    <button @click.stop="openForm(d); activeDropdown = null">✏️ Sửa cấu hình</button>
+                                    <button @click.stop="testDevice(d); activeDropdown = null">⚡ Test mạng</button>
+                                    <button @click.stop="removeDevice(d); activeDropdown = null" class="danger">🗑️ Thu hồi xóa</button>
+                                </div>
+                                <button v-else @click.stop="toggleDropdown(d.id)" class="cf-dev-menu-btn">•••</button>
+                            </div>
+
+                            <div class="cf-dev-meta">
+                                <div class="cf-dev-meta-row">
+                                    <span>🏷️</span>
+                                    <span class="cf-dev-code">{{ d.device_code }}</span>
+                                </div>
+                                <div class="cf-dev-meta-row">
+                                    <span>⚙️</span>
+                                    <span>{{ d.type_name || 'Không xác định' }}</span>
+                                </div>
+                                <div class="cf-dev-meta-row">
+                                    <span>🌐</span>
+                                    <span class="cf-dev-topic">{{ d.mqtt_topic }}</span>
+                                </div>
+                            </div>
+
+                            <div v-if="d.channel_count > 0" class="cf-dev-relay-strip">
+                                <span class="cf-dev-relay-label">Rơ-le:</span>
+                                <button v-for="ch in d.channel_count" :key="ch"
+                                        :class="['cf-dev-relay-btn', getRelayState(d, ch) ? 'on' : 'off']"
+                                        @click.stop="toggleRelay(d, ch)">
+                                    K{{ ch }}
+                                </button>
+                            </div>
+
+                            <div class="cf-dev-heartbeat">
+                                <span>📡 Bản tin cuối:</span>
+                                <span class="cf-dev-time">{{ timeAgo(d.last_heartbeat_at) }}</span>
+                            </div>
+                        </div>
+                    </div>
+                </div>
+            </div>
+
+            <div v-else class="cf-empty-state" style="padding: 4rem 2rem;">
+                <div class="cf-empty-icon-box" style="background-color: #f0fdf4; color: #0ea5e9;">📡</div>
+                <h3 class="cf-empty-title">Chưa có kết nối phần cứng</h3>
+                <p class="cf-empty-desc">Vui lòng đăng ký hộp điều khiển ESP32 đầu tiên để kích hoạt telemetry.</p>
+            </div>
+        </div>
+
+        <!-- ── TAB 2: LIST VIEW ── -->
+        <div v-if="tab === 'list'">
+            <div v-if="devices.length" class="cf-card" style="padding: 0;">
+                <div class="cf-table-wrapper">
+                    <table class="cf-table">
+                        <thead>
+                            <tr>
+                                <th>Trạng thái</th>
+                                <th>Mã Node</th>
+                                <th>Thiết bị</th>
+                                <th>Loại tủ</th>
+                                <th>Chuồng</th>
+                                <th>MQTT Topic</th>
+                                <th class="text-right">Thao tác</th>
+                            </tr>
+                        </thead>
+                        <tbody>
+                            <tr v-for="d in devices" :key="d.id" class="cf-table-tr">
+                                <td>
+                                    <div class="cf-dev-status-cell">
+                                        <span :class="['cf-dev-online-dot', d.is_online ? 'online' : 'offline']"></span>
+                                        <span :class="d.is_online ? 'text-emerald' : 'text-slate'">
+                                            {{ d.is_online ? 'Online' : 'Offline' }}
+                                        </span>
+                                    </div>
+                                </td>
+                                <td><span class="cf-dev-code-sm">{{ d.device_code }}</span></td>
+                                <td><span class="cf-primary-text">{{ d.name }}</span></td>
+                                <td>{{ d.type_name || '-' }}</td>
+                                <td>🏡 {{ d.barn_name || d.barn_id || '-' }}</td>
+                                <td><span class="cf-dev-topic">{{ d.mqtt_topic }}</span></td>
+                                <td>
+                                    <div class="cf-dev-row-actions">
+                                        <button @click="openFirmwareModal(d)" class="cf-btn-sm" style="background:#0ea5e9; color:white;">💾 ESP32</button>
+                                        <button @click="testDevice(d)" class="cf-btn-sm" style="background:#0ea5e9; color:white;">⚡ Test</button>
+                                        <button @click="openForm(d)" class="cf-btn-ghost-sm">✏️</button>
+                                        <button @click="removeDevice(d)" class="cf-btn-ghost-sm danger">🗑️</button>
+                                    </div>
+                                </td>
+                            </tr>
+                        </tbody>
+                    </table>
+                </div>
+            </div>
+            <div v-else class="cf-empty-state">
+                <div class="cf-empty-icon-box">📂</div>
+                <h3 class="cf-empty-title">Danh sách trống rỗng</h3>
+            </div>
+        </div>
+
+        <!-- ── TAB 3: TYPES ── -->
+        <div v-if="tab === 'types'">
+            <div class="cf-card" style="padding: 1.5rem;">
+                <div class="cf-dev-types-header">
+                    <div class="cf-dev-types-title">
+                        <span>⚙️</span>
+                        <h2 class="cf-section-title-sm">Danh mục phân loại ESP-Nodes</h2>
+                    </div>
+                    <button @click="openTypeForm()" class="cf-btn-primary" style="background-color: #0c4a6e;">
+                        + Đăng ký loại Node mới
+                    </button>
+                </div>
+
+                <div v-if="types.length" class="cf-table-wrapper">
+                    <table class="cf-table">
+                        <thead>
+                            <tr>
+                                <th>Mã mạch</th>
+                                <th>Tên loại</th>
+                                <th>Số rơ-le</th>
+                                <th>Mô tả</th>
+                                <th class="text-right">Thao tác</th>
+                            </tr>
+                        </thead>
+                        <tbody>
+                            <tr v-for="t in types" :key="t.id" class="cf-table-tr">
+                                <td><span class="cf-dev-type-code">{{ t.code }}</span></td>
+                                <td><span class="cf-primary-text">{{ t.name }}</span></td>
+                                <td><span class="cf-dev-channel-badge">{{ t.channel_count }} Cổng</span></td>
+                                <td class="cf-text-muted">{{ t.description || '-' }}</td>
+                                <td>
+                                    <div class="cf-dev-row-actions">
+                                        <button @click="openTypeForm(t)" class="cf-btn-ghost-sm">✏️</button>
+                                        <button @click="removeType(t)" class="cf-btn-ghost-sm danger">🗑️</button>
+                                    </div>
+                                </td>
+                            </tr>
+                        </tbody>
+                    </table>
+                </div>
+                <div v-else class="cf-empty-inline">
+                    Hệ thống chưa đăng ký cấu trúc phần cứng nào.
+                </div>
+            </div>
+        </div>
+
+        <!-- ── MODAL: FIRMWARE GENERATOR ── -->
+        <teleport to="body">
+            <div v-if="showFirmwareModal" class="cf-modal-overlay" @click.self="showFirmwareModal = false">
+                <div class="cf-modal-box" style="max-width: 48rem; max-height: 90vh;">
+                    <div class="cf-modal-header" style="background-color: #0f172a; border-bottom: 1px solid #1e293b;">
+                        <div class="cf-modal-header-left">
+                            <div class="cf-modal-header-icon" style="background-color: #38bdf8; color: #0f172a;">💾</div>
+                            <div>
+                                <h3 class="cf-modal-title" style="color: #f8fafc;">Biên tập Firmware ESP32 (.ino)</h3>
+                                <p class="cf-modal-subtitle">
+                                    {{ firmwareDevice ? firmwareDevice.name : '' }} ({{ firmwareDevice ? firmwareDevice.device_code : '' }})
+                                </p>
+                            </div>
+                        </div>
+                        <div style="display: flex; gap: 0.75rem; align-items: center;">
+                            <button v-if="firmwareCode" @click="downloadFirmware" class="cf-btn-primary" style="background-color: #0284c7; font-size: 11px; padding: 0.45rem 0.85rem;">
+                                📥 Tải File (.ino)
+                            </button>
+                            <button @click="showFirmwareModal = false" class="cf-modal-close-btn" style="color: #94a3b8;">✕</button>
+                        </div>
+                    </div>
+
+                    <div v-if="firmwareLoading" class="cf-dev-fw-loader">
+                        <div class="cf-spinner" style="border-color: #38bdf8; border-top-color: transparent;"></div>
+                        <p>Đang kiến thiết code firmware ESP32...</p>
+                    </div>
+
+                    <div v-else-if="firmwareError" class="cf-dev-fw-error">
+                        <div class="cf-dev-fw-err-icon">⚠️</div>
+                        <p>{{ firmwareError }}</p>
+                    </div>
+
+                    <div v-else-if="firmwareCode" class="cf-dev-fw-code">
+                        <pre>{{ firmwareCode }}</pre>
+                    </div>
+
+                    <div class="cf-modal-footer" style="background-color: #0f172a; border-top: 1px solid #1e293b;">
+                        <div class="cf-dev-fw-hint">
+                            💡 Copy toàn bộ dán vào <b>Arduino IDE</b>, cài <b>PubSubClient</b> + <b>ArduinoJson</b> rồi Flash qua USB!
+                        </div>
+                        <button @click="showFirmwareModal = false" class="cf-btn-secondary" style="border-color: #334155; color: #94a3b8; background: transparent;">
+                            Đóng lại
+                        </button>
+                    </div>
+                </div>
+            </div>
+        </teleport>
+
+        <!-- ── MODAL: DEVICE CREATE/EDIT ── -->
+        <teleport to="body">
+            <div v-if="showModal" class="cf-modal-overlay" @click.self="closeModal">
+                <div class="cf-modal-box">
+                    <div class="cf-modal-header">
+                        <div class="cf-modal-header-left">
+                            <div class="cf-modal-header-icon" style="background-color: #e0f2fe; color: #0369a1;">📡</div>
+                            <h3 class="cf-modal-title">{{ form.id ? 'Cập nhật cấu hình Node' : 'Bố trí ESP32 mới' }}</h3>
+                        </div>
+                        <button @click="closeModal" class="cf-modal-close-btn">✕</button>
+                    </div>
+
+                    <form @submit.prevent="save">
+                        <div class="cf-modal-body">
+                            <div v-if="!form.id" class="cf-dev-id-preview">
+                                <div class="cf-dev-id-cell">
+                                    <span class="cf-dev-id-label">Mã Node (Tự sinh)</span>
+                                    <span class="cf-dev-id-val teal">{{ form.device_code }}</span>
+                                </div>
+                                <div class="cf-dev-id-cell">
+                                    <span class="cf-dev-id-label">MQTT Topic</span>
+                                    <span class="cf-dev-id-val sky">{{ form.mqtt_topic }}</span>
+                                </div>
+                            </div>
+
+                            <div class="cf-form-group">
+                                <label class="cf-label">Tên gọi Module <span class="req">*</span></label>
+                                <input v-model="form.name" type="text" class="cf-input" placeholder="Ví dụ: Tủ rơ-le sấy sưởi số 1" required>
+                            </div>
+
+                            <div class="cf-col-grid-2">
+                                <div class="cf-form-group">
+                                    <label class="cf-label">Loại phần cứng</label>
+                                    <select v-model="form.device_type_id" class="cf-modal-select" required>
+                                        <option value="" disabled>-- Chọn loại mạch --</option>
+                                        <option v-for="t in types" :key="t.id" :value="t.id">{{ t.name }} ({{ t.channel_count }} kênh)</option>
+                                    </select>
+                                </div>
+                                <div class="cf-form-group">
+                                    <label class="cf-label">Chuồng nuôi</label>
+                                    <select v-model="form.barn_id" class="cf-modal-select" required>
+                                        <option value="" disabled>-- Chọn chuồng --</option>
+                                        <option v-for="b in barns" :key="b.id" :value="b.id">{{ b.name }}</option>
+                                    </select>
+                                </div>
+                            </div>
+
+                            <div v-if="form.id" class="cf-col-grid-2">
+                                <div class="cf-form-group">
+                                    <label class="cf-label">Mã thiết bị</label>
+                                    <input v-model="form.device_code" type="text" class="cf-input font-mono" required>
+                                </div>
+                                <div class="cf-form-group">
+                                    <label class="cf-label">MQTT Topic</label>
+                                    <input v-model="form.mqtt_topic" type="text" class="cf-input font-mono" required>
+                                </div>
+                            </div>
+                        </div>
+
+                        <div class="cf-modal-footer">
+                            <button type="button" @click="closeModal" class="cf-btn-secondary">Hủy bỏ</button>
+                            <button type="submit" class="cf-btn-primary" style="background-color: #0ea5e9;">Lưu thiết bị</button>
+                        </div>
+                    </form>
+                </div>
+            </div>
+        </teleport>
+
+        <!-- ── MODAL: TYPE CREATE/EDIT ── -->
+        <teleport to="body">
+            <div v-if="showTypeModal" class="cf-modal-overlay" @click.self="closeTypeModal">
+                <div class="cf-modal-box" style="max-width: 25rem;">
+                    <div class="cf-modal-header">
+                        <div class="cf-modal-header-left">
+                            <div class="cf-modal-header-icon" style="background-color: #f0fde8; color: #166534;">⚙️</div>
+                            <h3 class="cf-modal-title">{{ typeForm.id ? 'Chỉnh sửa loại Node' : 'Tạo mới loại Node ESP32' }}</h3>
+                        </div>
+                        <button @click="closeTypeModal" class="cf-modal-close-btn">✕</button>
+                    </div>
+
+                    <form @submit.prevent="saveType">
+                        <div class="cf-modal-body">
+                            <div class="cf-form-group">
+                                <label class="cf-label">Mã Code phân loại <span class="req">*</span></label>
+                                <input v-model="typeForm.code" type="text" class="cf-input font-mono uppercase" placeholder="Ví dụ: esp32_relay_8ch" required>
+                            </div>
+
+                            <div class="cf-form-group">
+                                <label class="cf-label">Tên gọi loại mạch <span class="req">*</span></label>
+                                <input v-model="typeForm.name" type="text" class="cf-input" placeholder="Ví dụ: Tủ 8 kênh rơ-le" required>
+                            </div>
+
+                            <div class="cf-form-group">
+                                <label class="cf-label">Số cổng rơ-le điều khiển</label>
+                                <input v-model.number="typeForm.channel_count" type="number" class="cf-input font-mono" placeholder="4" min="0" max="16" required>
+                            </div>
+
+                            <div class="cf-form-group">
+                                <label class="cf-label">Mô tả ứng dụng</label>
+                                <textarea v-model="typeForm.description" class="cf-textarea" rows="2" placeholder="ESP-WROOM-32E, cổng đóng ngắt cách ly opto..."></textarea>
+                            </div>
+                        </div>
+
+                        <div class="cf-modal-footer">
+                            <button type="button" @click="closeTypeModal" class="cf-btn-secondary">Đóng lại</button>
+                            <button type="submit" class="cf-btn-primary" style="background-color: #16a34a;">Thiết lập loại</button>
+                        </div>
+                    </form>
+                </div>
+            </div>
+        </teleport>
+
+    </div>
+    `
+};
