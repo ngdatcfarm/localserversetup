@@ -1,33 +1,13 @@
 /**
- * Vaccines Page - Vaccine Programs & Schedules
- * Đã sửa lỗi redeclaration showToast
+ * Vaccines Page - Vaccine Programs & Schedules (Quản lý vắc-xin)
+ * - Semantic .cf-* CSS classes
+ * - 3 tabs: Chương trình | Lịch tiêm | Sắp tới
+ * - Modal forms for program, item, and schedule
  */
-const { ref, reactive, onMounted, computed, watch } = Vue;
+const { ref, reactive, onMounted, watch } = Vue;
 
 return {
     setup() {
-        // ── Fallback Helpers (đặt trong setup để tránh xung đột global) ──
-        const _showToast = (msg, type = 'info') => {
-            if (window.showToast) {
-                window.showToast(msg, type);
-            } else {
-                console.log(`[${type}] ${msg}`);
-                alert(msg);
-            }
-        };
-        const _fmtDate = (dateStr) => {
-            if (!dateStr) return '-';
-            try {
-                return new Date(dateStr).toLocaleDateString('vi-VN');
-            } catch {
-                return dateStr;
-            }
-        };
-        const _fmtNum = (num) => {
-            if (num == null) return '0';
-            return Number(num).toLocaleString('vi-VN');
-        };
-
         // ── State ──────────────────────────────────────
         const tab = ref('programs');
         const programs = ref([]);
@@ -40,22 +20,17 @@ return {
         const showModal = ref(false);
         const modalType = ref('program');
         const editingId = ref(null);
-        const loading = ref(false);
 
         const programForm = reactive({ name: '', note: '', active: true });
         const itemForm = reactive({ vaccine_name: '', day_age: null, method: '', remind_days: 1, sort_order: 0 });
         const scheduleForm = reactive({ cycle_id: null, vaccine_name: '', scheduled_date: '', day_age_target: null, method: '', dosage: '', remind_days: 1 });
 
-        const methods = ['drink', 'inject', 'spray', 'eye_drop', 'feed'];
+        const methods = ['chích dưới da', 'uống sủi', 'phun sương', 'nhỏ mắt', 'trộn thức ăn'];
 
-        // ── API Calls ─────────────────────────────────
+        // ── API ─────────────────────────────────────────
         async function loadPrograms() {
-            try { 
-                programs.value = await API.vaccines.programs.list(); 
-            } catch(e) { 
-                _showToast('Lỗi tải chương trình: ' + e.message, 'error');
-                programs.value = [];
-            }
+            try { programs.value = await API.vaccines.programs.list(); }
+            catch (e) { if (typeof showToast === 'function') showToast(e.message, 'error'); }
         }
 
         async function loadProgramDetail(id) {
@@ -63,43 +38,26 @@ return {
                 const p = await API.vaccines.programs.get(id);
                 selectedProgram.value = p;
                 programItems.value = p.items || [];
-            } catch(e) { 
-                _showToast('Lỗi tải chi tiết: ' + e.message, 'error');
-            }
+            } catch (e) { if (typeof showToast === 'function') showToast(e.message, 'error'); }
         }
 
         async function loadCycles() {
-            try { 
-                cycles.value = await API.cycles.list(); 
-            } catch(e) { 
-                console.warn('Không tải được cycles:', e);
-                cycles.value = [];
-            }
+            try { cycles.value = await API.cycles.list(); }
+            catch (e) { cycles.value = []; }
         }
 
         async function loadSchedules() {
-            if (!selectedCycleId.value) { 
-                schedules.value = []; 
-                return; 
-            }
-            try { 
-                schedules.value = await API.vaccines.schedules.list(selectedCycleId.value); 
-            } catch(e) { 
-                _showToast('Lỗi tải lịch tiêm: ' + e.message, 'error');
-                schedules.value = [];
-            }
+            if (!selectedCycleId.value) { schedules.value = []; return; }
+            try { schedules.value = await API.vaccines.schedules.list(selectedCycleId.value); }
+            catch (e) { if (typeof showToast === 'function') showToast(e.message, 'error'); }
         }
 
         async function loadUpcoming() {
-            try { 
-                upcoming.value = await API.vaccines.schedules.upcoming(14); 
-            } catch(e) { 
-                console.warn('Không tải được upcoming:', e);
-                upcoming.value = [];
-            }
+            try { upcoming.value = await API.vaccines.schedules.upcoming(14); }
+            catch (e) { upcoming.value = []; }
         }
 
-        watch(selectedCycleId, loadSchedules);
+        watch(selectedCycleId, () => { loadSchedules(); });
 
         // ── Program CRUD ────────────────────────────────
         function openProgramModal(p = null) {
@@ -114,28 +72,24 @@ return {
             try {
                 if (editingId.value) {
                     await API.vaccines.programs.update(editingId.value, { ...programForm });
-                    _showToast('Đã cập nhật chương trình');
+                    if (typeof showToast === 'function') showToast('Đã cập nhật chương trình', 'success');
                 } else {
                     await API.vaccines.programs.create({ ...programForm });
-                    _showToast('Đã tạo chương trình');
+                    if (typeof showToast === 'function') showToast('Đã tạo chương trình mới', 'success');
                 }
-                showModal.value = false;
+                closeModal();
                 await loadPrograms();
-            } catch(e) { 
-                _showToast(e.message, 'error');
-            }
+            } catch (e) { if (typeof showToast === 'function') showToast(e.message, 'error'); }
         }
 
         async function deleteProgram(p) {
             if (!confirm('Xóa chương trình "' + p.name + '"?')) return;
-            try { 
-                await API.vaccines.programs.del(p.id); 
-                _showToast('Đã xóa'); 
-                selectedProgram.value = null; 
-                await loadPrograms(); 
-            } catch(e) { 
-                _showToast(e.message, 'error'); 
-            }
+            try {
+                await API.vaccines.programs.del(p.id);
+                if (typeof showToast === 'function') showToast('Đã xóa chương trình', 'success');
+                if (selectedProgram.value?.id === p.id) { selectedProgram.value = null; programItems.value = []; }
+                await loadPrograms();
+            } catch (e) { if (typeof showToast === 'function') showToast(e.message, 'error'); }
         }
 
         // ── Item CRUD ───────────────────────────────────
@@ -143,21 +97,9 @@ return {
             modalType.value = 'item';
             editingId.value = item ? item.id : null;
             if (item) {
-                Object.assign(itemForm, { 
-                    vaccine_name: item.vaccine_name, 
-                    day_age: item.day_age, 
-                    method: item.method || '', 
-                    remind_days: item.remind_days || 1, 
-                    sort_order: item.sort_order || 0 
-                });
+                Object.assign(itemForm, { vaccine_name: item.vaccine_name, day_age: item.day_age, method: item.method || '', remind_days: item.remind_days || 1, sort_order: item.sort_order || 0 });
             } else {
-                Object.assign(itemForm, { 
-                    vaccine_name: '', 
-                    day_age: null, 
-                    method: '', 
-                    remind_days: 1, 
-                    sort_order: programItems.value.length + 1 
-                });
+                Object.assign(itemForm, { vaccine_name: '', day_age: null, method: '', remind_days: 1, sort_order: programItems.value.length + 1 });
             }
             showModal.value = true;
         }
@@ -166,40 +108,34 @@ return {
             try {
                 if (editingId.value) {
                     await API.vaccines.programs.updateItem(editingId.value, { ...itemForm });
-                    _showToast('Đã cập nhật');
+                    if (typeof showToast === 'function') showToast('Đã cập nhật vaccine', 'success');
                 } else {
                     await API.vaccines.programs.addItem(selectedProgram.value.id, { ...itemForm });
-                    _showToast('Đã thêm vaccine');
+                    if (typeof showToast === 'function') showToast('Đã thêm vaccine', 'success');
                 }
-                showModal.value = false;
+                closeModal();
                 await loadProgramDetail(selectedProgram.value.id);
-            } catch(e) { 
-                _showToast(e.message, 'error'); 
-            }
+            } catch (e) { if (typeof showToast === 'function') showToast(e.message, 'error'); }
         }
 
         async function deleteItem(item) {
-            if (!confirm('Xóa?')) return;
-            try { 
-                await API.vaccines.programs.delItem(item.id); 
-                await loadProgramDetail(selectedProgram.value.id); 
-            } catch(e) { 
-                _showToast(e.message, 'error'); 
-            }
+            if (!confirm('Xóa vaccine này khỏi chương trình?')) return;
+            try {
+                await API.vaccines.programs.delItem(item.id);
+                if (typeof showToast === 'function') showToast('Đã gỡ vaccine', 'success');
+                await loadProgramDetail(selectedProgram.value.id);
+            } catch (e) { if (typeof showToast === 'function') showToast(e.message, 'error'); }
         }
 
         // ── Schedule Actions ────────────────────────────
         function openScheduleModal() {
             modalType.value = 'schedule';
             editingId.value = null;
-            Object.assign(scheduleForm, { 
-                cycle_id: selectedCycleId.value, 
-                vaccine_name: '', 
-                scheduled_date: new Date().toISOString().slice(0,10), 
-                day_age_target: null, 
-                method: '', 
-                dosage: '', 
-                remind_days: 1 
+            Object.assign(scheduleForm, {
+                cycle_id: selectedCycleId.value,
+                vaccine_name: '',
+                scheduled_date: new Date().toISOString().slice(0, 10),
+                day_age_target: null, method: '', dosage: '', remind_days: 1
             });
             showModal.value = true;
         }
@@ -207,262 +143,403 @@ return {
         async function saveSchedule() {
             try {
                 await API.vaccines.schedules.create({ ...scheduleForm });
-                _showToast('Đã thêm lịch tiêm');
-                showModal.value = false;
+                if (typeof showToast === 'function') showToast('Đã lập lịch tiêm', 'success');
+                closeModal();
                 await loadSchedules();
-            } catch(e) { 
-                _showToast(e.message, 'error'); 
-            }
+            } catch (e) { if (typeof showToast === 'function') showToast(e.message, 'error'); }
         }
 
         async function applyProgram() {
-            if (!selectedCycleId.value) { 
-                _showToast('Chọn đợt nuôi trước', 'error'); 
-                return; 
-            }
-            const pid = prompt('Nhập ID chương trình vaccine:');
+            if (!selectedCycleId.value) { if (typeof showToast === 'function') showToast('Chọn đợt nuôi trước', 'error'); return; }
+            const pid = prompt('Nhập ID chương trình vaccine muốn áp dụng:');
             if (!pid) return;
             try {
                 const r = await API.vaccines.schedules.applyProgram(selectedCycleId.value, parseInt(pid));
-                _showToast('Đã áp dụng ' + r.created + ' lịch tiêm');
+                if (typeof showToast === 'function') showToast('Đã áp dụng ' + r.created + ' lịch tiêm', 'success');
                 await loadSchedules();
-            } catch(e) { 
-                _showToast(e.message, 'error'); 
-            }
+            } catch (e) { if (typeof showToast === 'function') showToast(e.message, 'error'); }
         }
 
         async function markDone(s) {
-            try { 
-                await API.vaccines.schedules.done(s.id); 
-                _showToast('Đã đánh dấu hoàn thành'); 
-                await loadSchedules(); 
-                await loadUpcoming(); 
-            } catch(e) { 
-                _showToast(e.message, 'error'); 
-            }
+            try {
+                await API.vaccines.schedules.done(s.id);
+                if (typeof showToast === 'function') showToast('Đã đánh dấu hoàn thành', 'success');
+                await loadSchedules();
+                await loadUpcoming();
+            } catch (e) { if (typeof showToast === 'function') showToast(e.message, 'error'); }
         }
 
         async function markSkip(s) {
             const reason = prompt('Lý do bỏ qua:');
-            try { 
-                await API.vaccines.schedules.skip(s.id, reason); 
-                _showToast('Đã bỏ qua'); 
-                await loadSchedules(); 
-                await loadUpcoming(); 
-            } catch(e) { 
-                _showToast(e.message, 'error'); 
-            }
+            try {
+                await API.vaccines.schedules.skip(s.id, reason);
+                if (typeof showToast === 'function') showToast('Đã bỏ qua mũi tiêm', 'success');
+                await loadSchedules();
+                await loadUpcoming();
+            } catch (e) { if (typeof showToast === 'function') showToast(e.message, 'error'); }
         }
 
         async function deleteSchedule(s) {
             if (!confirm('Xóa lịch tiêm này?')) return;
-            try { 
-                await API.vaccines.schedules.del(s.id); 
-                await loadSchedules(); 
-            } catch(e) { 
-                _showToast(e.message, 'error'); 
-            }
+            try {
+                await API.vaccines.schedules.del(s.id);
+                if (typeof showToast === 'function') showToast('Đã xóa lịch tiêm', 'success');
+                await loadSchedules();
+            } catch (e) { if (typeof showToast === 'function') showToast(e.message, 'error'); }
         }
 
-        // ── Lifecycle ─────────────────────────────────
-        onMounted(() => { 
-            loadPrograms(); 
-            loadCycles(); 
-            loadUpcoming(); 
-        });
+        function closeModal() { showModal.value = false; }
 
-        // ── Return cho template ────────────────────────
-        return { 
-            tab, programs, selectedProgram, programItems, cycles, selectedCycleId, schedules, upcoming,
-            showModal, modalType, editingId, programForm, itemForm, scheduleForm, methods,
-            loading,
-            openProgramModal, saveProgram, deleteProgram,
+        onMounted(() => { loadPrograms(); loadCycles(); loadUpcoming(); });
+
+        return {
+            tab, programs, selectedProgram, programItems, cycles, selectedCycleId,
+            schedules, upcoming, showModal, modalType, editingId,
+            programForm, itemForm, scheduleForm, methods,
+            openProgramModal, closeModal, saveProgram, deleteProgram,
             loadProgramDetail, openItemModal, saveItem, deleteItem,
-            openScheduleModal, saveSchedule, applyProgram, markDone, markSkip, deleteSchedule,
-            // Truyền các helper vào template
-            fmtDate: _fmtDate,
-            fmtNum: _fmtNum
+            openScheduleModal, saveSchedule, applyProgram, markDone, markSkip, deleteSchedule
         };
     },
 
     template: `
-    <div class="vaccines-page">
-        <!-- Giữ nguyên template như trước, không thay đổi -->
-        <div class="page-header">
-            <div class="header-icon">💉</div>
-            <div>
-                <h2 class="page-title">Quản lý Vaccine</h2>
-                <p class="page-subtitle">Chương trình và lịch tiêm cho đàn</p>
+    <div class="cf-container">
+
+        <!-- Header -->
+        <div class="cf-header-bar">
+            <div class="cf-header-left">
+                <div class="cf-header-icon" style="background-color: #7c3aed;">
+                    <svg xmlns="http://www.w3.org/2000/svg" width="22" height="22" viewBox="0 0 24 24" fill="none" stroke="white" stroke-width="2.2" stroke-linecap="round" stroke-linejoin="round">
+                        <path d="M18 3a3 3 0 0 0-3 3v12a3 3 0 0 0 3 3 3 3 0 0 0 3-3 3 3 0 0 0-3-3H6a3 3 0 0 0-3 3 3 3 0 0 0 3 3 3 3 0 0 0 3-3V6a3 3 0 0 0-3-3 3 3 0 0 0-3 3 3 3 0 0 0 3 3h12a3 3 0 0 0 3-3 3 3 0 0 0-3-3z"/>
+                    </svg>
+                </div>
+                <div>
+                    <h1 class="cf-h1">Quản lý Vaccine</h1>
+                    <p class="cf-subtitle">Chương trình & lịch tiêm cho đàn</p>
+                </div>
             </div>
         </div>
 
-        <!-- Tabs -->
-        <div class="tabs">
-            <div @click="tab='programs'" :class="['tab', { active: tab === 'programs' }]">Chương trình</div>
-            <div @click="tab='schedules'" :class="['tab', { active: tab === 'schedules' }]">Lịch tiêm</div>
-            <div @click="tab='upcoming'" :class="['tab', { active: tab === 'upcoming' }]">Sắp tới ({{ upcoming.length }})</div>
+        <!-- Tab Switcher -->
+        <div class="cf-vacc-tabs">
+            <button @click="tab = 'programs'" :class="['cf-vacc-tab-btn', tab === 'programs' ? 'active' : '']">
+                📋 Chương trình
+            </button>
+            <button @click="tab = 'schedules'" :class="['cf-vacc-tab-btn', tab === 'schedules' ? 'active' : '']">
+                📅 Lịch tiêm
+            </button>
+            <button @click="tab = 'upcoming'" :class="['cf-vacc-tab-btn', tab === 'upcoming' ? 'active' : '']">
+                ⏰ Sắp tới ({{ upcoming.length }})
+            </button>
         </div>
 
-        <!-- Nội dung từng tab -->
-        <div class="tab-content">
-            <!-- Programs Tab -->
-            <div v-if="tab === 'programs'" class="programs-layout">
-                <div class="action-bar">
-                    <button @click="openProgramModal()" class="btn btn-primary">+ Tạo chương trình</button>
-                </div>
-                <div class="two-columns">
-                    <!-- Program List -->
-                    <div class="card">
-                        <h4 class="card-title">📋 Danh sách chương trình</h4>
-                        <div class="program-list">
-                            <div v-for="p in programs" :key="p.id"
-                                 @click="loadProgramDetail(p.id)"
-                                 :class="['program-item', { active: selectedProgram?.id === p.id }]">
-                                <div class="program-info">
-                                    <div class="program-name">{{ p.name }}</div>
-                                    <div class="program-note">{{ p.note || 'Không có ghi chú' }}</div>
-                                </div>
-                                <div class="program-actions">
-                                    <button @click.stop="openProgramModal(p)" class="btn-icon" title="Sửa">✏️</button>
-                                    <button @click.stop="deleteProgram(p)" class="btn-icon danger" title="Xóa">🗑️</button>
-                                </div>
+        <!-- ── TAB 1: PROGRAMS ── -->
+        <div v-if="tab === 'programs'">
+            <div class="cf-vacc-toolbar">
+                <button @click="openProgramModal()" class="cf-btn-primary" style="background-color: #7c3aed;">
+                    + Tạo chương trình mới
+                </button>
+            </div>
+
+            <div class="cf-vacc-program-grid">
+                <!-- Left: Program List -->
+                <div class="cf-card" style="padding: 1rem;">
+                    <h3 class="cf-vacc-section-title">📋 Danh sách chương trình mẫu</h3>
+                    <div class="cf-vacc-program-list">
+                        <div v-for="p in programs" :key="p.id"
+                             @click="loadProgramDetail(p.id)"
+                             :class="['cf-vacc-program-item', selectedProgram?.id === p.id ? 'selected' : '']">
+                            <div>
+                                <div class="cf-vacc-program-name">{{ p.name }}</div>
+                                <div class="cf-vacc-program-note">{{ p.note || 'Không có ghi chú' }}</div>
                             </div>
-                            <div v-if="!programs.length" class="empty-placeholder">Chưa có chương trình nào</div>
+                            <div class="cf-vacc-program-actions">
+                                <button @click.stop="openProgramModal(p)" class="cf-btn-ghost-sm">✏️</button>
+                                <button @click.stop="deleteProgram(p)" class="cf-btn-ghost-sm danger">🗑️</button>
+                            </div>
+                        </div>
+                        <div v-if="!programs.length" class="cf-vacc-empty">Chưa có chương trình mẫu nào</div>
+                    </div>
+                </div>
+
+                <!-- Right: Program Detail -->
+                <div class="cf-card" style="padding: 1rem;">
+                    <div v-if="selectedProgram">
+                        <div class="cf-vacc-detail-header">
+                            <h3 class="cf-vacc-section-title">💉 {{ selectedProgram.name }}</h3>
+                            <button @click="openItemModal()" class="cf-btn-primary" style="background-color: #7c3aed; font-size: 11px; padding: 0.35rem 0.75rem;">
+                                + Thêm vaccine
+                            </button>
+                        </div>
+                        <div class="cf-table-wrapper" style="margin-top: 0.75rem;">
+                            <table class="cf-table">
+                                <thead>
+                                    <tr>
+                                        <th>Ngày tuổi</th>
+                                        <th>Tên vaccine</th>
+                                        <th>Phương thức</th>
+                                        <th class="text-right">Thao tác</th>
+                                    </tr>
+                                </thead>
+                                <tbody>
+                                    <tr v-for="item in programItems" :key="item.id" class="cf-table-tr">
+                                        <td><span class="cf-vacc-day-badge">{{ item.day_age }} ngày</span></td>
+                                        <td class="cf-primary-text">{{ item.vaccine_name }}</td>
+                                        <td><span v-if="item.method" class="cf-vacc-method-badge">{{ item.method }}</span></td>
+                                        <td>
+                                            <div class="cf-feed-row-actions">
+                                                <button @click="openItemModal(item)" class="cf-btn-ghost-sm">✏️</button>
+                                                <button @click="deleteItem(item)" class="cf-btn-ghost-sm danger">🗑️</button>
+                                            </div>
+                                        </td>
+                                    </tr>
+                                    <tr v-if="!programItems.length">
+                                        <td colspan="4" class="cf-vacc-empty-cell">Chưa có vaccine nào trong chương trình</td>
+                                    </tr>
+                                </tbody>
+                            </table>
                         </div>
                     </div>
-
-                    <!-- Program Detail -->
-                    <div class="card">
-                        <div v-if="selectedProgram">
-                            <div class="detail-header">
-                                <h4 class="card-title">💉 {{ selectedProgram.name }} - Chi tiết</h4>
-                                <button @click="openItemModal()" class="btn btn-primary btn-sm">+ Thêm vaccine</button>
-                            </div>
-                            <div class="table-responsive">
-                                <table class="data-table">
-                                    <thead>
-                                        <tr><th>Ngày tuổi</th><th>Vaccine</th><th>Cách dùng</th><th style="width:70px"></th></tr>
-                                    </thead>
-                                    <tbody>
-                                        <tr v-for="item in programItems" :key="item.id">
-                                            <td class="mono">{{ item.day_age }}</td>
-                                            <td class="fw-500">{{ item.vaccine_name }}</td>
-                                            <td>{{ item.method || '-' }}</td>
-                                            <td class="actions">
-                                                <button @click="openItemModal(item)" class="btn-icon" title="Sửa">✏️</button>
-                                                <button @click="deleteItem(item)" class="btn-icon danger" title="Xóa">🗑️</button>
-                                            </td>
-                                        </tr>
-                                        <tr v-if="!programItems.length"><td colspan="4" class="empty-table">Chưa có vaccine</td></tr>
-                                    </tbody>
-                                </table>
-                            </div>
-                        </div>
-                        <div v-else class="empty-detail">Chọn một chương trình để xem chi tiết</div>
+                    <div v-else class="cf-vacc-no-selection">
+                        👈 Chọn một chương trình ở cột trái để xem chi tiết
                     </div>
                 </div>
             </div>
+        </div>
 
-            <!-- Schedules Tab -->
-            <div v-if="tab === 'schedules'">
-                <div class="action-bar">
-                    <select v-model="selectedCycleId" class="select">
-                        <option :value="null">-- Chọn đợt nuôi --</option>
-                        <option v-for="c in cycles" :key="c.id" :value="c.id">{{ c.name || c.code }} ({{ c.barn_id }})</option>
-                    </select>
-                    <button v-if="selectedCycleId" @click="openScheduleModal()" class="btn btn-primary">+ Thêm lịch</button>
-                    <button v-if="selectedCycleId" @click="applyProgram()" class="btn btn-secondary">Áp dụng CT</button>
-                </div>
-                <div class="card">
-                    <div class="table-responsive">
-                        <table class="data-table">
-                            <thead><tr><th>Ngày</th><th>Ngày tuổi</th><th>Vaccine</th><th>Cách dùng</th><th>Trạng thái</th><th style="width:160px"></th></tr></thead>
-                            <tbody>
-                                <tr v-for="s in schedules" :key="s.id" :class="{ rowDone: s.done, rowSkipped: s.skipped }">
-                                    <td>{{ fmtDate(s.scheduled_date) }}</td>
-                                    <td class="mono">{{ s.day_age_target || '-' }}</td>
-                                    <td class="fw-500">{{ s.vaccine_name }}</td>
-                                    <td>{{ s.method || '-' }}</td>
-                                    <td>
-                                        <span v-if="s.done" class="badge badge-success">Đã tiêm</span>
-                                        <span v-else-if="s.skipped" class="badge badge-secondary">Bỏ qua</span>
-                                        <span v-else class="badge badge-warning">Chưa tiêm</span>
-                                    </td>
-                                    <td class="actions">
+        <!-- ── TAB 2: SCHEDULES ── -->
+        <div v-if="tab === 'schedules'">
+            <div class="cf-vacc-schedule-toolbar">
+                <select v-model="selectedCycleId" class="cf-input" style="max-width: 280px;">
+                    <option :value="null">-- Chọn đợt nuôi --</option>
+                    <option v-for="c in cycles" :key="c.id" :value="c.id">
+                        {{ c.name || c.code }} ({{ c.barn_name || c.barn_id }})
+                    </option>
+                </select>
+                <button v-if="selectedCycleId" @click="openScheduleModal()" class="cf-btn-primary" style="background-color: #7c3aed; font-size: 11px; padding: 0.4rem 0.8rem;">
+                    + Thêm lịch lẻ
+                </button>
+                <button v-if="selectedCycleId" @click="applyProgram()" class="cf-btn-secondary" style="font-size: 11px; padding: 0.4rem 0.8rem;">
+                    Áp dụng CT mẫu
+                </button>
+            </div>
+
+            <div class="cf-card" style="padding: 0;">
+                <div class="cf-table-wrapper">
+                    <table class="cf-table">
+                        <thead>
+                            <tr>
+                                <th>Ngày dự kiến</th>
+                                <th>Độ tuổi</th>
+                                <th>Tên vaccine</th>
+                                <th>Phương thức</th>
+                                <th>Trạng thái</th>
+                                <th class="text-right">Thao tác</th>
+                            </tr>
+                        </thead>
+                        <tbody>
+                            <tr v-for="s in schedules" :key="s.id" :class="['cf-table-tr', (s.done || s.skipped) ? 'cf-vacc-done-row' : '']">
+                                <td><span class="cf-vacc-date">{{ fmtDate(s.scheduled_date) }}</span></td>
+                                <td class="cf-text-mono">{{ s.day_age_target ? s.day_age_target + ' ngày' : '-' }}</td>
+                                <td class="cf-primary-text">{{ s.vaccine_name }}</td>
+                                <td><span v-if="s.method" class="cf-vacc-method-badge">{{ s.method }}</span></td>
+                                <td>
+                                    <span v-if="s.done" class="cf-badge-success">🟢 Đã hoàn thành</span>
+                                    <span v-else-if="s.skipped" class="cf-badge-gray">⚪ Đã bỏ qua</span>
+                                    <span v-else class="cf-badge-warning">🟡 Chờ thực hiện</span>
+                                </td>
+                                <td>
+                                    <div class="cf-feed-row-actions">
                                         <template v-if="!s.done && !s.skipped">
-                                            <button @click="markDone(s)" class="btn-link">Hoàn thành</button>
-                                            <button @click="markSkip(s)" class="btn-link text-warning">Bỏ qua</button>
+                                            <button @click="markDone(s)" class="cf-btn-ghost-sm text-emerald">✔ Hoàn thành</button>
+                                            <button @click="markSkip(s)" class="cf-btn-ghost-sm text-orange">⏭ Bỏ qua</button>
                                         </template>
-                                        <button @click="deleteSchedule(s)" class="btn-icon danger" title="Xóa">🗑️</button>
-                                    </td>
-                                </tr>
-                                <tr v-if="!schedules.length"><td colspan="6" class="empty-table">{{ selectedCycleId ? 'Chưa có lịch tiêm' : 'Chọn đợt nuôi' }}</td></tr>
-                            </tbody>
-                        </table>
-                    </div>
-                </div>
-            </div>
-
-            <!-- Upcoming Tab -->
-            <div v-if="tab === 'upcoming'">
-                <div class="card">
-                    <h4 class="card-title">📅 Lịch tiêm sắp tới (14 ngày)</h4>
-                    <div class="table-responsive">
-                        <table class="data-table">
-                            <thead><tr><th>Ngày</th><th>Đợt nuôi</th><th>Chuồng</th><th>Vaccine</th><th>Cách dùng</th><th></th></tr></thead>
-                            <tbody>
-                                <tr v-for="s in upcoming" :key="s.id">
-                                    <td>{{ fmtDate(s.scheduled_date) }}</td>
-                                    <td>{{ s.cycle_code || s.cycle_id }}</td>
-                                    <td>{{ s.barn_name || '-' }}</td>
-                                    <td class="fw-500">{{ s.vaccine_name }}</td>
-                                    <td>{{ s.method || '-' }}</td>
-                                    <td class="actions"><button @click="markDone(s)" class="btn btn-primary btn-sm">Hoàn thành</button></td>
-                                </tr>
-                                <tr v-if="!upcoming.length"><td colspan="6" class="empty-table">Không có lịch tiêm sắp tới</td></tr>
-                            </tbody>
-                        </table>
-                    </div>
+                                        <button @click="deleteSchedule(s)" class="cf-btn-ghost-sm danger">🗑️</button>
+                                    </div>
+                                </td>
+                            </tr>
+                            <tr v-if="!schedules.length">
+                                <td colspan="6" class="cf-vacc-empty-cell">
+                                    {{ selectedCycleId ? 'Đợt nuôi này chưa có lịch tiêm' : 'Vui lòng chọn đợt nuôi để quản lý lịch tiêm' }}
+                                </td>
+                            </tr>
+                        </tbody>
+                    </table>
                 </div>
             </div>
         </div>
 
-        <!-- Modal -->
-        <div v-if="showModal" class="modal-overlay" @click.self="showModal=false">
-            <div class="modal">
-                <div class="modal-header">
-                    <h3>{{ modalType === 'program' ? (editingId ? '✏️ Sửa chương trình' : '➕ Tạo chương trình') : (modalType === 'item' ? (editingId ? '✏️ Sửa vaccine' : '➕ Thêm vaccine') : '➕ Thêm lịch tiêm') }}</h3>
-                    <button @click="showModal=false" class="btn-icon">✕</button>
-                </div>
-                <div class="modal-body">
-                    <!-- Program Form -->
-                    <div v-if="modalType==='program'">
-                        <div class="form-group"><label>Tên *</label><input v-model="programForm.name" class="form-input" placeholder="VD: Vaccine cho gà công nghiệp"></div>
-                        <div class="form-group"><label>Ghi chú</label><input v-model="programForm.note" class="form-input"></div>
-                    </div>
-                    <!-- Item Form -->
-                    <div v-if="modalType==='item'">
-                        <div class="form-group"><label>Tên vaccine *</label><input v-model="itemForm.vaccine_name" class="form-input"></div>
-                        <div class="form-row"><div class="form-group"><label>Ngày tuổi *</label><input v-model.number="itemForm.day_age" type="number" class="form-input"></div>
-                        <div class="form-group"><label>Cách dùng</label><select v-model="itemForm.method" class="form-input"><option value="">-- Chọn --</option><option v-for="m in methods" :value="m">{{ m }}</option></select></div></div>
-                        <div class="form-row"><div class="form-group"><label>Nhắc trước (ngày)</label><input v-model.number="itemForm.remind_days" type="number" class="form-input"></div>
-                        <div class="form-group"><label>Thứ tự</label><input v-model.number="itemForm.sort_order" type="number" class="form-input"></div></div>
-                    </div>
-                    <!-- Schedule Form -->
-                    <div v-if="modalType==='schedule'">
-                        <div class="form-group"><label>Vaccine *</label><input v-model="scheduleForm.vaccine_name" class="form-input"></div>
-                        <div class="form-row"><div class="form-group"><label>Ngày tiêm</label><input v-model="scheduleForm.scheduled_date" type="date" class="form-input"></div>
-                        <div class="form-group"><label>Ngày tuổi</label><input v-model.number="scheduleForm.day_age_target" type="number" class="form-input"></div></div>
-                        <div class="form-row"><div class="form-group"><label>Cách dùng</label><select v-model="scheduleForm.method" class="form-input"><option value="">-- Chọn --</option><option v-for="m in methods" :value="m">{{ m }}</option></select></div>
-                        <div class="form-group"><label>Liều lượng</label><input v-model="scheduleForm.dosage" class="form-input"></div></div>
-                    </div>
-                </div>
-                <div class="modal-footer">
-                    <button @click="showModal=false" class="btn">Hủy</button>
-                    <button @click="modalType==='program'?saveProgram():(modalType==='item'?saveItem():saveSchedule())" class="btn btn-primary">Lưu</button>
+        <!-- ── TAB 3: UPCOMING ── -->
+        <div v-if="tab === 'upcoming'">
+            <div class="cf-card" style="padding: 1rem;">
+                <h3 class="cf-vacc-section-title">📅 Lịch tiêm sắp tới (14 ngày tới)</h3>
+                <div class="cf-table-wrapper" style="margin-top: 0.75rem;">
+                    <table class="cf-table">
+                        <thead>
+                            <tr>
+                                <th>Ngày dự kiến</th>
+                                <th>Đợt nuôi</th>
+                                <th>Chuồng</th>
+                                <th>Tên vaccine</th>
+                                <th>Phương thức</th>
+                                <th class="text-right">Thao tác</th>
+                            </tr>
+                        </thead>
+                        <tbody>
+                            <tr v-for="s in upcoming" :key="s.id" class="cf-table-tr">
+                                <td><span class="cf-vacc-date">{{ fmtDate(s.scheduled_date) }}</span></td>
+                                <td class="cf-text-mono">{{ s.cycle_code || s.cycle_id }}</td>
+                                <td class="cf-text-muted">{{ s.barn_name || '-' }}</td>
+                                <td class="cf-primary-text">{{ s.vaccine_name }}</td>
+                                <td class="cf-text-muted">{{ s.method || '-' }}</td>
+                                <td>
+                                    <button @click="markDone(s)" class="cf-btn-primary" style="background-color: #7c3aed; font-size: 10px; padding: 0.3rem 0.6rem;">
+                                        ✔ Hoàn thành
+                                    </button>
+                                </td>
+                            </tr>
+                            <tr v-if="!upcoming.length">
+                                <td colspan="6" class="cf-vacc-empty-cell">
+                                    Không có lịch tiêm nào trong 2 tuần tới!
+                                </td>
+                            </tr>
+                        </tbody>
+                    </table>
                 </div>
             </div>
         </div>
+
+        <!-- ── MODAL: PROGRAM FORM ── -->
+        <teleport to="body">
+            <div v-if="showModal && modalType === 'program'" class="cf-modal-overlay" @click.self="closeModal">
+                <div class="cf-modal-box">
+                    <div class="cf-modal-header">
+                        <div class="cf-modal-header-left">
+                            <div class="cf-modal-header-icon" style="background-color: #ede9fe; color: #7c3aed;">📋</div>
+                            <h3 class="cf-modal-title">{{ editingId ? 'Sửa chương trình vaccine' : 'Tạo chương trình mới' }}</h3>
+                        </div>
+                        <button @click="closeModal" class="cf-modal-close-btn">✕</button>
+                    </div>
+                    <form @submit.prevent="saveProgram">
+                        <div class="cf-modal-body">
+                            <div class="cf-form-group">
+                                <label class="cf-label">Tên chương trình <span class="req">*</span></label>
+                                <input v-model="programForm.name" type="text" class="cf-input" placeholder="VD: Lịch chuẩn cho heo con cai sữa" required>
+                            </div>
+                            <div class="cf-form-group">
+                                <label class="cf-label">Ghi chú</label>
+                                <input v-model="programForm.note" type="text" class="cf-input" placeholder="Nhập ghi chú...">
+                            </div>
+                        </div>
+                        <div class="cf-modal-footer">
+                            <button type="button" @click="closeModal" class="cf-btn-secondary">Hủy bỏ</button>
+                            <button type="submit" class="cf-btn-primary" style="background-color: #7c3aed;">Lưu chương trình</button>
+                        </div>
+                    </form>
+                </div>
+            </div>
+        </teleport>
+
+        <!-- ── MODAL: ITEM FORM ── -->
+        <teleport to="body">
+            <div v-if="showModal && modalType === 'item'" class="cf-modal-overlay" @click.self="closeModal">
+                <div class="cf-modal-box">
+                    <div class="cf-modal-header">
+                        <div class="cf-modal-header-left">
+                            <div class="cf-modal-header-icon" style="background-color: #dcfce7; color: #16a34a;">💉</div>
+                            <h3 class="cf-modal-title">{{ editingId ? 'Sửa vaccine' : 'Thêm vaccine vào chương trình' }}</h3>
+                        </div>
+                        <button @click="closeModal" class="cf-modal-close-btn">✕</button>
+                    </div>
+                    <form @submit.prevent="saveItem">
+                        <div class="cf-modal-body">
+                            <div class="cf-form-group">
+                                <label class="cf-label">Tên vaccine <span class="req">*</span></label>
+                                <input v-model="itemForm.vaccine_name" type="text" class="cf-input" placeholder="VD: Tai xanh (PRRS)" required>
+                            </div>
+                            <div class="cf-col-grid-2">
+                                <div class="cf-form-group">
+                                    <label class="cf-label">Ngày tuổi tiêm <span class="req">*</span></label>
+                                    <input v-model.number="itemForm.day_age" type="number" class="cf-input" placeholder="14" required>
+                                </div>
+                                <div class="cf-form-group">
+                                    <label class="cf-label">Cách dùng</label>
+                                    <select v-model="itemForm.method" class="cf-input">
+                                        <option value="">-- Chọn --</option>
+                                        <option v-for="m in methods" :key="m" :value="m">{{ m }}</option>
+                                    </select>
+                                </div>
+                            </div>
+                            <div class="cf-col-grid-2">
+                                <div class="cf-form-group">
+                                    <label class="cf-label">Nhắc trước (ngày)</label>
+                                    <input v-model.number="itemForm.remind_days" type="number" class="cf-input" placeholder="1">
+                                </div>
+                                <div class="cf-form-group">
+                                    <label class="cf-label">Thứ tự</label>
+                                    <input v-model.number="itemForm.sort_order" type="number" class="cf-input" placeholder="0">
+                                </div>
+                            </div>
+                        </div>
+                        <div class="cf-modal-footer">
+                            <button type="button" @click="closeModal" class="cf-btn-secondary">Hủy bỏ</button>
+                            <button type="submit" class="cf-btn-primary" style="background-color: #7c3aed;">Lưu vaccine</button>
+                        </div>
+                    </form>
+                </div>
+            </div>
+        </teleport>
+
+        <!-- ── MODAL: SCHEDULE FORM ── -->
+        <teleport to="body">
+            <div v-if="showModal && modalType === 'schedule'" class="cf-modal-overlay" @click.self="closeModal">
+                <div class="cf-modal-box">
+                    <div class="cf-modal-header">
+                        <div class="cf-modal-header-left">
+                            <div class="cf-modal-header-icon" style="background-color: #fef9c3; color: #d97706;">📅</div>
+                            <h3 class="cf-modal-title">Lập lịch tiêm chủng lẻ</h3>
+                        </div>
+                        <button @click="closeModal" class="cf-modal-close-btn">✕</button>
+                    </div>
+                    <form @submit.prevent="saveSchedule">
+                        <div class="cf-modal-body">
+                            <div class="cf-form-group">
+                                <label class="cf-label">Tên vaccine <span class="req">*</span></label>
+                                <input v-model="scheduleForm.vaccine_name" type="text" class="cf-input" placeholder="VD: Lở mồm long móng" required>
+                            </div>
+                            <div class="cf-col-grid-2">
+                                <div class="cf-form-group">
+                                    <label class="cf-label">Ngày tiêm</label>
+                                    <input v-model="scheduleForm.scheduled_date" type="date" class="cf-input">
+                                </div>
+                                <div class="cf-form-group">
+                                    <label class="cf-label">Độ tuổi ước tính (ngày)</label>
+                                    <input v-model.number="scheduleForm.day_age_target" type="number" class="cf-input" placeholder="14">
+                                </div>
+                            </div>
+                            <div class="cf-col-grid-2">
+                                <div class="cf-form-group">
+                                    <label class="cf-label">Phương thức</label>
+                                    <select v-model="scheduleForm.method" class="cf-input">
+                                        <option value="">-- Chọn --</option>
+                                        <option v-for="m in methods" :key="m" :value="m">{{ m }}</option>
+                                    </select>
+                                </div>
+                                <div class="cf-form-group">
+                                    <label class="cf-label">Liều lượng</label>
+                                    <input v-model="scheduleForm.dosage" type="text" class="cf-input" placeholder="VD: 2 ml">
+                                </div>
+                            </div>
+                        </div>
+                        <div class="cf-modal-footer">
+                            <button type="button" @click="closeModal" class="cf-btn-secondary">Hủy bỏ</button>
+                            <button type="submit" class="cf-btn-primary" style="background-color: #7c3aed;">Lập lịch ngay</button>
+                        </div>
+                    </form>
+                </div>
+            </div>
+        </teleport>
+
     </div>
     `
 };
