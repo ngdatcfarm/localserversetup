@@ -2728,3 +2728,55 @@ img {
   .cf-dev-grid { grid-template-columns: 1fr; }
   .cf-dev-id-preview { grid-template-columns: 1fr; }
 }
+
+/* ── Relays Page ── */
+.cf-relay-barn-header { display: flex; align-items: center; justify-content: space-between; margin-bottom: 1rem; padding-bottom: 0.75rem; border-bottom: 1px solid #f1f5f9; }
+.cf-relay-barn-info { display: flex; align-items: center; gap: 0.75rem; }
+.cf-relay-barn-icon { font-size: 1.5rem; }
+.cf-relay-barn-name { font-size: 0.875rem; font-weight: 800; color: #1e293b; margin-bottom: 0.125rem; }
+.cf-relay-device-count { font-size: 0.75rem; color: #94a3b8; font-weight: 600; }
+.cf-relay-barn-badges { display: flex; gap: 0.5rem; }
+.cf-badge-success { display: inline-flex; align-items: center; padding: 0.2rem 0.6rem; border-radius: 9999px; font-size: 0.6875rem; font-weight: 700; background: #dcfce7; color: #15803d; }
+.cf-badge-danger { display: inline-flex; align-items: center; padding: 0.2rem 0.6rem; border-radius: 9999px; font-size: 0.6875rem; font-weight: 700; background: #fee2e2; color: #991b1b; }
+
+.cf-relay-grid { display: grid; grid-template-columns: repeat(3, 1fr); gap: 1rem; }
+@media (max-width: 1023px) { .cf-relay-grid { grid-template-columns: repeat(2, 1fr); } }
+@media (max-width: 639px) { .cf-relay-grid { grid-template-columns: 1fr; } }
+
+.cf-relay-card { padding: 1rem; border: 1.5px solid #e5e7eb; border-radius: 0.75rem; background: white; transition: all 0.15s; }
+.cf-relay-card.is-online { border-color: #bbf7d0; background: #fafbfb; }
+.cf-relay-card.is-offline { opacity: 0.7; }
+.cf-relay-card:hover { border-color: #cbd5e1; box-shadow: 0 2px 8px rgba(0,0,0,0.06); }
+
+.cf-relay-card-header { display: flex; align-items: flex-start; justify-content: space-between; margin-bottom: 0.75rem; }
+.cf-relay-card-title-row { display: flex; align-items: center; gap: 0.5rem; }
+.cf-relay-dot { display: inline-block; width: 0.5rem; height: 0.5rem; border-radius: 50%; flex-shrink: 0; }
+.cf-relay-dot.online { background: #22c55e; box-shadow: 0 0 6px rgba(34,197,94,0.5); }
+.cf-relay-dot.offline { background: #9ca3af; }
+.cf-relay-device-name { font-weight: 700; font-size: 0.8125rem; color: #1e293b; }
+.cf-relay-code { font-family: var(--font-mono); font-size: 0.6875rem; color: #64748b; margin-top: 0.125rem; display: block; }
+.cf-relay-card-meta { text-align: right; }
+.cf-relay-online { font-size: 0.6875rem; font-weight: 700; color: #15803d; }
+.cf-relay-offline { font-size: 0.6875rem; font-weight: 700; color: #94a3b8; }
+.cf-relay-rssi { display: block; font-size: 0.625rem; color: #94a3b8; margin-top: 0.125rem; }
+
+.cf-relay-channels { margin-bottom: 0.75rem; }
+.cf-relay-channel-label { display: block; font-size: 0.6875rem; color: #94a3b8; margin-bottom: 0.5rem; font-weight: 600; }
+.cf-relay-btn-row { display: flex; gap: 0.5rem; flex-wrap: wrap; }
+.cf-relay-btn { width: 3.5rem; height: 3.5rem; border-radius: 0.5rem; border: 1px solid; font-size: 0.75rem; font-weight: 700; font-family: var(--font-mono); cursor: pointer; transition: all 0.15s; display: flex; flex-direction: column; align-items: center; justify-content: center; gap: 0.125rem; }
+.cf-relay-btn.on { background: #16a34a; color: white; border-color: #15803d; }
+.cf-relay-btn.off { background: #f8fafc; color: #64748b; border-color: #e2e8f0; }
+.cf-relay-btn.off:hover { background: #f1f5f9; border-color: #cbd5e1; }
+.cf-relay-btn:disabled { opacity: 0.5; cursor: not-allowed; }
+.cf-relay-btn-label { font-size: 0.5625rem; font-weight: 700; opacity: 0.8; }
+
+.cf-relay-footer { display: flex; align-items: center; justify-content: space-between; font-size: 0.625rem; color: #94a3b8; font-weight: 600; }
+.cf-relay-time { display: flex; align-items: center; gap: 0.25rem; }
+.cf-relay-uptime { font-family: var(--font-mono); background: #f8fafc; padding: 0.1rem 0.375rem; border-radius: 0.25rem; color: #64748b; }
+
+.cf-relay-empty { text-align: center; padding: 2rem; color: #94a3b8; font-size: 0.75rem; }
+.cf-relay-empty svg { display: block; margin: 0 auto 0.5rem; }
+
+@media (max-width: 767px) {
+  .cf-relay-grid { grid-template-columns: 1fr; }
+}
