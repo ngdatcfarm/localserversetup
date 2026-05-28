@@ -32,3 +32,12 @@ async def get_hourly(device_id: int, sensor_type: str, hours: int = 168):
 async def get_barn_summary(barn_id: str):
     """Get latest sensor summary for a barn."""
     return await sensor_service.get_barn_summary(barn_id)
+
+
+@router.get("/barns-temperature")
+async def get_barns_temperature():
+    """
+    Get latest temperature and humidity for all barns.
+    Optimized for dashboard quick-view - returns minimal data.
+    """
+    return await sensor_service.get_barns_temperature_summary()

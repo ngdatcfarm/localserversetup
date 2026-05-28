@@ -99,5 +99,23 @@ class SensorService:
         """Get latest sensor summary for a barn (all devices, all types)."""
         return await self.get_latest(barn_id=barn_id)
 
+    async def get_barns_temperature_summary(self) -> list[dict]:
+        """Get latest temperature and humidity for all barns. Optimized for dashboard quick-view."""
+        rows = await db.fetch(
+            """SELECT DISTINCT ON (d.barn_id, s.sensor_type)
+                d.barn_id,
+                s.sensor_type,
+                s.value,
+                s.unit,
+                s.time,
+                d.name as device_name
+            FROM sensor_data s
+            JOIN devices d ON s.device_id = d.id
+            WHERE s.sensor_type IN ('temperature', 'humidity')
+              AND d.barn_id IS NOT NULL
+            ORDER BY d.barn_id, s.sensor_type, s.time DESC""",
+        )
+        return [dict(r) for r in rows]
+
 
 sensor_service = SensorService()

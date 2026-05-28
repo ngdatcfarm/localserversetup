@@ -264,6 +264,8 @@ class MqttListener:
                 "nh3": "ppm",
                 "pressure": "hPa",
                 "wind_speed": "m/s",
+                "mq135_raw": "ADC",
+                "mq137_raw": "ADC",
             }
             for key, unit in sensor_map.items():
                 if key in payload:

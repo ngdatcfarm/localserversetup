@@ -57,7 +57,9 @@ const router = createRouter({
 const pageCache = {};
 function loadPage(name) {
     if (pageCache[name]) return Promise.resolve(pageCache[name]);
-    return fetch(`/static/js/pages/${name}.js`)
+    // Cache-bust: append timestamp to force fresh fetch
+    const t = Date.now();
+    return fetch(`/static/js/pages/${name}.js?_=${t}`)
         .then(r => r.text())
         .then(code => {
             const component = new Function('Vue', 'API', 'showToast', 'fmtDate', 'fmtNum', code)(

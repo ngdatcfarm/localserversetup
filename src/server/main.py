@@ -41,6 +41,7 @@ from src.iot.vaccine_notification_service import vaccine_notification_service
 from src.iot.care_notification_service import care_notification_service
 from src.iot.weight_notification_service import weight_notification_service
 from src.iot.ai_logic_service import ai_logic_service
+from src.server.routes.ml import router as ml_router
 from src.server.routes.ai_logic import router as ai_logic_router
 from src.server.routes.ml_dataset import router as ml_dataset_router
 from src.server.routes.ml_training import router as ml_training_router
@@ -250,6 +251,7 @@ app.include_router(bats_router)
 app.include_router(equipment_router)
 app.include_router(snapshots_router)
 app.include_router(ai_logic_router)
+app.include_router(ml_router)
 app.include_router(ml_dataset_router)
 app.include_router(ml_training_router)
 app.include_router(density_router)

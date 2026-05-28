@@ -1,10 +1,10 @@
 /**
- * Cycles Page V2 - Quản lý đợt nuôi chuyên nghiệp
- * - Thống kê nhanh trên cùng
- * - Tabs trạng thái có badge số lượng
- * - Bảng desktop tinh gọn (ẩn bớt cột, gộp thông tin)
- * - Card mobile hiện đại
- * - Modal tạo/kết thúc đẹp hơn
+ * Cycles Page V2 - Quản lý đợt nuôi chuyên nghiệp (Phiên bản Thiết kế Cao cấp Đã nâng cấp)
+ * - Thống kê nhanh trên cùng dạng Bento Card cao cấp
+ * - Tabs phân loại trạng thái lứa nuôi trực quan đi kèm huy hiệu số lượng
+ * - Bảng điều khiển Desktop tinh gọn (không lạm dụng màu sắc chói, chữ rõ nét)
+ * - Trình bày Mobile tinh xảo dạng luồng thời gian (Timeline) gọn gàng
+ * - Biểu mẫu khởi tạo và kết thúc đợt nuôi phân chia bố cục chuẩn mực
  */
 const { ref, reactive, computed, onMounted } = Vue;
 
@@ -38,29 +38,37 @@ return {
 
         // ── Computed ───────────────────────────────────
         const filteredCycles = computed(() => {
+            if (!cycles.value || !Array.isArray(cycles.value)) return [];
             let result = cycles.value;
             if (filterBarn.value) {
-                result = result.filter(c => c.barn_id == filterBarn.value);
+                result = result.filter(c => c && c.barn_id == filterBarn.value);
             }
             if (filterStatus.value) {
-                result = result.filter(c => c.status === filterStatus.value);
+                result = result.filter(c => c && c.status === filterStatus.value);
             }
             if (searchQuery.value) {
                 const q = searchQuery.value.toLowerCase();
-                result = result.filter(c => c.name?.toLowerCase().includes(q));
+                result = result.filter(c => c && c.name?.toLowerCase().includes(q));
             }
             return result;
         });
 
         const availableBarns = computed(() => {
-            return barns.value.filter(b => !hasActiveCycle(b.id) || b.id == form.barn_id);
+            if (!barns.value || !Array.isArray(barns.value)) return [];
+            return barns.value.filter(b => b && (!hasActiveCycle(b.id) || b.id == form.barn_id));
         });
 
-        // Thống kê tổng quan
+        // Thống kê tổng quan dựa trên đợt nuôi hoạt động tích cực
         const stats = computed(() => {
-            const active = cycles.value.filter(c => c.status === 'active');
+            const list = Array.isArray(cycles.value) ? cycles.value : [];
+            const active = list.filter(c => c && c.status === 'active');
             const totalBirds = active.reduce((sum, c) => sum + (c.current_count || 0), 0);
-            const totalDeaths = active.reduce((sum, c) => sum + ((c.initial_count || 0) - (c.current_count || 0)), 0);
+            const totalDeaths = active.reduce((sum, c) => {
+                const init = c.initial_count || 0;
+                const curr = c.current_count || 0;
+                const progressDiff = init - curr;
+                return sum + (progressDiff > 0 ? progressDiff : 0);
+            }, 0);
             const avgMortality = totalBirds > 0 ? (totalDeaths / (totalBirds + totalDeaths) * 100).toFixed(1) : '0.0';
             return {
                 activeCount: active.length,
@@ -70,56 +78,80 @@ return {
             };
         });
 
-        const activeCyclesCount = computed(() => cycles.value.filter(c => c.status === 'active').length);
-        const closedCyclesCount = computed(() => cycles.value.filter(c => c.status === 'closed').length);
+        const activeCyclesCount = computed(() => {
+            const list = Array.isArray(cycles.value) ? cycles.value : [];
+            return list.filter(c => c && c.status === 'active').length;
+        });
+
+        const closedCyclesCount = computed(() => {
+            const list = Array.isArray(cycles.value) ? cycles.value : [];
+            return list.filter(c => c && c.status === 'closed').length;
+        });
 
         // ── Methods ───────────────────────────────────
         async function loadCycles() {
             loading.value = true;
             try {
-                cycles.value = await API.cycles.list();
+                cycles.value = await API.cycles.list().catch(() => []);
             } catch (e) {
-                showToast('Không thể tải danh sách đợt nuôi: ' + e.message, 'error');
+                if (typeof showToast === 'function') {
+                    showToast('Không thể tải danh sách đợt nuôi: ' + e.message, 'error');
+                } else {
+                    console.error('Không thể tải đợt nuôi:', e);
+                }
             }
             loading.value = false;
         }
 
         async function loadBarnsAndFarms() {
             try {
-                [barns.value, farms.value] = await Promise.all([
-                    API.barns.list().catch(() => []),
-                    API.farms.list().catch(() => [])
-                ]);
+                const barnsCall = API.barns.list().catch(() => []);
+                const farmsCall = API.farms.list().catch(() => []);
+                [barns.value, farms.value] = await Promise.all([barnsCall, farmsCall]);
             } catch (e) {
-                console.error('Failed to load barns/farms:', e);
+                console.error('Hệ thống thất bại tải dữ liệu phụ trợ chuồng/trang trại:', e);
             }
         }
 
         function getBarnName(barnId) {
-            const b = barns.value.find(x => x.id == barnId);
+            if (!barns.value || !Array.isArray(barns.value)) return barnId || '-';
+            const b = barns.value.find(x => x && x.id == barnId);
             return b?.name || barnId || '-';
         }
 
         function getFarmName(barnId) {
-            const b = barns.value.find(x => x.id == barnId);
-            return b?.farm_name || '-';
+            if (!barns.value || !Array.isArray(barns.value)) return '-';
+            const b = barns.value.find(x => x && x.id == barnId);
+            if (b && b.farm_name) return b.farm_name;
+            if (b && b.farm_id && farms.value) {
+                const f = farms.value.find(x => x && x.id === b.farm_id);
+                return f?.name || '-';
+            }
+            return '-';
         }
 
         function hasActiveCycle(barnId) {
+            if (!cycles.value || !Array.isArray(cycles.value)) return false;
             return cycles.value.some(c =>
-                (c.barn_id == barnId || c.barn_id === barnId) && c.status === 'active'
+                c && (c.barn_id == barnId || c.barn_id === barnId) && c.status === 'active'
             );
         }
 
         function getDayAge(startDate) {
             if (!startDate) return '-';
-            const days = Math.floor((new Date() - new Date(startDate)) / (1000 * 60 * 60 * 24));
-            return days >= 0 ? days : '-';
+            const start = new Date(startDate);
+            const now = new Date();
+            start.setHours(0, 0, 0, 0);
+            now.setHours(0, 0, 0, 0);
+            const diffTime = now.getTime() - start.getTime();
+            const days = Math.floor(diffTime / (1000 * 60 * 60 * 24));
+            return days >= 0 ? days : 0;
         }
 
         function getMortalityRate(c) {
-            if (!c.initial_count || c.initial_count === 0) return '-';
+            if (!c || !c.initial_count) return '-';
             const dead = (c.initial_count - (c.current_count || 0));
+            if (dead <= 0) return '0.0%';
             const rate = (dead / c.initial_count * 100).toFixed(1);
             return rate + '%';
         }
@@ -129,7 +161,8 @@ return {
         }
 
         function openForm() {
-            form.barn_id = barns.value.length > 0 ? barns.value[0].id : '';
+            const freeBarn = availableBarns.value.find(b => b && !hasActiveCycle(b.id));
+            form.barn_id = freeBarn ? freeBarn.id : (barns.value.length > 0 ? barns.value[0].id : '');
             form.name = '';
             form.breed = '';
             form.initial_count = null;
@@ -143,15 +176,15 @@ return {
 
         async function save() {
             if (!form.barn_id) {
-                showToast('Vui lòng chọn chuồng', 'error');
+                if (typeof showToast === 'function') showToast('Vui lòng lựa chọn chuồng chăn nuôi chủ quản', 'error');
                 return;
             }
             if (!form.initial_count || form.initial_count <= 0) {
-                showToast('Số lượng ban đầu phải lớn hơn 0', 'error');
+                if (typeof showToast === 'function') showToast('Số lượng đàn nhập chuồng ban đầu phải lớn hơn 0', 'error');
                 return;
             }
             if (!form.start_date) {
-                showToast('Ngày bắt đầu là bắt buộc', 'error');
+                if (typeof showToast === 'function') showToast('Ngày bắt đầu ghi nhận là bắt buộc', 'error');
                 return;
             }
 
@@ -165,11 +198,11 @@ return {
                 };
 
                 await API.cycles.create(payload);
-                showToast('Đã tạo đợt nuôi mới');
+                if (typeof showToast === 'function') showToast('Đã khởi tạo đợt/lứa nuôi thành công vào hệ thống! 🌱');
                 closeModal();
                 await Promise.all([loadCycles(), loadBarnsAndFarms()]);
             } catch (e) {
-                showToast(e.message, 'error');
+                if (typeof showToast === 'function') showToast(e.message, 'error');
             }
         }
 
@@ -189,7 +222,7 @@ return {
         async function confirmClose() {
             if (!cycleToClose.value) return;
             if (closeForm.end_date < cycleToClose.value.start_date) {
-                showToast('Ngày kết thúc phải >= ngày bắt đầu', 'error');
+                if (typeof showToast === 'function') showToast('Ngày kết thúc chu kỳ nuôi phải lớn hơn hoặc bằng ngày bắt đầu', 'error');
                 return;
             }
 
@@ -199,12 +232,22 @@ return {
                     notes: closeForm.notes || undefined,
                     force: closeForm.force
                 });
-                showToast('Đã kết thúc đợt nuôi');
+                if (typeof showToast === 'function') showToast('Đã khóa sổ kết thúc đợt nuôi thành công! ✅');
                 closeCloseModal();
                 await Promise.all([loadCycles(), loadBarnsAndFarms()]);
             } catch (e) {
-                showToast(e.message, 'error');
+                if (typeof showToast === 'function') showToast(e.message, 'error');
             }
+        }
+
+        function fmtNum(val) {
+            if (val === undefined || val === null) return '0';
+            return Number(val).toLocaleString('vi-VN');
+        }
+
+        function fmtDate(dateStr) {
+            if (!dateStr) return '-';
+            return new Date(dateStr).toLocaleDateString('vi-VN');
         }
 
         // ── Lifecycle ─────────────────────────────────
@@ -212,7 +255,7 @@ return {
             await Promise.all([loadCycles(), loadBarnsAndFarms()]);
         });
 
-        // ── Template ──────────────────────────────────
+        // ── Template Return ───────────────────────────
         return {
             cycles,
             barns,
@@ -226,401 +269,447 @@ return {
             showCloseModal,
             form,
             closeForm,
-            cycleToClose,
-            loading,
             stats,
             activeCyclesCount,
             closedCyclesCount,
-            openForm,
-            closeModal,
-            save,
-            openCloseModal,
-            closeCloseModal,
-            confirmClose,
+            loadCycles,
+            loadBarnsAndFarms,
             getBarnName,
             getFarmName,
             hasActiveCycle,
             getDayAge,
             getMortalityRate,
             setFilterStatus,
+            openForm,
+            closeModal,
+            save,
+            openCloseModal,
+            closeCloseModal,
+            confirmClose,
+            fmtNum,
             fmtDate,
-            fmtNum
+            cycleToClose
         };
     },
 
     template: `
-    <div class="cycles-page">
-        <!-- Header + Quick Stats -->
-        <div class="flex flex-col md:flex-row md:items-center justify-between gap-4 mb-6">
-            <div class="flex items-center gap-3">
-                <div class="w-10 h-10 rounded-xl bg-green-100 text-green-600 flex items-center justify-center text-xl">
-                    🔄
+    <div class="cf-container">
+        <!-- Header Section -->
+        <div class="cf-header-bar">
+            <div class="cf-header-left">
+                <div class="cf-header-icon">
+                    <svg xmlns="http://www.w3.org/2000/svg" width="22" height="22" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round">
+                        <path d="M21.5 2v6h-6M21.34 15.57a10 10 0 1 1-.57-8.38l5.67-5.67"/>
+                    </svg>
                 </div>
-                <h2 class="text-2xl font-bold text-gray-800">Quản lý đợt nuôi</h2>
+                <div>
+                    <h1 class="cf-h1">Quản lý Đợt nuôi</h1>
+                    <p class="cf-subtitle">Quản lý vòng đời gia cầm, kiểm soát chỉ số sinh trưởng và tỷ lệ hao hụt</p>
+                </div>
             </div>
-            <button @click="openForm" class="btn btn-primary px-5 py-2.5 rounded-xl shadow-sm">
-                + Tạo đợt nuôi mới
+            <button @click="openForm" class="cf-btn-primary">
+                <svg xmlns="http://www.w3.org/2000/svg" width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.5" stroke-linecap="round" stroke-linejoin="round" style="margin-right: 0.375rem;">
+                    <line x1="12" y1="5" x2="12" y2="19"></line>
+                    <line x1="5" y1="12" x2="19" y2="12"></line>
+                </svg>
+                Tạo đợt nuôi mới
             </button>
         </div>
 
-        <!-- Thống kê nhanh -->
-        <div class="grid grid-cols-2 md:grid-cols-4 gap-3 mb-6">
-            <div class="bg-white rounded-xl p-4 shadow-sm border border-gray-100">
-                <div class="text-xs text-gray-500 mb-1">Đang hoạt động</div>
-                <div class="text-2xl font-bold text-green-600">{{ stats.activeCount }}</div>
-                <div class="text-xs text-gray-400">đợt nuôi</div>
+        <!-- Bento Overview Statistics Panel -->
+        <div class="cf-stats-grid">
+            <div class="cf-stat-card">
+                <span class="cf-stat-label">Đợt hoạt động</span>
+                <div class="cf-stat-val-row">
+                    <span class="cf-stat-val val-emerald">{{ stats.activeCount }}</span>
+                    <span class="cf-stat-unit">lứa nuôi</span>
+                </div>
+                <div class="cf-stat-footer">
+                    <span class="cf-stat-footer-dot pulse"></span>
+                    Hệ thống cấp dưỡng tự động sẵn sàng
+                </div>
             </div>
-            <div class="bg-white rounded-xl p-4 shadow-sm border border-gray-100">
-                <div class="text-xs text-gray-500 mb-1">Tổng gia cầm</div>
-                <div class="text-2xl font-bold text-blue-600">{{ fmtNum(stats.totalBirds) }}</div>
-                <div class="text-xs text-gray-400">con</div>
+
+            <div class="cf-stat-card">
+                <span class="cf-stat-label">Tổng đàn thực tế</span>
+                <div class="cf-stat-val-row">
+                    <span class="cf-stat-val val-blue">{{ fmtNum(stats.totalBirds) }}</span>
+                    <span class="cf-stat-unit">con</span>
+                </div>
+                <p class="cf-stat-footer">Ghi nhận đang nuôi tích cực ngoài sàn</p>
             </div>
-            <div class="bg-white rounded-xl p-4 shadow-sm border border-gray-100">
-                <div class="text-xs text-gray-500 mb-1">Tổng hao hụt</div>
-                <div class="text-2xl font-bold text-red-500">{{ fmtNum(stats.totalDeaths) }}</div>
-                <div class="text-xs text-gray-400">con</div>
+
+            <div class="cf-stat-card">
+                <span class="cf-stat-label">Hao hụt lâm sàng</span>
+                <div class="cf-stat-val-row">
+                    <span class="cf-stat-val val-rose">{{ fmtNum(stats.totalDeaths) }}</span>
+                    <span class="cf-stat-unit">con</span>
+                </div>
+                <p class="cf-stat-footer">Giảm bớt so với lứa ban đầu</p>
             </div>
-            <div class="bg-white rounded-xl p-4 shadow-sm border border-gray-100">
-                <div class="text-xs text-gray-500 mb-1">Tỷ lệ chết TB</div>
-                <div class="text-2xl font-bold text-orange-500">{{ stats.avgMortality }}%</div>
-                <div class="text-xs text-gray-400">trên tổng đàn</div>
+
+            <div class="cf-stat-card">
+                <span class="cf-stat-label">Hao hụt bình quân</span>
+                <div class="cf-stat-val-row">
+                    <span class="cf-stat-val val-amber">{{ stats.avgMortality }}%</span>
+                    <span class="cf-stat-unit">toàn đàn</span>
+                </div>
+                <p class="cf-stat-footer" :class="parseFloat(stats.avgMortality) > 5 ? 'status-warning' : ''">
+                    {{ parseFloat(stats.avgMortality) > 5 ? '⚠️ Vượt ngưỡng an toàn kỹ thuật (5%)' : '✓ Ở ngưỡng cực kỳ an toàn' }}
+                </p>
             </div>
         </div>
 
-        <!-- Filter Bar -->
-        <div class="flex flex-wrap items-center gap-3 mb-4">
-            <select v-model="filterBarn" class="form-input w-48 md:w-56 bg-white">
-                <option value="">Tất cả chuồng</option>
-                <option v-for="b in barns" :key="b.id" :value="b.id">
-                    {{ b.name }}
-                </option>
-            </select>
-
-            <div class="relative flex-1 max-w-xs">
-                <input v-model="searchQuery" type="text"
-                    placeholder="Tìm kiếm theo tên..."
-                    class="form-input pl-9 pr-4 bg-white w-full">
-                <span class="absolute left-3 top-1/2 -translate-y-1/2 text-gray-400">🔍</span>
+        <!-- Filter Controls Bar -->
+        <div class="cf-filter-bar">
+            <!-- Barn Selector Dropdown -->
+            <div class="cf-select-wrapper">
+                <span class="cf-select-icon-left">
+                    <svg xmlns="http://www.w3.org/2000/svg" width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round">
+                        <path d="M3 9l9-7 9 7v11a2 2 0 0 1-2 2H5a2 2 0 0 1-2-2z"/>
+                        <polyline points="9 22 9 12 15 12 15 22"/>
+                    </svg>
+                </span>
+                <select v-model="filterBarn" class="cf-select">
+                    <option value="">🌿 Tất cả chuồng nuôi</option>
+                    <option v-for="b in barns" :key="b.id" :value="b.id">
+                        🏡 {{ b.name }}
+                    </option>
+                </select>
+                <span class="cf-select-icon-right">▼</span>
             </div>
 
-            <div class="text-sm text-gray-500 ml-auto">
-                {{ filteredCycles.length }} đợt nuôi
+            <!-- Search Field Box -->
+            <div class="cf-search-wrapper">
+                <span class="cf-search-icon">
+                    <svg xmlns="http://www.w3.org/2000/svg" width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round">
+                        <circle cx="11" cy="11" r="8"/>
+                        <line x1="21" y1="21" x2="16.65" y2="16.65"/>
+                    </svg>
+                </span>
+                <input v-model="searchQuery" type="text" placeholder="Tìm theo tên đợt chăn nuôi..." class="cf-search-input">
+            </div>
+
+            <div class="cf-badge-indicator">
+                <span class="cf-badge-dot"></span>
+                <span>Tìm thấy <b>{{ filteredCycles.length }}</b> lứa chăn nuôi</span>
             </div>
         </div>
 
-        <!-- Tabs Trạng thái với Badge -->
-        <div class="flex gap-2 border-b border-gray-200 pb-1 mb-5">
+        <!-- Tab Categories Status Switcher -->
+        <div class="cf-tabs">
             <button @click="setFilterStatus('')"
-                :class="filterStatus === '' 
-                    ? 'border-b-2 border-green-500 text-green-700 font-medium' 
-                    : 'text-gray-500 hover:text-gray-700'"
-                class="px-4 py-2 -mb-px transition-colors flex items-center gap-2">
-                Tất cả
-                <span class="bg-gray-100 text-gray-700 text-xs px-2 py-0.5 rounded-full">{{ cycles.length }}</span>
+                :class="{ active: filterStatus === '' }"
+                class="cf-tab-btn">
+                Tất cả đợt nuôi
+                <span class="cf-tab-btn-badge">{{ cycles.length }}</span>
             </button>
             <button @click="setFilterStatus('active')"
-                :class="filterStatus === 'active' 
-                    ? 'border-b-2 border-green-500 text-green-700 font-medium' 
-                    : 'text-gray-500 hover:text-gray-700'"
-                class="px-4 py-2 -mb-px transition-colors flex items-center gap-2">
-                🔄 Đang nuôi
-                <span class="bg-green-100 text-green-700 text-xs px-2 py-0.5 rounded-full">{{ activeCyclesCount }}</span>
+                :class="{ active: filterStatus === 'active', 'tab-emerald': true }"
+                class="cf-tab-btn">
+                🔄 Đang nuôi dưỡng
+                <span class="cf-tab-btn-badge">{{ activeCyclesCount }}</span>
             </button>
             <button @click="setFilterStatus('closed')"
-                :class="filterStatus === 'closed' 
-                    ? 'border-b-2 border-green-500 text-green-700 font-medium' 
-                    : 'text-gray-500 hover:text-gray-700'"
-                class="px-4 py-2 -mb-px transition-colors flex items-center gap-2">
-                ✅ Đã kết thúc
-                <span class="bg-gray-100 text-gray-600 text-xs px-2 py-0.5 rounded-full">{{ closedCyclesCount }}</span>
+                :class="{ active: filterStatus === 'closed' }"
+                class="cf-tab-btn">
+                ✅ Đã kết thúc chu kỳ
+                <span class="cf-tab-btn-badge">{{ closedCyclesCount }}</span>
             </button>
         </div>
 
-        <!-- Loading -->
-        <div v-if="loading" class="text-center py-16 text-gray-400">
-            <div class="inline-block animate-spin text-4xl mb-3">⏳</div>
-            <p class="text-gray-500">Đang tải dữ liệu...</p>
+        <!-- General Loader Grid -->
+        <div v-if="loading" class="cf-loading-box">
+            <div class="cf-spinner"></div>
+            <p class="cf-loading-text">Hệ thống đang đồng bộ dữ liệu nông trại...</p>
         </div>
 
-        <!-- Empty State -->
-        <div v-else-if="cycles.length === 0" class="bg-white rounded-2xl shadow-sm border border-gray-100 p-12 text-center">
-            <div class="text-6xl mb-4">🔄</div>
-            <h3 class="text-xl font-bold text-gray-800 mb-2">Chưa có đợt nuôi nào</h3>
-            <p class="text-gray-500 mb-6">Bắt đầu bằng cách tạo đợt nuôi đầu tiên</p>
-            <button @click="openForm" class="btn btn-primary px-6 py-2.5 rounded-xl">
+        <!-- Standard Empty Database State -->
+        <div v-else-if="cycles.length === 0" class="cf-empty-state">
+            <div class="cf-empty-icon-box">
+                <svg xmlns="http://www.w3.org/2000/svg" width="28" height="28" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linecap="round" stroke-linejoin="round">
+                    <path d="M21.5 2v6h-6M21.34 15.57a10 10 0 1 1-.57-8.38l5.67-5.67"/>
+                </svg>
+            </div>
+            <h3 class="cf-empty-title">Chưa ghi nhận đợt chăn nuôi nào</h3>
+            <p class="cf-empty-desc">
+                Hệ thống chưa tìm thấy chu kỳ nuôi gia cầm hoạn động trên cơ sở dữ liệu. Bắt đầu bằng cách tạo mới lứa nuôi.
+            </p>
+            <button @click="openForm" class="cf-btn-primary">
                 + Tạo đợt nuôi đầu tiên
             </button>
         </div>
 
-        <!-- Empty Filtered -->
-        <div v-else-if="filteredCycles.length === 0" class="bg-white rounded-2xl shadow-sm border border-gray-100 p-10 text-center">
-            <div class="text-4xl mb-3">🔍</div>
-            <p class="text-gray-500">Không tìm thấy đợt nuôi phù hợp</p>
-            <button @click="filterStatus = ''; filterBarn = ''; searchQuery = ''" class="mt-3 text-green-600 hover:underline text-sm">
-                Xóa bộ lọc
+        <!-- Filter No Results Found State -->
+        <div v-else-if="filteredCycles.length === 0" class="cf-empty-state">
+            <div class="cf-empty-icon-box">
+                <svg xmlns="http://www.w3.org/2000/svg" width="28" height="28" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linecap="round" stroke-linejoin="round">
+                    <circle cx="11" cy="11" r="8"/>
+                    <line x1="21" y1="21" x2="16.65" y2="16.65"/>
+                </svg>
+            </div>
+            <h3 class="cf-empty-title">Không tìm thấy lứa nuôi phù hợp</h3>
+            <p class="cf-empty-desc">Thử đặt lại tham số lọc hoặc đổi chuồng quan sát.</p>
+            <button @click="filterStatus = ''; filterBarn = ''; searchQuery = ''" class="cf-empty-reset">
+                Khôi phục mặc định bộ lọc
             </button>
         </div>
 
-        <!-- Danh sách đợt nuôi -->
+        <!-- Table Grid List -->
         <div v-else>
-            <!-- Desktop Table (từ md trở lên) -->
-            <div class="hidden md:block bg-white rounded-2xl shadow-sm border border-gray-100 overflow-hidden">
-                <div class="overflow-x-auto">
-                    <table class="w-full">
-                        <thead class="bg-gray-50 border-b border-gray-200">
-                            <tr>
-                                <th class="px-4 py-3 text-left text-xs font-medium text-gray-500 uppercase tracking-wider">Đợt nuôi</th>
-                                <th class="px-4 py-3 text-left text-xs font-medium text-gray-500 uppercase tracking-wider">Vị trí</th>
-                                <th class="px-4 py-3 text-left text-xs font-medium text-gray-500 uppercase tracking-wider">Giống</th>
-                                <th class="px-4 py-3 text-left text-xs font-medium text-gray-500 uppercase tracking-wider">Ngày bắt đầu</th>
-                                <th class="px-4 py-3 text-right text-xs font-medium text-gray-500 uppercase tracking-wider">Số lượng</th>
-                                <th class="px-4 py-3 text-center text-xs font-medium text-gray-500 uppercase tracking-wider">Ngày tuổi</th>
-                                <th class="px-4 py-3 text-center text-xs font-medium text-gray-500 uppercase tracking-wider">Tỷ lệ chết</th>
-                                <th class="px-4 py-3 text-center text-xs font-medium text-gray-500 uppercase tracking-wider">Trạng thái</th>
-                                <th class="px-4 py-3 text-right text-xs font-medium text-gray-500 uppercase tracking-wider"></th>
-                            </tr>
-                        </thead>
-                        <tbody class="divide-y divide-gray-100">
-                            <tr v-for="c in filteredCycles" :key="c.id" class="hover:bg-gray-50 transition">
-                                <td class="px-4 py-3">
-                                    <div class="font-semibold text-gray-900">{{ c.name || 'Đợt ' + c.id }}</div>
-                                    <div class="text-xs text-gray-400 font-mono">{{ c.code }}</div>
-                                </td>
-                                <td class="px-4 py-3">
-                                    <div class="font-medium text-gray-800">{{ getBarnName(c.barn_id) }}</div>
-                                    <div class="text-xs text-gray-400">{{ getFarmName(c.barn_id) }}</div>
-                                </td>
-                                <td class="px-4 py-3 text-gray-700">{{ c.breed || '-' }}</td>
-                                <td class="px-4 py-3 text-gray-700">{{ fmtDate(c.start_date) }}</td>
-                                <td class="px-4 py-3 text-right">
-                                    <span class="font-semibold">{{ fmtNum(c.current_count || c.initial_count) }}</span>
-                                    <span class="text-gray-400 text-sm"> / {{ fmtNum(c.initial_count) }}</span>
-                                </td>
-                                <td class="px-4 py-3 text-center">
-                                    <span v-if="c.status === 'active'" class="inline-flex items-center px-2.5 py-1 rounded-full text-xs font-medium bg-blue-50 text-blue-700">
-                                        Day {{ getDayAge(c.start_date) }}
+            <!-- Desktop Layout Table View -->
+            <div class="hidden md:block cf-table-container">
+                <table class="cf-table">
+                    <thead class="cf-table-thead">
+                        <tr>
+                            <th class="cf-table-th">Tên Đợt Nuôi</th>
+                            <th class="cf-table-th">Chuồng nuôi</th>
+                            <th class="cf-table-th">Loại Giống</th>
+                            <th class="cf-table-th">Ngày Khởi Tạo</th>
+                            <th class="cf-table-th text-right">Số Lượng Lũy Kế</th>
+                            <th class="cf-table-th text-center">Tuổi Đời</th>
+                            <th class="cf-table-th text-center">Độ Hao Hụt</th>
+                            <th class="cf-table-th text-center">Hành vi</th>
+                        </tr>
+                    </thead>
+                    <tbody>
+                        <tr v-for="c in filteredCycles" :key="c.id" class="cf-table-tr">
+                            <td class="cf-table-td">
+                                <div class="cf-primary-text">{{ c.name || 'Đợt nuôi #' + c.id }}</div>
+                                <div class="cf-secondary-text">Mã: {{ c.code || c.id }}</div>
+                            </td>
+                            <td class="cf-table-td">
+                                <div class="cf-primary-text">🏡 {{ getBarnName(c.barn_id) }}</div>
+                                <div class="cf-secondary-text">{{ getFarmName(c.barn_id) }}</div>
+                            </td>
+                            <td class="cf-table-td"><span class="cf-breed-tag">🧬 {{ c.breed || '-' }}</span></td>
+                            <td class="cf-table-td"><span class="cf-date-text">{{ fmtDate(c.start_date) }}</span></td>
+                            <td class="cf-table-td text-right">
+                                <div class="cf-count-text-row">
+                                    <span class="cf-count-val">{{ fmtNum(c.current_count || c.initial_count) }}</span>
+                                    <span class="cf-count-slash">/</span>
+                                    <span class="cf-count-total">{{ fmtNum(c.initial_count) }} con</span>
+                                </div>
+                            </td>
+                            <td class="cf-table-td text-center">
+                                <span v-if="c.status === 'active'" class="cf-age-pill">
+                                    🌱 {{ getDayAge(c.start_date) }} ngày
+                                </span>
+                                <span v-else class="cf-age-text-plain">{{ getDayAge(c.start_date) }} ngày tuổi</span>
+                            </td>
+                            <td class="cf-table-td text-center">
+                                <span :class="{ 'cf-mortality-badge': true, 'critical': parseFloat(getMortalityRate(c)) > 5 }">
+                                    {{ getMortalityRate(c) }}
+                                </span>
+                            </td>
+                            <td class="cf-table-td">
+                                <div class="cf-row-actions-flex">
+                                    <button v-if="c.status === 'active'" @click="openCloseModal(c)" class="cf-btn-close-cycle">
+                                        Khóa sổ / Kết thúc
+                                    </button>
+                                    <span v-else class="cf-done-text">
+                                        ✓ Hoàn thành
                                     </span>
-                                    <span v-else class="text-gray-500 text-sm">{{ getDayAge(c.start_date) }} ngày</span>
-                                </td>
-                                <td class="px-4 py-3 text-center">
-                                    <span :class="{
-                                        'text-red-600 font-medium': parseFloat(getMortalityRate(c)) > 5,
-                                        'text-gray-600': parseFloat(getMortalityRate(c)) <= 5 || getMortalityRate(c) === '-'
-                                    }">
-                                        {{ getMortalityRate(c) }}
-                                    </span>
-                                </td>
-                                <td class="px-4 py-3 text-center">
-                                    <span v-if="c.status === 'active'" class="inline-flex items-center px-2.5 py-1 rounded-full text-xs font-medium bg-green-100 text-green-700">
-                                        Đang nuôi
-                                    </span>
-                                    <span v-else class="inline-flex items-center px-2.5 py-1 rounded-full text-xs font-medium bg-gray-100 text-gray-600">
-                                        Kết thúc
-                                    </span>
-                                </td>
-                                <td class="px-4 py-3 text-right">
-                                    <div class="flex items-center justify-end gap-2">
-                                        <router-link :to="'/cycles/' + c.id"
-                                            class="text-sm bg-green-50 hover:bg-green-100 text-green-700 px-3 py-1.5 rounded-lg transition">
-                                            Chi tiết
-                                        </router-link>
-                                        <button v-if="c.status === 'active'"
-                                            @click="openCloseModal(c)"
-                                            class="text-sm bg-amber-50 hover:bg-amber-100 text-amber-700 px-3 py-1.5 rounded-lg transition">
-                                            Kết thúc
-                                        </button>
-                                    </div>
-                                </td>
-                            </tr>
-                        </tbody>
-                    </table>
-                </div>
+                                </div>
+                            </td>
+                        </tr>
+                    </tbody>
+                </table>
             </div>
 
-            <!-- Mobile Cards (dưới md) -->
-            <div class="md:hidden space-y-3">
-                <div v-for="c in filteredCycles" :key="c.id"
-                    class="bg-white rounded-xl shadow-sm border border-gray-100 p-4">
-                    <div class="flex items-start justify-between mb-3">
-                        <div class="flex items-center gap-3">
-                            <div class="w-12 h-12 rounded-xl flex items-center justify-center text-xl"
-                                :class="c.status === 'active' ? 'bg-green-100 text-green-600' : 'bg-gray-100 text-gray-500'">
+            <!-- Mobile View responsive cards stack layout -->
+            <div class="md:hidden cf-mobile-stack">
+                <div v-for="c in filteredCycles" :key="c.id" class="cf-mobile-card">
+                    <div class="cf-mobile-card-header">
+                        <div class="cf-mobile-card-row-top">
+                            <div class="cf-mobile-card-symbol" :class="{ 'active': c.status === 'active' }">
                                 🔄
                             </div>
                             <div>
-                                <div class="font-bold text-gray-900">{{ c.name || 'Đợt ' + c.id }}</div>
-                                <div class="text-sm text-gray-500">{{ getBarnName(c.barn_id) }} • {{ getFarmName(c.barn_id) }}</div>
+                                <div class="cf-primary-text">{{ c.name || 'Lứa nuôi #' + c.id }}</div>
+                                <div class="cf-secondary-text">🏡 {{ getBarnName(c.barn_id) }}</div>
                             </div>
                         </div>
-                        <span v-if="c.status === 'active'" class="px-2 py-1 bg-green-100 text-green-700 text-xs rounded-full font-medium">Đang nuôi</span>
-                        <span v-else class="px-2 py-1 bg-gray-100 text-gray-600 text-xs rounded-full font-medium">Kết thúc</span>
+                        <span v-if="c.status === 'active'" class="cf-mobile-badge-state active">Đang nuôi</span>
+                        <span v-else class="cf-mobile-badge-state closed">Đã đóng</span>
                     </div>
 
-                    <div class="grid grid-cols-3 gap-2 mb-4 text-sm">
-                        <div class="text-center p-2 bg-gray-50 rounded-lg">
-                            <div class="text-lg font-bold text-gray-800">{{ fmtNum(c.current_count || c.initial_count) }}</div>
-                            <div class="text-xs text-gray-500">con</div>
+                    <!-- Layout grid for mobile details metrics -->
+                    <div class="cf-mobile-stats-grid">
+                        <div class="cf-mobile-stat-col">
+                            <div class="cf-mobile-stat-lbl">Hiện có</div>
+                            <div class="cf-mobile-stat-val">{{ fmtNum(c.current_count || c.initial_count) }}</div>
                         </div>
-                        <div class="text-center p-2 bg-gray-50 rounded-lg">
-                            <div class="text-lg font-bold text-gray-800">{{ getDayAge(c.start_date) }}</div>
-                            <div class="text-xs text-gray-500">ngày tuổi</div>
+                        <div class="cf-mobile-stat-col">
+                            <div class="cf-mobile-stat-lbl">Ngày tuổi</div>
+                            <div class="cf-mobile-stat-val val-blue">{{ getDayAge(c.start_date) }}</div>
                         </div>
-                        <div class="text-center p-2 bg-gray-50 rounded-lg">
-                            <div class="text-lg font-bold" :class="parseFloat(getMortalityRate(c)) > 5 ? 'text-red-500' : 'text-gray-800'">
-                                {{ getMortalityRate(c) }}
-                            </div>
-                            <div class="text-xs text-gray-500">chết</div>
+                        <div class="cf-mobile-stat-col">
+                            <div class="cf-mobile-stat-lbl">Chết lọc</div>
+                            <div class="cf-mobile-stat-val" :class="{ 'val-rose': parseFloat(getMortalityRate(c)) > 5 }">{{ getMortalityRate(c) }}</div>
                         </div>
                     </div>
 
-                    <div class="flex items-center gap-2 text-xs text-gray-500 mb-3">
-                        <span>Giống: {{ c.breed || '-' }}</span>
-                        <span class="w-1 h-1 bg-gray-300 rounded-full"></span>
-                        <span>Bắt đầu: {{ fmtDate(c.start_date) }}</span>
+                    <div class="cf-mobile-details-list">
+                        <div class="cf-mobile-detail-row">
+                            <span>🧬 Giống:</span>
+                            <span class="cf-mobile-detail-val">{{ c.breed || '-' }}</span>
+                        </div>
+                        <div class="cf-mobile-detail-row">
+                            <span>📅 Bắt đầu:</span>
+                            <span class="cf-mobile-detail-val val-mono">{{ fmtDate(c.start_date) }}</span>
+                        </div>
+                        <div v-if="c.end_date" class="cf-mobile-detail-row">
+                            <span>🚪 Kết thúc:</span>
+                            <span class="cf-mobile-detail-val val-mono">{{ fmtDate(c.end_date) }}</span>
+                        </div>
                     </div>
 
-                    <div class="flex gap-2">
-                        <router-link :to="'/cycles/' + c.id"
-                            class="flex-1 text-center bg-green-50 hover:bg-green-100 text-green-700 font-medium py-2.5 rounded-lg transition text-sm">
-                            Chi tiết
-                        </router-link>
-                        <button v-if="c.status === 'active'"
-                            @click="openCloseModal(c)"
-                            class="flex-1 bg-amber-50 hover:bg-amber-100 text-amber-700 font-medium py-2.5 rounded-lg transition text-sm">
-                            Kết thúc
-                        </button>
-                    </div>
+                    <button v-if="c.status === 'active'" @click="openCloseModal(c)" class="cf-mobile-card-btn">
+                        Kết thúc chu kỳ nuôi
+                    </button>
                 </div>
             </div>
         </div>
 
-        <!-- Modal Tạo đợt nuôi mới -->
-        <Teleport to="body">
-            <div v-if="showModal" class="fixed inset-0 z-50 overflow-y-auto">
-                <div class="flex min-h-screen items-center justify-center p-4">
-                    <div class="fixed inset-0 bg-black/30 backdrop-blur-sm" @click="closeModal"></div>
-                    
-                    <div class="relative bg-white rounded-2xl shadow-xl w-full max-w-lg transform transition-all">
-                        <div class="px-6 py-5 border-b border-gray-100 flex items-center justify-between">
-                            <h3 class="text-xl font-bold text-gray-800">Tạo đợt nuôi mới</h3>
-                            <button @click="closeModal" class="text-gray-400 hover:text-gray-600 text-2xl leading-none">&times;</button>
+        <!-- TELEPORTED FORM MODAL: START NEW CYCLE -->
+        <teleport to="body">
+            <div v-if="showModal" class="cf-modal-overlay" @click.self="closeModal">
+                <div class="cf-modal-box">
+                    <!-- Header -->
+                    <div class="cf-modal-header">
+                        <div class="cf-modal-header-left">
+                            <div class="cf-modal-header-icon">
+                                <svg xmlns="http://www.w3.org/2000/svg" width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.5" stroke-linecap="round" stroke-linejoin="round">
+                                    <line x1="12" y1="5" x2="12" y2="19"></line>
+                                    <line x1="5" y1="12" x2="19" y2="12"></line>
+                                </svg>
+                            </div>
+                            <h3 class="cf-modal-title">Khởi tạo đợt/lứa nuôi mới</h3>
                         </div>
+                        <button @click="closeModal" class="cf-modal-close-btn">✕</button>
+                    </div>
 
-                        <form @submit.prevent="save" class="p-6 space-y-5">
-                            <div>
-                                <label class="block text-sm font-medium text-gray-700 mb-1">Chuồng <span class="text-red-500">*</span></label>
-                                <select v-model="form.barn_id" class="w-full px-4 py-2.5 border border-gray-300 rounded-xl focus:ring-2 focus:ring-green-500 focus:border-green-500" required>
-                                    <option value="" disabled>Chọn chuồng</option>
+                    <!-- Body -->
+                    <form @submit.prevent="save">
+                        <div class="cf-modal-body">
+                            <div class="cf-form-group">
+                                <label class="cf-label">
+                                    Chuồng đích tiếp nhận <span class="req">*</span>
+                                </label>
+                                <select v-model="form.barn_id" class="cf-modal-select" required>
+                                    <option value="" disabled>--- Chọn chuồng chăn nuôi chuẩn danh mục ---</option>
                                     <option v-for="b in availableBarns" :key="b.id" :value="b.id">
-                                        {{ b.name }} {{ hasActiveCycle(b.id) ? '(đang nuôi)' : '' }}
+                                        🏡 {{ b.name }} {{ hasActiveCycle(b.id) ? '(đang nuôi lứa phụ)' : '' }}
                                     </option>
                                 </select>
-                                <p v-if="form.barn_id && hasActiveCycle(form.barn_id)" class="text-xs text-amber-600 mt-1">
-                                    ⚠️ Chuồng này đang có đợt nuôi hoạt động
+                                <p v-if="form.barn_id && hasActiveCycle(form.barn_id)" class="cf-alert-message">
+                                    ⚠️ Chuồng này hiện có một đợt nuôi chưa khóa sổ, xin thận trọng!
                                 </p>
                             </div>
 
-                            <div>
-                                <label class="block text-sm font-medium text-gray-700 mb-1">Tên đợt nuôi</label>
-                                <input v-model="form.name" class="w-full px-4 py-2.5 border border-gray-300 rounded-xl focus:ring-2 focus:ring-green-500" placeholder="VD: Đợt 1 - T3/2026">
-                                <p class="text-xs text-gray-400 mt-1">Để trống để tự động tạo mã</p>
+                            <div class="cf-form-group">
+                                <label class="cf-label">Tên đợt gọi nhớ</label>
+                                <input v-model="form.name" class="cf-input" placeholder="Ví dụ: Lứa gà ta thả đồi T4/2026">
+                                <p class="cf-help-text">Để trống hệ thống sẽ tự sinh mã định danh</p>
                             </div>
 
-                            <div>
-                                <label class="block text-sm font-medium text-gray-700 mb-1">Giống</label>
-                                <input v-model="form.breed" class="w-full px-4 py-2.5 border border-gray-300 rounded-xl focus:ring-2 focus:ring-green-500" placeholder="VD: Gà Ri, Gà Lương Phượng...">
+                            <div class="cf-form-group">
+                                <label class="cf-label">Loại gà giống / giống loài</label>
+                                <input v-model="form.breed" class="cf-input" placeholder="Heo Landrace, Gà Tam Hoàng, Gà Úm Ri 1...">
                             </div>
 
-                            <div class="grid grid-cols-2 gap-4">
-                                <div>
-                                    <label class="block text-sm font-medium text-gray-700 mb-1">Số lượng <span class="text-red-500">*</span></label>
-                                    <input v-model.number="form.initial_count" type="number" class="w-full px-4 py-2.5 border border-gray-300 rounded-xl focus:ring-2 focus:ring-green-500" placeholder="1200" min="1" required>
+                            <div class="cf-form-grid-2">
+                                <div class="cf-form-group">
+                                    <label class="cf-label">
+                                        Quy mô nhập đàn <span class="req">*</span>
+                                    </label>
+                                    <input v-model.number="form.initial_count" type="number" class="cf-input" placeholder="Ví dụ: 1200" min="1" required>
                                 </div>
-                                <div>
-                                    <label class="block text-sm font-medium text-gray-700 mb-1">Ngày bắt đầu <span class="text-red-500">*</span></label>
-                                    <input v-model="form.start_date" type="date" class="w-full px-4 py-2.5 border border-gray-300 rounded-xl focus:ring-2 focus:ring-green-500" required>
+                                <div class="cf-form-group">
+                                    <label class="cf-label">
+                                        Ngày bắt đầu nuôi <span class="req">*</span>
+                                    </label>
+                                    <input v-model="form.start_date" type="date" class="cf-input" required>
+                                </div>
+                            </div>
+                        </div>
+
+                        <!-- Footer actions -->
+                        <div class="cf-modal-footer">
+                            <button type="button" @click="closeModal" class="cf-btn-secondary">Huỷ</button>
+                            <button type="submit" class="cf-btn-primary">Khởi tạo lứa nuôi</button>
+                        </div>
+                    </form>
+                </div>
+            </div>
+        </teleport>
+
+        <!-- TELEPORTED FORM MODAL: CLOSE / END ACTIVE CYCLE -->
+        <teleport to="body">
+            <div v-if="showCloseModal" class="cf-modal-overlay" @click.self="closeCloseModal">
+                <div class="cf-modal-box">
+                    <!-- Header -->
+                    <div class="cf-modal-header">
+                        <div class="cf-modal-header-left">
+                            <div class="cf-modal-header-icon" style="background-color: #fef3c7; color: #d97706;">
+                                <svg xmlns="http://www.w3.org/2000/svg" width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.5" stroke-linecap="round" stroke-linejoin="round">
+                                    <polyline points="20 6 9 17 4 12"></polyline>
+                                </svg>
+                            </div>
+                            <h3 class="cf-modal-title">Xác nhận kết thúc đợt chăn nuôi</h3>
+                        </div>
+                        <button @click="closeCloseModal" class="cf-modal-close-btn">✕</button>
+                    </div>
+
+                    <!-- Content -->
+                    <div v-if="cycleToClose">
+                        <div class="cf-modal-body" style="padding-bottom: 0;">
+                            <div class="cf-subinfo-box">
+                                <div class="cf-subinfo-title">{{ cycleToClose.name || 'Đợt nuôi #' + cycleToClose.id }}</div>
+                                <div class="cf-subinfo-meta">Chuồng nuôi hiện diện: <strong>🏡 {{ getBarnName(cycleToClose.barn_id) }}</strong></div>
+                                <div class="cf-subinfo-grid-2">
+                                    <div>• Khởi thủy: <strong>{{ fmtNum(cycleToClose.initial_count) }} con</strong></div>
+                                    <div>• Hiện trạng: <strong>{{ fmtNum(cycleToClose.current_count) }} con</strong></div>
+                                    <div>• Chu kỳ tuổi: <strong>{{ getDayAge(cycleToClose.start_date) }} ngày</strong></div>
+                                    <div>• Hao hụt tỷ lệ: <strong :class="{ 'text-rose-600': parseFloat(getMortalityRate(cycleToClose)) > 5 }">{{ getMortalityRate(cycleToClose) }}</strong></div>
+                                </div>
+                            </div>
+                        </div>
+
+                        <form @submit.prevent="confirmClose">
+                            <div class="cf-modal-body" style="padding-top: 1rem;">
+                                <div class="cf-form-group">
+                                    <label class="cf-label">
+                                        Ngày xuất chuồng kết lứa <span class="req">*</span>
+                                    </label>
+                                    <input v-model="closeForm.end_date" type="date" class="cf-input" required>
+                                </div>
+
+                                <div class="cf-form-group">
+                                    <label class="cf-label">Ghi chú xuất chuồng</label>
+                                    <textarea v-model="closeForm.notes" class="cf-textarea" rows="3" placeholder="Sản lượng xuất đạt kết quả cực ưu thế, cân nặng đều..."></textarea>
+                                </div>
+
+                                <div class="cf-form-group" style="padding-top: 0.25rem;">
+                                    <label for="force-prop" class="cf-checkbox-label">
+                                        <input v-model="closeForm.force" type="checkbox" id="force-prop" class="cf-checkbox">
+                                        <span class="cf-checkbox-text">Bỏ qua cảnh báo hệ thống kiểm tra cho ăn</span>
+                                    </label>
+                                    <p class="cf-help-text" style="color: #94a3b8; padding-left: 1.625rem;">Chỉ kích hoạt khi đợt nuôi được chốt dữ liệu khẩn cấp.</p>
                                 </div>
                             </div>
 
-                            <div class="flex justify-end gap-3 pt-4">
-                                <button type="button" @click="closeModal" class="px-5 py-2.5 border border-gray-300 rounded-xl text-gray-700 hover:bg-gray-50 transition">
-                                    Huỷ
-                                </button>
-                                <button type="submit" class="px-5 py-2.5 bg-green-600 hover:bg-green-700 text-white font-medium rounded-xl shadow-sm transition">
-                                    Tạo đợt nuôi
-                                </button>
+                            <!-- Footer actions -->
+                            <div class="cf-modal-footer">
+                                <button type="button" @click="closeCloseModal" class="cf-btn-secondary">Bỏ qua</button>
+                                <button type="submit" class="cf-btn-danger">Xác nhận đóng sổ</button>
                             </div>
                         </form>
                     </div>
                 </div>
             </div>
-        </Teleport>
-
-        <!-- Modal Kết thúc đợt nuôi -->
-        <Teleport to="body">
-            <div v-if="showCloseModal" class="fixed inset-0 z-50 overflow-y-auto">
-                <div class="flex min-h-screen items-center justify-center p-4">
-                    <div class="fixed inset-0 bg-black/30 backdrop-blur-sm" @click="closeCloseModal"></div>
-                    
-                    <div class="relative bg-white rounded-2xl shadow-xl w-full max-w-md transform transition-all">
-                        <div class="px-6 py-5 border-b border-gray-100 flex items-center justify-between">
-                            <h3 class="text-xl font-bold text-gray-800">Kết thúc đợt nuôi</h3>
-                            <button @click="closeCloseModal" class="text-gray-400 hover:text-gray-600 text-2xl leading-none">&times;</button>
-                        </div>
-
-                        <div v-if="cycleToClose" class="p-6 space-y-5">
-                            <div class="bg-gray-50 rounded-xl p-4 space-y-3">
-                                <div class="font-semibold text-gray-800 text-lg">
-                                    {{ cycleToClose.name || 'Đợt ' + cycleToClose.id }}
-                                </div>
-                                <div class="text-sm text-gray-600">
-                                    {{ getBarnName(cycleToClose.barn_id) }} • Bắt đầu: {{ fmtDate(cycleToClose.start_date) }}
-                                </div>
-                                <div class="grid grid-cols-2 gap-3 text-sm">
-                                    <div><span class="text-gray-500">Ban đầu:</span> <span class="font-medium">{{ fmtNum(cycleToClose.initial_count) }}</span></div>
-                                    <div><span class="text-gray-500">Hiện tại:</span> <span class="font-medium">{{ fmtNum(cycleToClose.current_count) }}</span></div>
-                                    <div><span class="text-gray-500">Ngày tuổi:</span> <span class="font-medium">{{ getDayAge(cycleToClose.start_date) }}</span></div>
-                                    <div><span class="text-gray-500">Tỷ lệ chết:</span> 
-                                        <span class="font-medium" :class="parseFloat(getMortalityRate(cycleToClose)) > 5 ? 'text-red-500' : ''">
-                                            {{ getMortalityRate(cycleToClose) }}
-                                        </span>
-                                    </div>
-                                </div>
-                            </div>
-
-                            <form @submit.prevent="confirmClose" class="space-y-4">
-                                <div>
-                                    <label class="block text-sm font-medium text-gray-700 mb-1">Ngày kết thúc <span class="text-red-500">*</span></label>
-                                    <input v-model="closeForm.end_date" type="date" class="w-full px-4 py-2.5 border border-gray-300 rounded-xl focus:ring-2 focus:ring-amber-500" required>
-                                </div>
-
-                                <div>
-                                    <label class="block text-sm font-medium text-gray-700 mb-1">Ghi chú</label>
-                                    <textarea v-model="closeForm.notes" class="w-full px-4 py-2.5 border border-gray-300 rounded-xl focus:ring-2 focus:ring-amber-500" rows="3" placeholder="Ghi chú kết thúc đợt nuôi (tuỳ chọn)"></textarea>
-                                </div>
-
-                                <div class="flex items-start gap-2">
-                                    <input v-model="closeForm.force" type="checkbox" id="force" class="mt-1 w-4 h-4 text-amber-500 rounded focus:ring-amber-500">
-                                    <label for="force" class="text-sm text-gray-700">
-                                        Bỏ qua kiểm tra dữ liệu cho ăn <br>
-                                        <span class="text-xs text-gray-400">Chỉ dùng khi đợt nuôi thực sự chưa có dữ liệu</span>
-                                    </label>
-                                </div>
-
-                                <div class="flex justify-end gap-3 pt-4">
-                                    <button type="button" @click="closeCloseModal" class="px-5 py-2.5 border border-gray-300 rounded-xl text-gray-700 hover:bg-gray-50">
-                                        Huỷ
-                                    </button>
-                                    <button type="submit" class="px-5 py-2.5 bg-amber-500 hover:bg-amber-600 text-white font-medium rounded-xl shadow-sm">
-                                        Xác nhận kết thúc
-                                    </button>
-                                </div>
-                            </form>
-                        </div>
-                    </div>
-                </div>
-            </div>
-        </Teleport>
+        </teleport>
     </div>
     `
 };
