@@ -231,7 +231,8 @@ class EquipmentService:
         rows = await db.fetch("""
             SELECT l.*, d.name as device_name, d.mqtt_topic
             FROM equipment_assignment_log l
-            LEFT JOIN devices d ON l.device_channel_id = d.id
+            LEFT JOIN equipment e ON l.equipment_id = e.id
+            LEFT JOIN devices d ON e.device_id = d.id
             WHERE l.equipment_id = $1
             ORDER BY l.changed_at DESC
             LIMIT $2
@@ -256,9 +257,12 @@ class EquipmentService:
     async def get_command_logs(self, equipment_id: int, limit: int = 50) -> list[dict]:
         """Get command history for equipment."""
         rows = await db.fetch("""
-            SELECT * FROM equipment_command_log
-            WHERE equipment_id = $1
-            ORDER BY recorded_at DESC
+            SELECT c.*, d.name as device_name
+            FROM equipment_command_log c
+            LEFT JOIN equipment e ON c.equipment_id = e.id
+            LEFT JOIN devices d ON e.device_id = d.id
+            WHERE c.equipment_id = $1
+            ORDER BY c.recorded_at DESC
             LIMIT $2
         """, equipment_id, limit)
         return [dict(r) for r in rows]

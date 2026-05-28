@@ -1,18 +1,14 @@
 /**
- * Equipment Page - Quản lý thiết bị cơ cấu
+ * Equipment Page V2 - Quản lý thiết bị cơ cấu (Phiên bản Thiết kế Cao cấp)
+ * - Quản lý loại thiết bị và cơ danh mục vật lý lắp đặt
+ * - Giao diện trực quan phân chia bố cục Desktop/Mobile chuẩn tinh tế
+ * - Tính năng gán kênh rơ-le điều khiển cho tủ thông minh ESP32
+ * - Thiết kế đồng bộ hoàn hảo với Phong cách Nông nghiệp Công nghệ cao
  */
-const { ref, reactive, onMounted, computed, onUnmounted } = Vue;
+const { ref, reactive, computed, onMounted } = Vue;
 
 return {
     setup() {
-        // ── Helpers ───────────────────────────────────
-        const __showToast = (msg, type = 'info') => {
-            if (window._showToast) window._showToast(msg, type);
-            else console.log(`[${type}] ${msg}`);
-        };
-        const _fmtDate = (d) => d ? new Date(d).toLocaleDateString('vi-VN') : '-';
-        const _fmtNum = (n, d = 2) => n ? Number(n).toFixed(d) : '-';
-
         // ── State ──────────────────────────────────────
         const barns = ref([]);
         const selectedBarnId = ref('');
@@ -29,6 +25,13 @@ return {
         const editingType = ref(null);
         const editingEquip = ref(null);
 
+        // Form Gán kênh
+        const assignForm = reactive({
+            device_id: '',
+            channel_number: '1'
+        });
+
+        // ── Computed ───────────────────────────────────
         const selectedBarn = computed(() =>
             barns.value.find(b => b.id == selectedBarnId.value)
         );
@@ -37,11 +40,17 @@ return {
             devices.value.filter(d => d.is_online)
         );
 
+        // ── Methods ────────────────────────────────────
         async function loadBarns() {
             try {
                 barns.value = await API.barns.list();
+                if (barns.value.length > 0 && !selectedBarnId.value) {
+                    selectedBarnId.value = barns.value[0].id;
+                }
             } catch (e) {
-                _showToast('Không thể tải danh sách chuồng', 'error');
+                if (typeof showToast === 'function') {
+                    showToast('Không thể tải danh sách chuồng nuôi', 'error');
+                }
             }
         }
 
@@ -49,7 +58,7 @@ return {
             try {
                 equipmentTypes.value = await API.equipment.listTypes();
             } catch (e) {
-                console.error('Failed to load equipment types', e);
+                console.error('Lỗi tải loại thiết bị:', e);
             }
         }
 
@@ -62,7 +71,9 @@ return {
                 loading.value = true;
                 equipment.value = await API.equipment.list(selectedBarnId.value);
             } catch (e) {
-                _showToast('Không thể tải thiết bị', 'error');
+                if (typeof showToast === 'function') {
+                    showToast('Không thể tải danh sách cơ cấu thành phần', 'error');
+                }
             } finally {
                 loading.value = false;
             }
@@ -74,159 +85,200 @@ return {
                 return;
             }
             try {
-                const all = await API.devices.list(selectedBarnId.value);
-                devices.value = all;
+                devices.value = await API.devices.list(selectedBarnId.value);
             } catch (e) {
-                console.error('Failed to load devices', e);
+                console.error('Lỗi tải thiết bị điều khiển:', e);
             }
         }
 
         async function onBarnChange() {
-            await loadEquipment();
-            await loadDevices();
+            selectedEquip.value = null;
+            await Promise.all([loadEquipment(), loadDevices()]);
         }
 
+        // ── Loại Thiết Bị (Equipment Types) ─────────────
         function openTypeModal(type = null) {
             editingType.value = type ? { ...type } : {
                 code: '', name: '', power_watts: null,
-                voltage_v: null, current_amp: null, description: '', mqtt_protocol: null
+                voltage_v: null, current_amp: null, description: ''
             };
             showTypeModal.value = true;
+        }
+
+        function closeTypeModal() {
+            showTypeModal.value = false;
+            editingType.value = null;
         }
 
         async function saveType() {
             const data = editingType.value;
             if (!data.code || !data.name) {
-                _showToast('Mã và tên không được trống', 'error');
+                if (typeof showToast === 'function') showToast('Mã loại và tên loại không được để trống', 'error');
                 return;
             }
             try {
                 if (data.id) {
                     await API.equipment.updateType(data.id, data);
-                    _showToast('Đã cập nhật loại thiết bị', 'success');
+                    if (typeof showToast === 'function') showToast('Cập nhật loại thiết bị thành công!', 'success');
                 } else {
                     await API.equipment.createType(data);
-                    _showToast('Đã tạo loại thiết bị mới', 'success');
+                    if (typeof showToast === 'function') showToast('Thêm mới loại thiết bị thành công!', 'success');
                 }
-                showTypeModal.value = false;
+                closeTypeModal();
                 await loadEquipmentTypes();
+                await loadEquipment();
             } catch (e) {
-                _showToast(`Lỗi: ${e.message}`, 'error');
+                if (typeof showToast === 'function') showToast(e.message || 'Lỗi lưu thông tin', 'error');
             }
         }
 
         async function deleteType(type) {
-            if (!confirm(`Xóa loại thiết bị "${type.name}"?`)) return;
+            if (!confirm(`Xác nhận xóa bỏ hoàn toàn loại thiết bị "${type.name}"?`)) return;
             try {
-                const result = await API.equipment.deleteType(type.id);
-                if (!result.ok) { _showToast(result.message, 'error'); return; }
-                _showToast('Đã xóa loại thiết bị', 'success');
+                await API.equipment.deleteType(type.id);
+                if (typeof showToast === 'function') showToast('Đã xóa bỏ loại thiết bị thành công!', 'success');
                 await loadEquipmentTypes();
+                await loadEquipment();
             } catch (e) {
-                _showToast(`Lỗi: ${e.message}`, 'error');
+                if (typeof showToast === 'function') showToast(e.message || 'Lỗi khi xóa', 'error');
             }
         }
 
+        // ── Thiết Bị Lắp Đặt (Equipment Instance) ────────
         function openEquipModal(equip = null) {
             editingEquip.value = equip ? { ...equip } : {
-                barn_id: selectedBarnId.value, equipment_type_id: null, name: '',
-                equipment_type: '', model: '', serial_no: '', power_watts: null,
-                status: 'active', install_date: null, warranty_until: null,
-                purchase_price: null, maintenance_interval_days: null, notes: ''
+                barn_id: selectedBarnId.value, equipment_type_id: '', name: '',
+                model: '', serial_no: '', power_watts: null, status: 'active',
+                install_date: new Date().toISOString().slice(0, 10), warranty_until: '', notes: ''
             };
             showEquipModal.value = true;
+        }
+
+        function closeEquipModal() {
+            showEquipModal.value = false;
+            editingEquip.value = null;
         }
 
         async function saveEquip() {
             const data = editingEquip.value;
             if (!data.name) {
-                _showToast('Tên thiết bị không được trống', 'error');
+                if (typeof showToast === 'function') showToast('Vui lòng điền tên định danh thiết bị', 'error');
                 return;
             }
             try {
                 if (data.id) {
                     await API.equipment.update(data.id, data);
-                    _showToast('Đã cập nhật thiết bị', 'success');
+                    if (typeof showToast === 'function') showToast('Cập nhật thông tin thiết bị thành công!', 'success');
                 } else {
                     data.barn_id = selectedBarnId.value;
                     await API.equipment.create(data);
-                    _showToast('Đã tạo thiết bị mới', 'success');
+                    if (typeof showToast === 'function') showToast('Lắp ráp lắp đặt thiết bị mới thành công!', 'success');
                 }
-                showEquipModal.value = false;
+                closeEquipModal();
                 await loadEquipment();
             } catch (e) {
-                _showToast(`Lỗi: ${e.message}`, 'error');
+                if (typeof showToast === 'function') showToast(e.message || 'Lỗi lưu thiết bị', 'error');
             }
         }
 
         async function deleteEquip(equip) {
-            if (!confirm(`Xóa thiết bị "${equip.name}"?`)) return;
+            if (!confirm(`Bạn chắc chắn muốn gỡ bỏ hoàn toàn thiết bị "${equip.name}" khỏi hệ thống chăn nuôi?`)) return;
             try {
-                const result = await API.equipment.delete(equip.id);
-                if (!result.ok) { _showToast(result.message, 'error'); return; }
-                _showToast('Đã xóa thiết bị', 'success');
+                await API.equipment.delete(equip.id);
+                if (typeof showToast === 'function') showToast('Đã gỡ bỏ hạ đặt thiết bị thành công!', 'success');
+                if (selectedEquip.value && selectedEquip.value.id === equip.id) {
+                    selectedEquip.value = null;
+                }
                 await loadEquipment();
             } catch (e) {
-                _showToast(`Lỗi: ${e.message}`, 'error');
+                if (typeof showToast === 'function') showToast(e.message || 'Lỗi khi xóa thiết bị', 'error');
             }
         }
 
+        // ── Gán Kênh Rơ-le (Channel Assignment) ──────────
         function openAssignModal(equip) {
             selectedEquip.value = equip;
+            assignForm.device_id = equip.device_id ? String(equip.device_id) : '';
+            assignForm.channel_number = equip.channel_number ? String(equip.channel_number) : '1';
             showAssignModal.value = true;
         }
 
-        async function assignChannel(deviceId, channelNumber) {
-            if (!selectedEquip.value) return;
+        function closeAssignModal() {
+            showAssignModal.value = false;
+        }
+
+        async function doAssignChannel() {
+            if (!selectedEquip.value || !assignForm.device_id) {
+                if (typeof showToast === 'function') showToast('Vui lòng chỉ định thiết bị ESP32 thu nhận', 'error');
+                return;
+            }
             try {
                 await API.equipment.assign(selectedEquip.value.id, {
-                    device_id: parseInt(deviceId),
-                    channel_number: parseInt(channelNumber),
+                    device_id: parseInt(assignForm.device_id),
+                    channel_number: parseInt(assignForm.channel_number),
                     changed_by: 'admin'
                 });
-                _showToast('Đã gán kênh thành công', 'success');
-                showAssignModal.value = false;
+                if (typeof showToast === 'function') showToast('Gán liên kết rơ-le thông minh thành công!', 'success');
+                closeAssignModal();
                 await loadEquipment();
-                await loadLogs(selectedEquip.value.id);
+                if (selectedEquip.value) {
+                    await onEquipClick(selectedEquip.value);
+                }
             } catch (e) {
-                _showToast(`Lỗi: ${e.message}`, 'error');
+                if (typeof showToast === 'function') showToast(e.message || 'Lỗi khi gán kênh điều khiển', 'error');
             }
         }
 
         async function unassignChannel(equip) {
-            if (!confirm(`Bỏ gán thiết bị "${equip.name}" khỏi kênh?`)) return;
+            if (!confirm(`Hủy gỡ liên kết điều khiển cơ cấu của thiết bị "${equip.name}"?`)) return;
             try {
                 await API.equipment.unassign(equip.id);
-                _showToast('Đã bỏ gán kênh', 'success');
+                if (typeof showToast === 'function') showToast('Đã hủy bỏ liên kết rơ-le điều khiển thành công!', 'success');
                 await loadEquipment();
-                await loadLogs(equip.id);
+                if (selectedEquip.value && selectedEquip.value.id === equip.id) {
+                    await onEquipClick(selectedEquip.value);
+                }
             } catch (e) {
-                _showToast(`Lỗi: ${e.message}`, 'error');
+                if (typeof showToast === 'function') showToast(e.message || 'Lỗi hủy gán kết nối', 'error');
             }
         }
 
-        async function loadLogs(equipmentId) {
-            try { logs.value = await API.equipment.logs(equipmentId); }
-            catch (e) { console.error('Failed to load assignment logs', e); }
+        // ── Logs Lịch Sử ──────────────────────────────────
+        async function loadLogs(id) {
+            try {
+                logs.value = await API.equipment.logs(id);
+            } catch (e) {
+                logs.value = [];
+            }
         }
 
-        async function loadCommandLogs(equipmentId) {
-            try { commandLogs.value = await API.equipment.commands(equipmentId); }
-            catch (e) { console.error('Failed to load command logs', e); }
+        async function loadCommandLogs(id) {
+            try {
+                commandLogs.value = await API.equipment.commands(id);
+            } catch (e) {
+                commandLogs.value = [];
+            }
         }
 
         async function onEquipClick(equip) {
             selectedEquip.value = equip;
-            await loadLogs(equip.id);
-            await loadCommandLogs(equip.id);
+            await Promise.all([loadLogs(equip.id), loadCommandLogs(equip.id)]);
+        }
+
+        function fmtNum(val) {
+            if (val === undefined || val === null) return '0';
+            return Number(val).toLocaleString('vi-VN');
+        }
+
+        function fmtDate(dateStr) {
+            if (!dateStr) return '-';
+            return new Date(dateStr).toLocaleDateString('vi-VN');
         }
 
         onMounted(async () => {
-            await loadBarns();
-            await loadEquipmentTypes();
+            await Promise.all([loadBarns(), loadEquipmentTypes()]);
             if (selectedBarnId.value) {
-                await loadEquipment();
-                await loadDevices();
+                await onBarnChange();
             }
         });
 
@@ -237,333 +289,439 @@ return {
             selectedEquip, logs, commandLogs,
             loading,
             showTypeModal, showEquipModal, showAssignModal,
-            editingType, editingEquip,
+            editingType, editingEquip, assignForm,
             onBarnChange,
-            openTypeModal, saveType, deleteType,
-            openEquipModal, saveEquip, deleteEquip,
-            openAssignModal, assignChannel, unassignChannel,
-            loadLogs, loadCommandLogs, onEquipClick,
-            fmtDate: _fmtDate,
-            fmtNum: _fmtNum,
+            openTypeModal, closeTypeModal, saveType, deleteType,
+            openEquipModal, closeEquipModal, saveEquip, deleteEquip,
+            openAssignModal, closeAssignModal, doAssignChannel, unassignChannel,
+            onEquipClick,
+            fmtNum,
+            fmtDate
         };
     },
 
     template: `
-    <div class="equipment-page" style="padding: 1.5rem; min-height: 100vh; background: var(--bg-page);">
-        <!-- Header -->
-        <div class="page-header">
-            <div style="display: flex; align-items: center; gap: 1rem;">
-                <div style="width: 3rem; height: 3rem; border-radius: 0.75rem; background: var(--primary); color: white; display: flex; align-items: center; justify-content: center; font-size: 1.5rem;">
-                    ⚙️
+    <div class="cf-container">
+
+        <!-- Header Section -->
+        <div class="cf-header-bar">
+            <div class="cf-header-left">
+                <div class="cf-header-icon" style="background-color: #4f46e5;">
+                    <svg xmlns="http://www.w3.org/2000/svg" width="22" height="22" viewBox="0 0 24 24" fill="none" stroke="white" stroke-width="2.2" stroke-linecap="round" stroke-linejoin="round">
+                        <path d="M15 14c.2-1 .7-1.7 1.5-2.5 1-.9 1.5-2.2 1.5-3.5A7 7 0 0 0 4 8c0 1.3.5 2.6 1.5 3.5.7.8 1.3 1.5 1.5 2.5"/>
+                        <path d="M9 18h6M10 22h4"/>
+                    </svg>
                 </div>
                 <div>
-                    <h2 class="page-title">Quản lý Cơ cấu</h2>
-                    <p style="font-size: 0.75rem; color: var(--text-muted); margin-top: 0.125rem;">Thiết bị chấp hành trong chuồng trại</p>
+                    <h1 class="cf-h1">Quản lý Thiết bị Cơ cấu</h1>
+                    <p class="cf-subtitle">Định hình cơ cấu chấp hành vật lý, liên kết rơ-le thông minh điều khiển tự động</p>
                 </div>
             </div>
-            <select v-model="selectedBarnId" @change="onBarnChange"
-                style="padding: 0.5rem 1rem; border-radius: var(--radius); border: 1px solid var(--border); background: white; font-size: 0.8125rem; cursor: pointer;">
-                <option value="">-- Chọn chuồng --</option>
-                <option v-for="b in barns" :key="b.id" :value="b.id">{{ b.name }}</option>
-            </select>
+
+            <div class="cf-select-wrapper" style="min-width: 14rem;">
+                <select v-model="selectedBarnId" @change="onBarnChange" class="cf-select" style="height: 2.625rem;">
+                    <option value="" disabled>-- Chọn chuồng quan sát --</option>
+                    <option v-for="b in barns" :key="b.id" :value="b.id">
+                        🏡 {{ b.name }} ({{ b.status === 'active' ? 'Đang nuôi' : 'Tạm dừng/Bảo trì' }})
+                    </option>
+                </select>
+                <div class="cf-select-icon-right">▼</div>
+            </div>
         </div>
 
-        <!-- Empty State -->
-        <div v-if="!selectedBarnId" class="empty-state">
-            <div class="icon">🏠</div>
-            <p>Vui lòng chọn chuồng để xem thiết bị cơ cấu</p>
+        <!-- Empty state when no barn is chosen -->
+        <div v-if="!selectedBarnId" class="cf-empty-state" style="padding: 5rem 2rem;">
+            <div class="cf-empty-icon-box" style="background-color: #e0e7ff; color: #4338ca;">🏡</div>
+            <h3 class="cf-empty-title">Chuồng nuôi chưa được chọn</h3>
+            <p class="cf-empty-desc">Vui lòng chọn một chuồng chăn nuôi từ danh sách bộ lọc để tiếp tục giám sát cơ cấu chấp hành</p>
         </div>
 
-        <!-- Main Content -->
+        <!-- Main Workspace -->
         <div v-else>
-            <!-- Equipment Types Card -->
-            <div class="card" style="margin-bottom: 1.5rem;">
-                <div style="display: flex; align-items: center; justify-content: space-between; margin-bottom: 1rem;">
-                    <div style="display: flex; align-items: center; gap: 0.75rem;">
-                        <span style="font-size: 1.25rem;">📋</span>
-                        <h3 style="font-weight: 700; color: var(--text-primary);">Loại thiết bị</h3>
-                        <span class="badge badge-gray">{{ equipmentTypes.length }}</span>
+
+            <!-- ── SECTION 1: EQUIPMENT TYPES REGISTRY ── -->
+            <div class="cf-card" style="padding: 1.5rem; margin-bottom: 1.5rem;">
+                <div class="cf-section-header">
+                    <div class="cf-section-header-left">
+                        <span class="cf-section-icon">📋</span>
+                        <h2 class="cf-section-title">Danh mục Loại thiết bị chấp hành</h2>
+                        <span class="cf-tab-btn-badge" style="background-color: #eef2ff; color: #4f46e5;">{{ equipmentTypes.length }} chủng loại</span>
                     </div>
-                    <button @click="openTypeModal()" class="btn btn-primary">
-                        <span>+</span> Thêm loại
+                    <button @click="openTypeModal()" class="cf-btn-primary" style="background-color: #4f46e5;">
+                        + Thêm chủng loại
                     </button>
                 </div>
-                <div v-if="equipmentTypes.length === 0" style="text-align: center; padding: 2rem; color: var(--text-muted);">
-                    Chưa có loại thiết bị nào
+
+                <div v-if="equipmentTypes.length === 0" class="cf-empty-inline">
+                    Hệ thống chưa ghi nhận chủng loại thiết bị kỹ thuật nào.
                 </div>
-                <div v-else style="display: grid; grid-template-columns: repeat(auto-fill, minmax(280px, 1fr)); gap: 1rem;">
-                    <div v-for="t in equipmentTypes" :key="t.id" class="card" style="padding: 1rem; cursor: pointer; transition: all 0.15s;">
-                        <div style="display: flex; align-items: center; justify-content: space-between;">
-                            <div style="display: flex; align-items: center; gap: 0.75rem;">
-                                <div style="width: 2.5rem; height: 2.5rem; border-radius: 0.5rem; background: var(--primary-50); display: flex; align-items: center; justify-content: center; font-size: 1.25rem;">🔧</div>
-                                <div>
-                                    <div style="font-weight: 600; color: var(--text-primary);">{{ t.name }}</div>
-                                    <div style="display: flex; align-items: center; gap: 0.5rem; margin-top: 0.25rem;">
-                                        <span class="badge badge-gray font-mono" style="font-size: 0.625rem;">{{ t.code }}</span>
-                                        <span v-if="t.power_watts" class="badge badge-yellow" style="font-size: 0.625rem;">{{ t.power_watts }}W</span>
+                <div v-else class="cf-types-grid">
+                    <div v-for="t in equipmentTypes" :key="t.id" class="cf-type-card">
+                        <div class="cf-type-card-header">
+                            <div class="cf-type-icon">⚙️</div>
+                            <div class="cf-type-info">
+                                <div class="cf-type-name">{{ t.name }}</div>
+                                <div class="cf-type-code">{{ t.code }}</div>
+                            </div>
+                            <div class="cf-type-card-actions">
+                                <button @click.stop="openTypeModal(t)" title="Sửa">✏️</button>
+                                <button @click.stop="deleteType(t)" title="Xóa">🗑️</button>
+                            </div>
+                        </div>
+                        <div class="cf-type-card-footer">
+                            <span class="cf-type-label">Công suất định mức:</span>
+                            <span v-if="t.power_watts" class="cf-type-power">{{ t.power_watts }} W</span>
+                            <span v-else class="cf-type-none">-</span>
+                        </div>
+                    </div>
+                </div>
+            </div>
+
+            <!-- ── SECTION 2: INSTALLED EQUIPMENT IN THE BARN ── -->
+            <div class="cf-equip-main-grid">
+
+                <!-- Equipment List Column (Left) -->
+                <div class="cf-card" style="padding: 1.5rem;">
+                    <div class="cf-section-header">
+                        <div class="cf-section-header-left">
+                            <span class="cf-section-icon">🔌</span>
+                            <h2 class="cf-section-title">Cơ cấu chấp hành vật lý lắp đặt</h2>
+                            <span class="cf-tab-btn-badge">{{ equipment.length }} thiết bị</span>
+                        </div>
+                        <button @click="openEquipModal()" class="cf-btn-primary">
+                            + Lắp đặt thiết bị
+                        </button>
+                    </div>
+
+                    <div v-if="loading" class="cf-loading-box">
+                        <div class="cf-spinner"></div>
+                        <p class="cf-loading-text">Đang nạp dữ liệu cơ cấu vật tư...</p>
+                    </div>
+                    <div v-else-if="equipment.length === 0" class="cf-empty-inline">
+                        🏡 Chưa lắp đặt bất kỳ phụ tải cơ cấu cơ sở nào trong chuồng này.
+                    </div>
+                    <div v-else class="cf-equip-list">
+                        <div v-for="e in equipment" :key="e.id"
+                             @click="onEquipClick(e)"
+                             :class="['cf-equip-card', selectedEquip && selectedEquip.id === e.id ? 'selected' : '']">
+
+                            <div class="cf-equip-card-row">
+                                <div class="cf-equip-left">
+                                    <div class="cf-equip-icon-wrap">
+                                        <div class="cf-equip-icon">⚙️</div>
+                                        <span :class="['cf-status-dot',
+                                            e.status === 'active' ? 'online' :
+                                            e.status === 'maintenance' ? 'maintenance' : 'offline']"></span>
+                                    </div>
+                                    <div class="cf-equip-info">
+                                        <div class="cf-equip-name-row">
+                                            <span class="cf-primary-text">{{ e.name }}</span>
+                                            <span :class="['cf-badge-status', e.status]">
+                                                {{ e.status === 'active' ? 'Đang bật' : e.status === 'maintenance' ? 'Bảo trì' : 'Đang tắt' }}
+                                            </span>
+                                        </div>
+                                        <div class="cf-equip-meta">
+                                            <span>Loại: <b>{{ e.type_name || e.equipment_type || 'Chưa định nghĩa' }}</b></span>
+                                            <span v-if="e.power_watts" class="cf-equip-power">{{ e.power_watts }}W</span>
+                                        </div>
+                                    </div>
+                                </div>
+
+                                <div class="cf-equip-actions">
+                                    <div v-if="e.device_id" class="cf-device-links">
+                                        <span class="cf-device-chip device">{{ e.device_name || 'ESP32' }}</span>
+                                        <span class="cf-device-chip channel">Kênh {{ e.channel_number }}</span>
+                                        <button @click.stop="unassignChannel(e)" class="cf-btn-sm cf-btn-unassign" title="Bỏ gán">✕</button>
+                                    </div>
+                                    <div v-else>
+                                        <button @click.stop="openAssignModal(e)" class="cf-btn-sm cf-btn-assign">🔗 Gán kênh</button>
+                                    </div>
+                                    <div class="cf-row-actions">
+                                        <button @click.stop="openEquipModal(e)" class="cf-btn-ghost-sm">✏️</button>
+                                        <button @click.stop="deleteEquip(e)" class="cf-btn-ghost-sm danger">🗑️</button>
                                     </div>
                                 </div>
                             </div>
-                            <div style="display: flex; gap: 0.25rem;">
-                                <button @click.stop="openTypeModal(t)" class="btn btn-ghost" title="Sửa">✏️</button>
-                                <button @click.stop="deleteType(t)" class="btn btn-ghost" style="color: #dc2626;" title="Xóa">🗑️</button>
-                            </div>
                         </div>
                     </div>
                 </div>
-            </div>
 
-            <!-- Equipment List Card -->
-            <div class="card" style="margin-bottom: 1.5rem;">
-                <div style="display: flex; align-items: center; justify-content: space-between; margin-bottom: 1rem;">
-                    <div style="display: flex; align-items: center; gap: 0.75rem;">
-                        <span style="font-size: 1.25rem;">🔌</span>
-                        <h3 style="font-weight: 700; color: var(--text-primary);">Thiết bị trong chuồng</h3>
-                        <span class="badge badge-gray">{{ equipment.length }}</span>
+                <!-- Right Details Inspection Sidebar Column -->
+                <div class="cf-equip-sidebar">
+                    <div v-if="!selectedEquip" class="cf-card" style="text-align: center; padding: 3rem 1.5rem;">
+                        <span style="font-size: 2rem; display: block; margin-bottom: 0.75rem;">🔍</span>
+                        <h3 class="cf-empty-title" style="font-size: 0.75rem;">Thông tin giám định cơ cấu</h3>
+                        <p class="cf-empty-desc">Ấn chọn trực tiếp vào một phụ tải cơ cấu bên trái để truy xuất lịch sử điều khiển.</p>
                     </div>
-                    <button @click="openEquipModal()" class="btn btn-primary">
-                        <span>+</span> Thêm thiết bị
-                    </button>
-                </div>
-                <div v-if="loading" style="text-align: center; padding: 2rem;">
-                    <div style="width: 2rem; height: 2rem; border: 3px solid var(--primary); border-top-color: transparent; border-radius: 50%; animation: spin 0.8s linear infinite; display: inline-block;"></div>
-                </div>
-                <div v-else-if="equipment.length === 0" style="text-align: center; padding: 2rem; color: var(--text-muted);">
-                    Chưa có thiết bị nào trong chuồng này
-                </div>
-                <div v-else style="display: flex; flex-direction: column; gap: 0.75rem;">
-                    <div v-for="e in equipment" :key="e.id"
-                        @click="onEquipClick(e)"
-                        class="card" style="padding: 1rem; cursor: pointer; transition: all 0.15s;">
-                        <div style="display: flex; align-items: center; justify-content: space-between; flex-wrap: wrap; gap: 1rem;">
-                            <div style="display: flex; align-items: center; gap: 1rem;">
-                                <div style="position: relative;">
-                                    <div style="width: 3rem; height: 3rem; border-radius: 0.75rem; background: var(--primary-50); display: flex; align-items: center; justify-content: center; font-size: 1.25rem;">⚙️</div>
-                                    <div v-if="e.status === 'active'" style="position: absolute; top: -2px; right: -2px; width: 0.75rem; height: 0.75rem; background: var(--primary-light); border-radius: 50%; border: 2px solid white;"></div>
-                                </div>
-                                <div>
-                                    <div style="display: flex; align-items: center; gap: 0.5rem;">
-                                        <span style="font-weight: 600; color: var(--text-primary);">{{ e.name }}</span>
-                                        <span :class="{
-                                            'badge': true,
-                                            'badge-green': e.status === 'active',
-                                            'badge-red': e.status === 'inactive',
-                                            'badge-yellow': e.status === 'maintenance'
-                                        }">
-                                            {{ e.status === 'active' ? 'Hoạt động' : e.status === 'inactive' ? 'Dừng' : 'Bảo trì' }}
-                                        </span>
+
+                    <div v-else class="cf-card" style="padding: 1.5rem;">
+                        <div class="cf-detail-header">
+                            <h3 class="cf-detail-title">
+                                <span>⚡ Giám định:</span>
+                                <span class="cf-detail-name">{{ selectedEquip.name }}</span>
+                            </h3>
+                            <button @click="selectedEquip = null" class="cf-modal-close-btn">✕</button>
+                        </div>
+
+                        <div class="cf-info-grid-4">
+                            <div class="cf-info-cell">
+                                <div class="cf-info-cell-label">Chủng loại</div>
+                                <div class="cf-info-cell-val">{{ selectedEquip.type_name || selectedEquip.equipment_type || '-' }}</div>
+                            </div>
+                            <div class="cf-info-cell">
+                                <div class="cf-info-cell-label">Model</div>
+                                <div class="cf-info-cell-val">{{ selectedEquip.model || '-' }}</div>
+                            </div>
+                            <div class="cf-info-cell">
+                                <div class="cf-info-cell-label">Ký hiệu Serial</div>
+                                <div class="cf-info-cell-val mono">{{ selectedEquip.serial_no || '-' }}</div>
+                            </div>
+                            <div class="cf-info-cell">
+                                <div class="cf-info-cell-label">Hệ số tiêu thụ</div>
+                                <div class="cf-info-cell-val power">{{ selectedEquip.power_watts ? selectedEquip.power_watts + ' Watt' : '-' }}</div>
+                            </div>
+                        </div>
+
+                        <div class="cf-detail-meta">
+                            <div class="cf-detail-meta-row">
+                                <span class="cf-meta-label">📅 Ngày lắp đặt:</span>
+                                <span class="cf-meta-val mono">{{ fmtDate(selectedEquip.install_date) }}</span>
+                            </div>
+                            <div class="cf-detail-meta-row">
+                                <span class="cf-meta-label">🛡️ Bảo hành đến:</span>
+                                <span class="cf-meta-val mono">{{ selectedEquip.warranty_until ? fmtDate(selectedEquip.warranty_until) : 'Không rõ' }}</span>
+                            </div>
+                            <div v-if="selectedEquip.notes" class="cf-detail-notes">
+                                <span class="cf-meta-label">📝 Ghi chú:</span>
+                                <p class="cf-notes-text">{{ selectedEquip.notes }}</p>
+                            </div>
+                        </div>
+
+                        <div class="cf-logs-section">
+                            <div class="cf-logs-section-header">
+                                <span>🔗 Lịch sử kết cấu kênh rơ-le</span>
+                                <span class="cf-log-count">({{ logs.length }})</span>
+                            </div>
+                            <div class="cf-logs-box">
+                                <div v-for="log in logs" :key="log.id" class="cf-log-row">
+                                    <div class="cf-log-row-left">
+                                        <span :class="['cf-log-action', log.action]">{{ log.action === 'assign' ? 'Gán' : 'Gỡ' }}</span>
+                                        <span class="cf-log-device">Tủ: {{ log.device_name || 'ESP32' }} (C:{{ log.device_channel_id }})</span>
                                     </div>
-                                    <div style="font-size: 0.75rem; color: var(--text-muted); margin-top: 0.25rem;">{{ e.type_name || e.equipment_type || 'Chưa phân loại' }}</div>
+                                    <span class="cf-log-date">{{ fmtDate(log.changed_at) }}</span>
+                                </div>
+                                <div v-if="logs.length === 0" class="cf-log-empty">Chưa có hoạt động liên kết thiết bị.</div>
+                            </div>
+                        </div>
+
+                        <div class="cf-logs-section">
+                            <div class="cf-logs-section-header">
+                                <span>🎛️ Nhật ký điều khiển cơ tử</span>
+                                <span class="cf-log-count">({{ commandLogs.length }})</span>
+                            </div>
+                            <div class="cf-logs-box">
+                                <div v-for="cmd in commandLogs" :key="cmd.id" class="cf-log-row">
+                                    <div class="cf-log-row-left">
+                                        <span :class="['cf-log-cmd', cmd.command === 'ON' ? 'on' : 'off']">{{ cmd.command }}</span>
+                                        <span v-if="cmd.value" class="cf-log-value">Giá trị: {{ cmd.value }}</span>
+                                        <span class="cf-log-meta">Bởi: {{ cmd.triggered_by }}</span>
+                                    </div>
+                                    <span class="cf-log-date">{{ fmtDate(cmd.recorded_at) }}</span>
+                                </div>
+                                <div v-if="commandLogs.length === 0" class="cf-log-empty">Chưa ghi nhận lệnh chấp hành điện tử nào.</div>
+                            </div>
+                        </div>
+                    </div>
+                </div>
+            </div>
+        </div>
+
+        <!-- ── TELEPORTED MODAL: EQUIPMENT TYPE CREATE/EDIT ── -->
+        <teleport to="body">
+            <div v-if="showTypeModal" class="cf-modal-overlay" @click.self="closeTypeModal">
+                <div class="cf-modal-box" style="max-width: 28rem;">
+                    <div class="cf-modal-header">
+                        <div class="cf-modal-header-left">
+                            <div class="cf-modal-header-icon" style="background-color: #e0e7ff; color: #4338ca;">⚙️</div>
+                            <h3 class="cf-modal-title">{{ editingType.id ? 'Sửa thông số loại cơ cấu' : 'Thêm mới loại cơ cấu' }}</h3>
+                        </div>
+                        <button @click="closeTypeModal" class="cf-modal-close-btn">✕</button>
+                    </div>
+
+                    <form @submit.prevent="saveType">
+                        <div class="cf-modal-body">
+                            <div class="cf-form-group">
+                                <label class="cf-label">Mã chủng loại <span class="req">*</span></label>
+                                <input v-model="editingType.code" type="text" class="cf-input font-mono uppercase" placeholder="Ví dụ: FAN_150W_A1" required :disabled="!!editingType.id">
+                            </div>
+
+                            <div class="cf-form-group">
+                                <label class="cf-label">Tên gọi loại thiết bị <span class="req">*</span></label>
+                                <input v-model="editingType.name" type="text" class="cf-input" placeholder="Ví dụ: Quạt mát khép kín công nghiệp" required>
+                            </div>
+
+                            <div class="cf-col-grid-3">
+                                <div class="cf-form-group">
+                                    <label class="cf-label">Công suất (W)</label>
+                                    <input v-model.number="editingType.power_watts" type="number" class="cf-input font-mono" placeholder="250">
+                                </div>
+                                <div class="cf-form-group">
+                                    <label class="cf-label">Điện áp (V)</label>
+                                    <input v-model.number="editingType.voltage_v" type="number" class="cf-input font-mono" placeholder="220">
+                                </div>
+                                <div class="cf-form-group">
+                                    <label class="cf-label">Dòng điện (A)</label>
+                                    <input v-model.number="editingType.current_amp" type="number" step="0.01" class="cf-input font-mono" placeholder="1.15">
                                 </div>
                             </div>
-                            <div style="display: flex; align-items: center; gap: 0.75rem;">
-                                <template v-if="e.device_id">
-                                    <span class="badge badge-blue">{{ e.device_name || 'Device' }}</span>
-                                    <span class="badge badge-blue" style="background: #cffafe; color: #0e7490;">Kênh {{ e.channel_number }}</span>
-                                    <button @click.stop="unassignChannel(e)" class="btn btn-sm" style="color: #dc2626;">Bỏ gán</button>
-                                </template>
-                                <template v-else>
-                                    <span style="color: var(--text-muted); font-size: 0.75rem;">Chưa gán kênh</span>
-                                    <button @click.stop="openAssignModal(e)" class="btn btn-primary btn-sm">Gán kênh</button>
-                                </template>
-                                <div style="display: flex; gap: 0.25rem;">
-                                    <button @click.stop="openEquipModal(e)" class="btn btn-ghost">✏️</button>
-                                    <button @click.stop="deleteEquip(e)" class="btn btn-ghost" style="color: #dc2626;">🗑️</button>
+
+                            <div class="cf-form-group">
+                                <label class="cf-label">Mô tả đặc điểm kỹ thuật</label>
+                                <textarea v-model="editingType.description" class="cf-textarea" rows="3" placeholder="Sử dụng động cơ lõi đồng, tiêu chuẩn tiết kiệm điện năng..."></textarea>
+                            </div>
+                        </div>
+
+                        <div class="cf-modal-footer">
+                            <button type="button" @click="closeTypeModal" class="cf-btn-secondary">Bỏ qua</button>
+                            <button type="submit" class="cf-btn-primary" style="background-color: #4f46e5;">Lưu thông số</button>
+                        </div>
+                    </form>
+                </div>
+            </div>
+        </teleport>
+
+        <!-- ── TELEPORTED MODAL: EQUIPMENT INSTANCE CREATE/EDIT ── -->
+        <teleport to="body">
+            <div v-if="showEquipModal" class="cf-modal-overlay" @click.self="closeEquipModal">
+                <div class="cf-modal-box">
+                    <div class="cf-modal-header">
+                        <div class="cf-modal-header-left">
+                            <div class="cf-modal-header-icon">🔌</div>
+                            <h3 class="cf-modal-title">{{ editingEquip.id ? 'Cập nhật thông tin thiết bị phụ tải' : 'Thêm thiết bị phụ tải lắp đặt' }}</h3>
+                        </div>
+                        <button @click="closeEquipModal" class="cf-modal-close-btn">✕</button>
+                    </div>
+
+                    <form @submit.prevent="saveEquip">
+                        <div class="cf-modal-body">
+                            <div class="cf-form-group">
+                                <label class="cf-label">Bí danh/Tên gọi thiết bị lắp <span class="req">*</span></label>
+                                <input v-model="editingEquip.name" type="text" class="cf-input" placeholder="Ví dụ: Quạt phun sương dãy trái số 1" required>
+                            </div>
+
+                            <div class="cf-form-group">
+                                <label class="cf-label">Chủng loại danh mục</label>
+                                <select v-model="editingEquip.equipment_type_id" class="cf-modal-select">
+                                    <option value="">-- Chọn loại danh mục cấp --</option>
+                                    <option v-for="t in equipmentTypes" :key="t.id" :value="t.id">{{ t.name }} ({{ t.code }})</option>
+                                </select>
+                            </div>
+
+                            <div class="cf-col-grid-2">
+                                <div class="cf-form-group">
+                                    <label class="cf-label">Mã Model</label>
+                                    <input v-model="editingEquip.model" type="text" class="cf-input" placeholder="Ví dụ: SF-2026">
+                                </div>
+                                <div class="cf-form-group">
+                                    <label class="cf-label">Số Serial sản xuất</label>
+                                    <input v-model="editingEquip.serial_no" type="text" class="cf-input font-mono" placeholder="Ví dụ: SN-928421">
                                 </div>
                             </div>
-                        </div>
-                    </div>
-                </div>
-            </div>
 
-            <!-- Detail Panel -->
-            <div v-if="selectedEquip" class="card" style="position: sticky; top: 1rem;">
-                <div style="display: flex; align-items: center; justify-content: space-between; padding-bottom: 1rem; border-bottom: 1px solid var(--border-light); margin-bottom: 1rem;">
-                    <div style="display: flex; align-items: center; gap: 0.75rem;">
-                        <span style="font-size: 1.25rem;">📄</span>
-                        <h3 style="font-weight: 700; color: var(--text-primary);">Chi tiết: {{ selectedEquip.name }}</h3>
-                    </div>
-                    <button @click="selectedEquip = null" class="btn btn-ghost">✕</button>
-                </div>
-                <div style="display: grid; grid-template-columns: repeat(4, 1fr); gap: 0.75rem; margin-bottom: 1.5rem;">
-                    <div style="padding: 0.75rem; background: var(--bg-page); border-radius: var(--radius);">
-                        <div style="font-size: 0.6875rem; color: var(--text-muted); margin-bottom: 0.25rem;">Loại</div>
-                        <div style="font-weight: 600; color: var(--text-primary); font-size: 0.8125rem;">{{ selectedEquip.type_name || '-' }}</div>
-                    </div>
-                    <div style="padding: 0.75rem; background: var(--bg-page); border-radius: var(--radius);">
-                        <div style="font-size: 0.6875rem; color: var(--text-muted); margin-bottom: 0.25rem;">Model</div>
-                        <div style="font-weight: 600; color: var(--text-primary); font-size: 0.8125rem;">{{ selectedEquip.model || '-' }}</div>
-                    </div>
-                    <div style="padding: 0.75rem; background: var(--bg-page); border-radius: var(--radius);">
-                        <div style="font-size: 0.6875rem; color: var(--text-muted); margin-bottom: 0.25rem;">Serial</div>
-                        <div style="font-weight: 600; color: var(--text-primary); font-size: 0.8125rem;">{{ selectedEquip.serial_no || '-' }}</div>
-                    </div>
-                    <div style="padding: 0.75rem; background: var(--bg-page); border-radius: var(--radius);">
-                        <div style="font-size: 0.6875rem; color: var(--text-muted); margin-bottom: 0.25rem;">Công suất</div>
-                        <div style="font-weight: 600; color: var(--text-primary); font-size: 0.8125rem;">{{ selectedEquip.power_watts ? selectedEquip.power_watts + 'W' : '-' }}</div>
-                    </div>
-                </div>
-                <div style="margin-bottom: 1rem;">
-                    <h4 style="font-size: 0.8125rem; font-weight: 600; color: var(--text-primary); margin-bottom: 0.5rem;">📜 Lịch sử gán kênh</h4>
-                    <div style="background: var(--bg-page); border-radius: var(--radius); padding: 0.75rem; max-height: 150px; overflow-y: auto;">
-                        <div v-for="log in logs" :key="log.id" style="display: flex; align-items: center; justify-content: space-between; padding: 0.5rem 0; border-bottom: 1px solid var(--border-light);">
-                            <div style="display: flex; align-items: center; gap: 0.5rem;">
-                                <span :class="{'badge': true, 'badge-green': log.action === 'assign', 'badge-red': log.action === 'unassign'}">
-                                    {{ log.action === 'assign' ? 'Gán' : 'Bỏ gán' }}
-                                </span>
-                                <span style="font-size: 0.75rem; color: var(--text-secondary);">Kênh {{ log.device_channel_id }}</span>
+                            <div class="cf-col-grid-2">
+                                <div class="cf-form-group">
+                                    <label class="cf-label">Công suất thực (W)</label>
+                                    <input v-model.number="editingEquip.power_watts" type="number" class="cf-input font-mono" placeholder="150">
+                                </div>
+                                <div class="cf-form-group">
+                                    <label class="cf-label">Trạng thái kỹ thuật</label>
+                                    <select v-model="editingEquip.status" class="cf-modal-select">
+                                        <option value="active">Hoạt động tự do</option>
+                                        <option value="inactive">Đang tạm tắt</option>
+                                        <option value="maintenance">Đang bảo trì định kỳ</option>
+                                    </select>
+                                </div>
                             </div>
-                            <span style="font-size: 0.6875rem; color: var(--text-muted);">{{ fmtDate(log.changed_at) }}</span>
-                        </div>
-                        <div v-if="logs.length === 0" style="text-align: center; padding: 1rem; color: var(--text-muted);">Chưa có lịch sử</div>
-                    </div>
-                </div>
-                <div>
-                    <h4 style="font-size: 0.8125rem; font-weight: 600; color: var(--text-primary); margin-bottom: 0.5rem;">🎛️ Lịch sử điều khiển</h4>
-                    <div style="background: var(--bg-page); border-radius: var(--radius); padding: 0.75rem; max-height: 150px; overflow-y: auto;">
-                        <div v-for="cmd in commandLogs" :key="cmd.id" style="display: flex; align-items: center; justify-content: space-between; padding: 0.5rem 0; border-bottom: 1px solid var(--border-light);">
-                            <div style="display: flex; align-items: center; gap: 0.5rem;">
-                                <span class="badge badge-blue" style="font-size: 0.625rem;">{{ cmd.command }}</span>
-                                <span v-if="cmd.value" style="font-size: 0.75rem; color: var(--text-secondary);">{{ cmd.value }}</span>
-                                <span style="font-size: 0.6875rem; color: var(--text-muted);">{{ cmd.triggered_by }}</span>
+
+                            <div class="cf-col-grid-2">
+                                <div class="cf-form-group">
+                                    <label class="cf-label">Ngày triển khai lắp</label>
+                                    <input v-model="editingEquip.install_date" type="date" class="cf-input font-mono">
+                                </div>
+                                <div class="cf-form-group">
+                                    <label class="cf-label">Ngày hết hạn bảo hành</label>
+                                    <input v-model="editingEquip.warranty_until" type="date" class="cf-input font-mono">
+                                </div>
                             </div>
-                            <span style="font-size: 0.6875rem; color: var(--text-muted);">{{ fmtDate(cmd.recorded_at) }}</span>
+
+                            <div class="cf-form-group">
+                                <label class="cf-label">Ghi chú lắp đặt & vận hành</label>
+                                <textarea v-model="editingEquip.notes" class="cf-textarea" rows="2" placeholder="Ghi chú vị trí lắp đặt ở kèo thép số 4, gần ô nạp gió..."></textarea>
+                            </div>
                         </div>
-                        <div v-if="commandLogs.length === 0" style="text-align: center; padding: 1rem; color: var(--text-muted);">Chưa có lệnh nào</div>
-                    </div>
-                </div>
-            </div>
-        </div>
 
-        <!-- Type Modal -->
-        <div v-if="showTypeModal" class="modal-overlay" @click.self="showTypeModal = false">
-            <div class="modal">
-                <h3 style="margin-bottom: 1.25rem;">{{ editingType.id ? '✏️ Sửa loại thiết bị' : '➕ Thêm loại thiết bị' }}</h3>
-                <div class="form-group">
-                    <label>Mã loại *</label>
-                    <input v-model="editingType.code" type="text" placeholder="VD: FAN_150W" :disabled="editingType.id">
-                </div>
-                <div class="form-group">
-                    <label>Tên loại *</label>
-                    <input v-model="editingType.name" type="text" placeholder="VD: Quạt công nghiệp 150W">
-                </div>
-                <div style="display: grid; grid-template-columns: repeat(3, 1fr); gap: 0.75rem;">
-                    <div class="form-group">
-                        <label>Công suất (W)</label>
-                        <input v-model="editingType.power_watts" type="number" placeholder="150">
-                    </div>
-                    <div class="form-group">
-                        <label>Điện áp (V)</label>
-                        <input v-model="editingType.voltage_v" type="number" placeholder="220">
-                    </div>
-                    <div class="form-group">
-                        <label>Dòng (A)</label>
-                        <input v-model="editingType.current_amp" type="number" step="0.1" placeholder="2.5">
-                    </div>
-                </div>
-                <div class="form-group">
-                    <label>Mô tả</label>
-                    <textarea v-model="editingType.description" placeholder="Mô tả chi tiết..." rows="3"></textarea>
-                </div>
-                <div style="display: flex; justify-content: flex-end; gap: 0.5rem; margin-top: 1rem;">
-                    <button @click="showTypeModal = false" class="btn btn-secondary">Hủy</button>
-                    <button @click="saveType" class="btn btn-primary">Lưu</button>
+                        <div class="cf-modal-footer">
+                            <button type="button" @click="closeEquipModal" class="cf-btn-secondary">Huỷ bỏ</button>
+                            <button type="submit" class="cf-btn-primary">Xác nhận lưu</button>
+                        </div>
+                    </form>
                 </div>
             </div>
-        </div>
+        </teleport>
 
-        <!-- Equipment Modal -->
-        <div v-if="showEquipModal" class="modal-overlay" @click.self="showEquipModal = false">
-            <div class="modal" style="max-width: 36rem;">
-                <h3 style="margin-bottom: 1.25rem;">{{ editingEquip.id ? '✏️ Sửa thiết bị' : '➕ Thêm thiết bị' }}</h3>
-                <div class="form-group">
-                    <label>Tên thiết bị *</label>
-                    <input v-model="editingEquip.name" type="text" placeholder="VD: Quạt số 1 - Chuồng A">
-                </div>
-                <div class="form-group">
-                    <label>Loại thiết bị</label>
-                    <select v-model="editingEquip.equipment_type_id">
-                        <option value="">-- Chọn loại --</option>
-                        <option v-for="t in equipmentTypes" :key="t.id" :value="t.id">{{ t.name }}</option>
-                    </select>
-                </div>
-                <div style="display: grid; grid-template-columns: repeat(2, 1fr); gap: 0.75rem;">
-                    <div class="form-group">
-                        <label>Model</label>
-                        <input v-model="editingEquip.model" type="text" placeholder="Model">
+        <!-- ── TELEPORTED MODAL: ASSIGN CONTROL ELEMENT CHANNEL ── -->
+        <teleport to="body">
+            <div v-if="showAssignModal" class="cf-modal-overlay" @click.self="closeAssignModal">
+                <div class="cf-modal-box" style="max-width: 25rem;">
+                    <div class="cf-modal-header" style="background-color: #f8fafc;">
+                        <div class="cf-modal-header-left">
+                            <div class="cf-modal-header-icon" style="background-color: #eff6ff; color: #1d4ed8;">🔗</div>
+                            <h3 class="cf-modal-title">Liên kết rơ-le điều khiển</h3>
+                        </div>
+                        <button @click="closeAssignModal" class="cf-modal-close-btn">✕</button>
                     </div>
-                    <div class="form-group">
-                        <label>Số serial</label>
-                        <input v-model="editingEquip.serial_no" type="text" placeholder="Serial No">
-                    </div>
-                </div>
-                <div style="display: grid; grid-template-columns: repeat(2, 1fr); gap: 0.75rem;">
-                    <div class="form-group">
-                        <label>Công suất (W)</label>
-                        <input v-model="editingEquip.power_watts" type="number" placeholder="150">
-                    </div>
-                    <div class="form-group">
-                        <label>Trạng thái</label>
-                        <select v-model="editingEquip.status">
-                            <option value="active">Hoạt động</option>
-                            <option value="inactive">Dừng</option>
-                            <option value="maintenance">Bảo trì</option>
-                        </select>
-                    </div>
-                </div>
-                <div style="display: grid; grid-template-columns: repeat(2, 1fr); gap: 0.75rem;">
-                    <div class="form-group">
-                        <label>Ngày lắp đặt</label>
-                        <input v-model="editingEquip.install_date" type="date">
-                    </div>
-                    <div class="form-group">
-                        <label>Hết bảo hành</label>
-                        <input v-model="editingEquip.warranty_until" type="date">
-                    </div>
-                </div>
-                <div class="form-group">
-                    <label>Ghi chú</label>
-                    <textarea v-model="editingEquip.notes" placeholder="Ghi chú..." rows="2"></textarea>
-                </div>
-                <div style="display: flex; justify-content: flex-end; gap: 0.5rem; margin-top: 1rem;">
-                    <button @click="showEquipModal = false" class="btn btn-secondary">Hủy</button>
-                    <button @click="saveEquip" class="btn btn-primary">Lưu</button>
-                </div>
-            </div>
-        </div>
 
-        <!-- Assign Modal -->
-        <div v-if="showAssignModal" class="modal-overlay" @click.self="showAssignModal = false">
-            <div class="modal" style="max-width: 28rem;">
-                <h3 style="margin-bottom: 1.25rem;">🔗 Gán kênh cho "{{ selectedEquip?.name }}"</h3>
-                <div class="form-group">
-                    <label>Thiết bị ESP32</label>
-                    <select id="assignDevice">
-                        <option value="">-- Chọn thiết bị --</option>
-                        <option v-for="d in availableDevices" :key="d.id" :value="d.id">
-                            {{ d.name }} ({{ d.mqtt_topic }})
-                        </option>
-                    </select>
-                </div>
-                <div class="form-group">
-                    <label>Kênh relay (1-8)</label>
-                    <select id="assignChannel">
-                        <option value="1">Kênh 1</option>
-                        <option value="2">Kênh 2</option>
-                        <option value="3">Kênh 3</option>
-                        <option value="4">Kênh 4</option>
-                        <option value="5">Kênh 5</option>
-                        <option value="6">Kênh 6</option>
-                        <option value="7">Kênh 7</option>
-                        <option value="8">Kênh 8</option>
-                    </select>
-                </div>
-                <div style="display: flex; justify-content: flex-end; gap: 0.5rem; margin-top: 1rem;">
-                    <button @click="showAssignModal = false" class="btn btn-secondary">Hủy</button>
-                    <button @click="assignChannel(document.getElementById('assignDevice').value, document.getElementById('assignChannel').value)" class="btn btn-primary">Gán</button>
+                    <form @submit.prevent="doAssignChannel">
+                        <div class="cf-modal-body">
+                            <p class="cf-assign-desc">
+                                Chỉ định cổng rơ-le chấp hành trên tủ điện kết nối ESP32 cho riêng cơ cấu:
+                                <span class="cf-assign-equip-name">"{{ selectedEquip?.name }}"</span>
+                            </p>
+
+                            <div class="cf-form-group">
+                                <label class="cf-label">Hộp tủ điều khiển ESP32 <span class="req">*</span></label>
+                                <select v-model="assignForm.device_id" class="cf-modal-select" required>
+                                    <option value="" disabled>-- Chọn hộp điều khiển trung tâm --</option>
+                                    <option v-for="d in devices" :key="d.id" :value="d.id" :disabled="!d.is_online">
+                                        📲 {{ d.name }} (Topic: {{ d.mqtt_topic }}) [{{ d.is_online ? 'ONLINE' : 'OFFLINE' }}]
+                                    </option>
+                                </select>
+                            </div>
+
+                            <div class="cf-form-group">
+                                <label class="cf-label">Kênh cổng rơ-le <span class="req">*</span></label>
+                                <select v-model="assignForm.channel_number" class="cf-modal-select" required>
+                                    <option value="1">Kênh số 1 (Relay Port 1)</option>
+                                    <option value="2">Kênh số 2 (Relay Port 2)</option>
+                                    <option value="3">Kênh số 3 (Relay Port 3)</option>
+                                    <option value="4">Kênh số 4 (Relay Port 4)</option>
+                                    <option value="5">Kênh số 5 (Relay Port 5)</option>
+                                    <option value="6">Kênh số 6 (Relay Port 6)</option>
+                                    <option value="7">Kênh số 7 (Relay Port 7)</option>
+                                    <option value="8">Kênh số 8 (Relay Port 8)</option>
+                                </select>
+                            </div>
+                        </div>
+
+                        <div class="cf-modal-footer">
+                            <button type="button" @click="closeAssignModal" class="cf-btn-secondary">Đóng lại</button>
+                            <button type="submit" class="cf-btn-primary" style="background-color: #1d4ed8;">Thiết lập liên kết</button>
+                        </div>
+                    </form>
                 </div>
             </div>
-        </div>
+        </teleport>
+
     </div>
     `
 };
