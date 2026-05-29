@@ -1,34 +1,29 @@
 /**
  * Medications Page - Danh mục thuốc và tồn kho
+ * - Semantic .cf-* CSS classes (no Tailwind)
+ * - Modal form for create/edit
+ * - Stock modal per medication
+ * - showToast called with typeof guard
  */
 const { ref, reactive, onMounted, computed } = Vue;
 
 return {
     setup() {
-        // ── Helpers ───────────────────────────────────
-        const _showToast = (msg, type = 'info') => {
-            if (window.showToast) window.showToast(msg, type);
-            else console.log(`[${type}] ${msg}`);
-        };
-        const _fmtDate = (d) => d ? new Date(d).toLocaleDateString('vi-VN') : '-';
-        const _fmtNum = (n, d = 0) => n != null ? Number(n).toLocaleString('vi-VN', { minimumFractionDigits: d, maximumFractionDigits: d }) : '-';
-
         // ── State ──────────────────────────────────────
         const meds = ref([]);
         const warehouses = ref([]);
         const inventoryByMed = ref({});
         const loading = ref(false);
         const loadingStock = ref({});
-
         const showModal = ref(false);
+        const showStockModal = ref(false);
         const editingId = ref(null);
+        const selectedMed = ref(null);
         const filterCat = ref('');
         const searchText = ref('');
-        const showStockModal = ref(false);
-        const selectedMed = ref(null);
 
         const form = reactive({
-            name: '', unit: '', category: '', manufacturer: '',
+            name: '', unit: 'g', packaging: '', category: '', manufacturer: '',
             price_per_unit: null, recommended_dose: '', note: '', status: 'active'
         });
 
@@ -40,7 +35,11 @@ return {
             if (filterCat.value) list = list.filter(m => m.category === filterCat.value);
             if (searchText.value) {
                 const q = searchText.value.toLowerCase();
-                list = list.filter(m => m.name.toLowerCase().includes(q) || (m.manufacturer || '').toLowerCase().includes(q));
+                list = list.filter(m =>
+                    m.name.toLowerCase().includes(q) ||
+                    (m.manufacturer || '').toLowerCase().includes(q) ||
+                    (m.packaging || '').toLowerCase().includes(q)
+                );
             }
             return list;
         });
@@ -48,36 +47,61 @@ return {
         // ── API ────────────────────────────────────────
         async function loadMeds() {
             loading.value = true;
-            try { meds.value = await API.medications.list(filterCat.value || undefined); }
-            catch(e) { _showToast(e.message, 'error'); }
-            finally { loading.value = false; }
+            try {
+                meds.value = await API.medications.list(filterCat.value || undefined);
+            } catch (e) {
+                if (typeof showToast === 'function') showToast(e.message, 'error');
+            } finally {
+                loading.value = false;
+            }
         }
 
         async function loadWarehouses() {
             try { warehouses.value = await API.warehouses.list(); }
-            catch(e) { console.warn('Không tải được kho:', e); }
+            catch (e) { console.warn('Không tải được kho:', e); }
         }
 
         async function loadStockForMed(medId) {
             if (inventoryByMed.value[medId]) return;
             loadingStock.value[medId] = true;
             try {
-                const all = await API.inventory.list();
                 const med = meds.value.find(m => m.id === medId);
                 if (!med) return;
-                const stocks = all.filter(inv => inv.product_name && inv.product_name.toLowerCase().includes(med.name.toLowerCase()));
+                const all = await API.inventory.list();
+                const stocks = all.filter(inv =>
+                    inv.product_name && inv.product_name.toLowerCase().includes(med.name.toLowerCase())
+                );
                 inventoryByMed.value[medId] = stocks.map(inv => ({
                     warehouse_id: inv.warehouse_id,
                     warehouse_name: inv.warehouse_name || 'Kho ' + inv.warehouse_id,
                     quantity: inv.quantity,
                     unit: inv.unit || ''
                 }));
-            } catch(e) {
+            } catch (e) {
                 console.warn('Không tải được tồn kho:', e);
                 inventoryByMed.value[medId] = [];
             } finally {
                 loadingStock.value[medId] = false;
             }
+        }
+
+        // ── Modal helpers ───────────────────────────────
+        function openModal(med = null) {
+            editingId.value = med ? med.id : null;
+            if (med) {
+                Object.assign(form, {
+                    name: med.name, unit: med.unit || 'g', packaging: med.packaging || '',
+                    category: med.category || '', manufacturer: med.manufacturer || '',
+                    price_per_unit: med.price_per_unit, recommended_dose: med.recommended_dose || '',
+                    note: med.note || '', status: med.status
+                });
+            } else {
+                Object.assign(form, {
+                    name: '', unit: 'g', packaging: '', category: '', manufacturer: '',
+                    price_per_unit: null, recommended_dose: '', note: '', status: 'active'
+                });
+            }
+            showModal.value = true;
         }
 
         function openStockModal(med) {
@@ -86,86 +110,103 @@ return {
             showStockModal.value = true;
         }
 
-        function openModal(med = null) {
-            editingId.value = med ? med.id : null;
-            if (med) {
-                Object.assign(form, {
-                    name: med.name, unit: med.unit || '', category: med.category || '',
-                    manufacturer: med.manufacturer || '', price_per_unit: med.price_per_unit,
-                    recommended_dose: med.recommended_dose || '', note: med.note || '', status: med.status
-                });
-            } else {
-                Object.assign(form, {
-                    name: '', unit: 'g', category: '', manufacturer: '',
-                    price_per_unit: null, recommended_dose: '', note: '', status: 'active'
-                });
-            }
-            showModal.value = true;
-        }
+        function closeModal() { showModal.value = false; }
+        function closeStockModal() { showStockModal.value = false; }
 
+        // ── Save / Delete ────────────────────────────────
         async function save() {
-            if (!form.name.trim()) { _showToast('Tên thuốc không được trống', 'error'); return; }
+            if (!form.name.trim()) {
+                if (typeof showToast === 'function') showToast('Tên thuốc không được trống', 'error');
+                return;
+            }
             try {
                 if (editingId.value) {
                     await API.medications.update(editingId.value, { ...form });
-                    _showToast('Đã cập nhật thuốc');
+                    if (typeof showToast === 'function') showToast('Đã cập nhật thuốc', 'success');
                 } else {
                     await API.medications.create({ ...form });
-                    _showToast('Đã thêm thuốc mới');
+                    if (typeof showToast === 'function') showToast('Đã thêm thuốc mới', 'success');
                 }
-                showModal.value = false;
+                closeModal();
                 await loadMeds();
-            } catch(e) { _showToast(e.message, 'error'); }
+            } catch (e) {
+                if (typeof showToast === 'function') showToast(e.message, 'error');
+            }
         }
 
-        async function del(med) {
-            if (!confirm(`Xóa thuốc "${med.name}"?`)) return;
+        async function delMed(med) {
+            if (!confirm('Xóa thuốc "' + med.name + '"?')) return;
             try {
                 await API.medications.del(med.id);
-                _showToast('Đã xóa');
+                if (typeof showToast === 'function') showToast('Đã xóa thành công', 'success');
                 await loadMeds();
-            } catch(e) { _showToast(e.message, 'error'); }
+            } catch (e) {
+                if (typeof showToast === 'function') showToast(e.message, 'error');
+            }
+        }
+
+        // ── Helpers ─────────────────────────────────────
+        function fmtDate(d) {
+            if (!d) return '-';
+            return new Date(d).toLocaleDateString('vi-VN');
+        }
+
+        function fmtNum(n, decimals = 0) {
+            if (n == null) return '-';
+            return Number(n).toLocaleString('vi-VN', { minimumFractionDigits: decimals, maximumFractionDigits: decimals });
         }
 
         onMounted(() => { loadMeds(); loadWarehouses(); });
 
         return {
             meds: filteredMeds, warehouses, inventoryByMed, loading, loadingStock,
-            showModal, editingId, filterCat, searchText, showStockModal, selectedMed,
-            form, categories,
-            loadMeds, openModal, save, del, openStockModal,
-            fmtDate: _fmtDate, fmtNum: _fmtNum
+            showModal, showStockModal, editingId, selectedMed,
+            filterCat, searchText, form, categories,
+            loadMeds, openModal, openStockModal, closeModal, closeStockModal,
+            save, delMed,
+            fmtDate, fmtNum
         };
     },
 
     template: `
-    <div class="medications-page">
+    <div class="cf-container">
+
         <!-- Header -->
-        <div class="page-header">
-            <div class="header-icon">💊</div>
-            <div>
-                <h2 class="page-title">Quản lý Thuốc</h2>
-                <p class="page-subtitle">Danh mục thuốc và tồn kho theo kho</p>
+        <div class="cf-header-bar">
+            <div class="cf-header-left">
+                <div class="cf-header-icon" style="background-color: #7c3aed;">
+                    <svg xmlns="http://www.w3.org/2000/svg" width="22" height="22" viewBox="0 0 24 24" fill="none" stroke="white" stroke-width="2.2" stroke-linecap="round" stroke-linejoin="round">
+                        <path d="M10.5 20.5L3 13l1.4-1.4 6.1 6.1 12.6-12.6L21.7 6.5z"/>
+                        <path d="M8.5 8.5l3 3"/>
+                    </svg>
+                </div>
+                <div>
+                    <h1 class="cf-h1">Quản lý Thuốc</h1>
+                    <p class="cf-subtitle">Danh mục thuốc và tồn kho theo kho</p>
+                </div>
             </div>
         </div>
 
         <!-- Toolbar -->
-        <div class="action-bar">
-            <input v-model="searchText" class="form-input" placeholder="🔍 Tìm tên thuốc..." style="max-width: 240px;">
-            <select v-model="filterCat" @change="loadMeds" class="select">
+        <div class="cf-med-toolbar">
+            <input v-model="searchText" type="text" class="cf-search-input" placeholder="🔍 Tìm tên thuốc..." style="max-width: 240px;">
+            <select v-model="filterCat" @change="loadMeds" class="cf-select">
                 <option value="">Tất cả loại</option>
-                <option v-for="c in categories" :value="c">{{ c }}</option>
+                <option v-for="c in categories" :key="c" :value="c">{{ c }}</option>
             </select>
-            <button @click="openModal()" class="btn btn-primary">+ Thêm thuốc</button>
+            <button @click="openModal()" class="cf-btn-primary" style="background-color: #7c3aed; margin-left: auto;">
+                + Thêm thuốc
+            </button>
         </div>
 
         <!-- Table -->
-        <div class="card">
-            <div class="table-responsive">
-                <table class="data-table">
+        <div class="cf-card" style="padding: 0;">
+            <div class="cf-table-wrapper">
+                <table class="cf-table">
                     <thead>
                         <tr>
                             <th>Tên thuốc</th>
+                            <th>Quy cách đóng gói</th>
                             <th>Loại</th>
                             <th>ĐVT</th>
                             <th class="text-right">Giá (VND)</th>
@@ -175,19 +216,26 @@ return {
                         </tr>
                     </thead>
                     <tbody>
-                        <tr v-for="m in meds" :key="m.id">
-                            <td class="fw-500">{{ m.name }}</td>
+                        <tr v-for="m in meds" :key="m.id" class="cf-table-tr">
+                            <td class="cf-med-name">{{ m.name }}</td>
                             <td>
-                                <span v-if="m.category" class="badge badge-purple">{{ m.category }}</span>
-                                <span v-else class="text-gray-400">-</span>
+                                <span class="cf-med-packaging">
+                                    📦 {{ m.packaging || 'Chưa rõ' }}
+                                </span>
                             </td>
-                            <td>{{ m.unit || '-' }}</td>
-                            <td class="text-right">{{ m.price_per_unit ? fmtNum(m.price_per_unit, 0) : '-' }}</td>
-                            <td class="text-gray-500 text-xs">{{ m.recommended_dose || '-' }}</td>
+                            <td>
+                                <span v-if="m.category" class="cf-badge cf-badge-purple">{{ m.category }}</span>
+                                <span v-else class="cf-text-muted">-</span>
+                            </td>
+                            <td class="cf-text-muted">{{ m.unit || '-' }}</td>
+                            <td class="text-right cf-med-price">
+                                {{ m.price_per_unit ? fmtNum(m.price_per_unit, 0) + ' đ' : '-' }}
+                            </td>
+                            <td class="cf-med-dose">{{ m.recommended_dose || '-' }}</td>
                             <td class="text-center">
                                 <button @click="openStockModal(m)"
-                                    class="btn btn-sm"
-                                    :class="inventoryByMed[m.id]?.length ? 'btn-outline' : 'btn-ghost'">
+                                    class="cf-btn-sm"
+                                    :class="inventoryByMed[m.id]?.length ? 'cf-btn-outline' : 'cf-btn-ghost'">
                                     <span v-if="loadingStock[m.id]">...</span>
                                     <span v-else-if="inventoryByMed[m.id]?.length">
                                         {{ inventoryByMed[m.id].length }} kho
@@ -195,16 +243,20 @@ return {
                                     <span v-else>Kiểm tra</span>
                                 </button>
                             </td>
-                            <td class="actions">
-                                <button @click="openModal(m)" class="btn-icon" title="Sửa">✏️</button>
-                                <button @click="del(m)" class="btn-icon danger" title="Xóa">🗑️</button>
+                            <td>
+                                <div class="cf-med-row-actions">
+                                    <button @click="openModal(m)" class="cf-btn-icon-sm" title="Sửa">✏️</button>
+                                    <button @click="delMed(m)" class="cf-btn-icon-sm danger" title="Xóa">🗑️</button>
+                                </div>
                             </td>
                         </tr>
                         <tr v-if="!meds.length">
-                            <td colspan="7" class="empty-table">
-                                <div class="text-4xl mb-2">💊</div>
+                            <td colspan="8" class="cf-table-empty">
+                                <div class="cf-med-empty-icon">💊</div>
                                 <p>Chưa có thuốc nào trong danh mục</p>
-                                <button @click="openModal()" class="btn btn-primary mt-3">+ Thêm thuốc đầu tiên</button>
+                                <button @click="openModal()" class="cf-btn-primary mt-3" style="background-color: #7c3aed;">
+                                    + Thêm thuốc đầu tiên
+                                </button>
                             </td>
                         </tr>
                     </tbody>
@@ -212,79 +264,108 @@ return {
             </div>
         </div>
 
-        <!-- Modal Thêm/Sửa thuốc -->
-        <div v-if="showModal" class="modal-overlay" @click.self="showModal=false">
-            <div class="modal">
-                <div class="modal-header">
-                    <h3>{{ editingId ? '✏️ Sửa thuốc' : '➕ Thêm thuốc mới' }}</h3>
-                    <button @click="showModal=false" class="btn-icon">✕</button>
-                </div>
-                <div class="modal-body">
-                    <div class="form-group"><label>Tên thuốc *</label>
-                        <input v-model="form.name" class="form-input" placeholder="VD: Sunpha Tiger"></div>
-                    <div class="form-row">
-                        <div class="form-group"><label>Loại</label>
-                            <select v-model="form.category" class="form-input">
-                                <option value="">-- Chọn --</option>
-                                <option v-for="c in categories" :value="c">{{ c }}</option>
-                            </select></div>
-                        <div class="form-group"><label>Đơn vị</label>
-                            <input v-model="form.unit" class="form-input" placeholder="g, ml, viên"></div>
+        <!-- ── MODAL: ADD/EDIT MEDICATION ── -->
+        <teleport to="body">
+            <div v-if="showModal" class="cf-modal-overlay" @click.self="closeModal">
+                <div class="cf-modal-box">
+                    <div class="cf-modal-header">
+                        <div class="cf-modal-header-left">
+                            <div class="cf-modal-header-icon" style="background-color: #f3e8ff; color: #7c3aed;">💊</div>
+                            <h3 class="cf-modal-title">{{ editingId ? 'Sửa thuốc' : 'Thêm thuốc mới' }}</h3>
+                        </div>
+                        <button @click="closeModal" class="cf-modal-close-btn">✕</button>
                     </div>
-                    <div class="form-row">
-                        <div class="form-group"><label>Hãng sản xuất</label>
-                            <input v-model="form.manufacturer" class="form-input"></div>
-                        <div class="form-group"><label>Giá/ĐVT (VND)</label>
-                            <input v-model.number="form.price_per_unit" type="number" class="form-input"></div>
-                    </div>
-                    <div class="form-group"><label>Liều dùng khuyến nghị</label>
-                        <input v-model="form.recommended_dose" class="form-input" placeholder="VD: 1g/10L nước"></div>
-                    <div class="form-group"><label>Ghi chú</label>
-                        <input v-model="form.note" class="form-input"></div>
-                </div>
-                <div class="modal-footer">
-                    <button @click="showModal=false" class="btn">Hủy</button>
-                    <button @click="save" class="btn btn-primary">Lưu</button>
+                    <form @submit.prevent="save">
+                        <div class="cf-modal-body">
+                            <div class="cf-form-group">
+                                <label class="cf-label">Tên thuốc <span class="req">*</span></label>
+                                <input v-model="form.name" type="text" class="cf-input" placeholder="VD: Sunpha Tiger" required>
+                            </div>
+                            <div class="cf-form-group">
+                                <label class="cf-label">Quy cách đóng gói nhập kho</label>
+                                <input v-model="form.packaging" type="text" class="cf-input" placeholder="VD: Gói 1kg, Túi 100g, Hộp 10 chai">
+                            </div>
+                            <div class="cf-form-row">
+                                <div class="cf-form-group">
+                                    <label class="cf-label">Loại</label>
+                                    <select v-model="form.category" class="cf-input">
+                                        <option value="">-- Chọn --</option>
+                                        <option v-for="c in categories" :key="c" :value="c">{{ c }}</option>
+                                    </select>
+                                </div>
+                                <div class="cf-form-group">
+                                    <label class="cf-label">Đơn vị định lượng lẻ</label>
+                                    <input v-model="form.unit" type="text" class="cf-input" placeholder="g, ml, viên">
+                                </div>
+                            </div>
+                            <div class="cf-form-row">
+                                <div class="cf-form-group">
+                                    <label class="cf-label">Hãng sản xuất</label>
+                                    <input v-model="form.manufacturer" type="text" class="cf-input">
+                                </div>
+                                <div class="cf-form-group">
+                                    <label class="cf-label">Giá/ĐVT (VND)</label>
+                                    <input v-model.number="form.price_per_unit" type="number" class="cf-input">
+                                </div>
+                            </div>
+                            <div class="cf-form-group">
+                                <label class="cf-label">Liều dùng khuyến nghị</label>
+                                <input v-model="form.recommended_dose" type="text" class="cf-input" placeholder="VD: 1g/10L nước">
+                            </div>
+                            <div class="cf-form-group">
+                                <label class="cf-label">Ghi chú</label>
+                                <input v-model="form.note" type="text" class="cf-input">
+                            </div>
+                        </div>
+                        <div class="cf-modal-footer">
+                            <button type="button" @click="closeModal" class="cf-btn-secondary">Hủy bỏ</button>
+                            <button type="submit" class="cf-btn-primary" style="background-color: #7c3aed;">Lưu thuốc</button>
+                        </div>
+                    </form>
                 </div>
             </div>
-        </div>
+        </teleport>
 
-        <!-- Modal Xem tồn kho -->
-        <div v-if="showStockModal" class="modal-overlay" @click.self="showStockModal=false">
-            <div class="modal">
-                <div class="modal-header">
-                    <h3>📦 Tồn kho: {{ selectedMed?.name }}</h3>
-                    <button @click="showStockModal=false" class="btn-icon">✕</button>
-                </div>
-                <div class="modal-body">
-                    <div v-if="loadingStock[selectedMed?.id]" class="text-center py-4 text-gray-400">
-                        Đang tải dữ liệu...
+        <!-- ── MODAL: STOCK PER MEDICATION ── -->
+        <teleport to="body">
+            <div v-if="showStockModal" class="cf-modal-overlay" @click.self="closeStockModal">
+                <div class="cf-modal-box">
+                    <div class="cf-modal-header">
+                        <div class="cf-modal-header-left">
+                            <div class="cf-modal-header-icon" style="background-color: #dcfce7; color: #15803d;">📦</div>
+                            <h3 class="cf-modal-title">Tồn kho: {{ selectedMed?.name }}</h3>
+                        </div>
+                        <button @click="closeStockModal" class="cf-modal-close-btn">✕</button>
                     </div>
-                    <div v-else-if="!inventoryByMed[selectedMed?.id]?.length" class="text-center py-4 text-gray-400">
-                        <div class="text-4xl mb-2">📭</div>
-                        Không tìm thấy tồn kho cho thuốc này
-                    </div>
-                    <div v-else class="space-y-2">
-                        <div v-for="stock in inventoryByMed[selectedMed.id]" :key="stock.warehouse_id"
-                            class="flex items-center justify-between p-4 bg-gray-50 rounded-lg">
-                            <div>
-                                <div class="font-medium">{{ stock.warehouse_name }}</div>
-                                <div class="text-xs text-gray-400">Mã kho: {{ stock.warehouse_id }}</div>
-                            </div>
-                            <div class="text-right">
-                                <div class="text-2xl font-bold" :class="stock.quantity > 0 ? 'text-green-600' : 'text-red-500'">
-                                    {{ fmtNum(stock.quantity) }}
+                    <div class="cf-modal-body">
+                        <div v-if="loadingStock[selectedMed?.id]" class="cf-med-stock-loading">
+                            Đang tải dữ liệu...
+                        </div>
+                        <div v-else-if="!inventoryByMed[selectedMed?.id]?.length" class="cf-med-stock-empty">
+                            <div class="cf-med-empty-icon">📭</div>
+                            <p>Không tìm thấy tồn kho cho thuốc này</p>
+                        </div>
+                        <div v-else class="cf-med-stock-list">
+                            <div v-for="stock in inventoryByMed[selectedMed.id]" :key="stock.warehouse_id"
+                                class="cf-med-stock-item">
+                                <div class="cf-med-stock-wh">
+                                    <div class="cf-med-stock-wh-name">{{ stock.warehouse_name }}</div>
+                                    <div class="cf-med-stock-wh-code">Mã kho: {{ stock.warehouse_id }}</div>
                                 </div>
-                                <div class="text-xs text-gray-400">{{ stock.unit || selectedMed?.unit }}</div>
+                                <div class="cf-med-stock-qty">
+                                    <div class="cf-med-stock-number">{{ fmtNum(stock.quantity) }}</div>
+                                    <div class="cf-med-stock-unit">{{ stock.unit || selectedMed?.unit }}</div>
+                                </div>
                             </div>
                         </div>
                     </div>
-                </div>
-                <div class="modal-footer">
-                    <button @click="showStockModal=false" class="btn">Đóng</button>
+                    <div class="cf-modal-footer">
+                        <button @click="closeStockModal" class="cf-btn-secondary">Đóng</button>
+                    </div>
                 </div>
             </div>
-        </div>
+        </teleport>
+
     </div>
     `
 };
