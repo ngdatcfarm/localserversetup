@@ -2959,6 +2959,108 @@ img {
 .cf-form-row { display: grid; grid-template-columns: 1fr 1fr; gap: 0.75rem; }
 @media (max-width: 480px) { .cf-form-row { grid-template-columns: 1fr; } }
 
+/* ── Care Daily Page ── */
+.cf-care-container { padding: 0.75rem; max-width: 600px; margin: 0 auto; }
+.cf-care-header { background: white; border-radius: 1rem; padding: 1rem; margin-bottom: 0.75rem; border: 1px solid #e2e8f0; }
+.cf-care-header-top { display: flex; justify-content: space-between; align-items: flex-start; flex-wrap: wrap; gap: 0.75rem; margin-bottom: 0.75rem; }
+.cf-care-badge { font-size: 0.6875rem; font-weight: 800; background: linear-gradient(135deg, #7c3aed, #a855f7); color: white; padding: 0.2rem 0.6rem; border-radius: 9999px; display: inline-block; }
+.cf-care-title { font-size: 1.25rem; font-weight: 800; color: #1e293b; margin: 0; }
+.cf-care-date-nav { display: flex; align-items: center; gap: 0.25rem; }
+.cf-care-date-btn { width: 2rem; height: 2rem; border-radius: 0.5rem; border: 1px solid #e2e8f0; background: white; cursor: pointer; font-size: 0.875rem; display: flex; align-items: center; justify-content: center; }
+.cf-care-date-btn:hover { background: #f1f5f9; }
+.cf-care-date-input { border: 1px solid #e2e8f0; border-radius: 0.5rem; padding: 0.3rem 0.5rem; font-size: 0.875rem; color: #1e293b; background: white; }
+.cf-care-shift-group { display: flex; gap: 0.375rem; }
+.cf-care-shift-btn { padding: 0.35rem 0.75rem; border-radius: 9999px; border: 1px solid #e2e8f0; background: white; font-size: 0.75rem; cursor: pointer; transition: all 0.15s; color: #64748b; }
+.cf-care-shift-btn.active.sang { background: #fef3c7; color: #92400e; border-color: #fcd34d; }
+.cf-care-shift-btn.active.chieu { background: #dbeafe; color: #1e40af; border-color: #93c5fd; }
+.cf-care-cycle-row { display: flex; align-items: center; gap: 0.75rem; flex-wrap: wrap; }
+.cf-care-cycle-select { flex: 1; min-width: 180px; padding: 0.4rem 0.6rem; border: 1px solid #e2e8f0; border-radius: 0.5rem; font-size: 0.8125rem; background: white; }
+.cf-care-cycle-info { display: flex; gap: 0.5rem; align-items: center; }
+.cf-care-day-age { background: linear-gradient(135deg, #7c3aed, #a855f7); color: white; padding: 0.15rem 0.5rem; border-radius: 9999px; font-size: 0.6875rem; font-weight: 700; }
+.cf-care-count { font-size: 0.75rem; color: #94a3b8; }
+.cf-care-advisory { background: linear-gradient(135deg, #eff6ff, #f0f9ff); border: 1px solid #bfdbfe; border-radius: 0.75rem; padding: 0.75rem; margin-bottom: 0.75rem; }
+.cf-care-advisory-inner { display: flex; align-items: center; gap: 0.75rem; }
+.cf-care-advisory-icon { font-size: 1.5rem; flex-shrink: 0; }
+.cf-care-advisory-text { flex: 1; }
+.cf-care-advisory-title { font-weight: 700; color: #1e40af; font-size: 0.875rem; }
+.cf-care-advisory-desc { color: #3b82f6; font-size: 0.75rem; margin: 0.25rem 0 0; }
+.cf-care-advisory-tag { background: #dbeafe; color: #1e40af; padding: 0.15rem 0.5rem; border-radius: 9999px; font-size: 0.6875rem; font-weight: 600; white-space: nowrap; }
+.cf-care-totals-row { display: grid; grid-template-columns: 1fr 1fr; gap: 0.75rem; margin-bottom: 0.75rem; }
+.cf-care-total-card { background: white; border-radius: 0.75rem; padding: 0.875rem; border: 1px solid #e2e8f0; text-align: center; }
+.cf-care-total-label { font-size: 0.6875rem; font-weight: 700; color: #94a3b8; letter-spacing: 0.05em; margin-bottom: 0.25rem; }
+.cf-care-total-value { font-size: 1.5rem; font-weight: 800; color: #1e293b; font-family: var(--font-mono); }
+.cf-care-total-card.feed-total { border-left: 3px solid #f59e0b; }
+.cf-care-total-card.med-total { border-left: 3px solid #7c3aed; }
+.cf-care-total-sub { font-size: 0.6875rem; color: #94a3b8; margin-top: 0.125rem; }
+.cf-care-tabs { display: flex; background: white; border-radius: 0.75rem; padding: 0.25rem; margin-bottom: 0.75rem; border: 1px solid #e2e8f0; }
+.cf-care-tab { flex: 1; padding: 0.5rem; border: none; background: transparent; cursor: pointer; border-radius: 0.5rem; font-size: 0.8125rem; font-weight: 600; transition: all 0.15s; color: #64748b; }
+.cf-care-tab.active { background: linear-gradient(135deg, #7c3aed, #a855f7); color: white; box-shadow: 0 2px 8px rgba(124,58,237,0.3); }
+.cf-care-tab-body { animation: fadeIn 0.2s ease; }
+@keyframes fadeIn { from { opacity: 0; transform: translateY(4px); } to { opacity: 1; transform: translateY(0); } }
+.cf-care-form-card { background: white; border-radius: 1rem; padding: 1rem; margin-bottom: 0.75rem; border: 1px solid #e2e8f0; }
+.cf-care-form-header { display: flex; align-items: center; gap: 0.75rem; margin-bottom: 1rem; }
+.cf-care-form-icon { width: 2.5rem; height: 2.5rem; border-radius: 0.75rem; display: flex; align-items: center; justify-content: center; font-size: 1.25rem; }
+.cf-care-form-icon.feed-icon { background: linear-gradient(135deg, #fef3c7, #fde68a); }
+.cf-care-form-icon.med-icon { background: linear-gradient(135deg, #ede9fe, #ddd6fe); }
+.cf-care-form-title { font-weight: 700; color: #1e293b; font-size: 0.9375rem; }
+.cf-care-form-sub { color: #94a3b8; font-size: 0.75rem; }
+.cf-care-form-body { display: flex; flex-direction: column; gap: 0.875rem; }
+.cf-care-shift-indicator { display: flex; align-items: center; gap: 0.5rem; }
+.cf-care-shift-label { font-size: 0.75rem; color: #64748b; }
+.cf-care-shift-badge { font-size: 0.6875rem; font-weight: 700; padding: 0.2rem 0.6rem; border-radius: 9999px; }
+.cf-care-shift-badge.sang { background: #fef3c7; color: #92400e; }
+.cf-care-shift-badge.chieu { background: #dbeafe; color: #1e40af; }
+.cf-care-product-section { display: flex; flex-direction: column; gap: 0.5rem; }
+.cf-care-product-label { font-size: 0.75rem; font-weight: 600; color: #64748b; text-transform: uppercase; letter-spacing: 0.05em; }
+.cf-care-product-grid { display: grid; grid-template-columns: repeat(3, 1fr); gap: 0.5rem; }
+@media (max-width: 400px) { .cf-care-product-grid { grid-template-columns: repeat(2, 1fr); } }
+.cf-care-product-btn { padding: 0.5rem 0.375rem; border: 1.5px solid #e2e8f0; border-radius: 0.5rem; background: white; cursor: pointer; text-align: center; transition: all 0.15s; display: flex; flex-direction: column; gap: 0.125rem; align-items: center; }
+.cf-care-product-btn:hover { border-color: #7c3aed; }
+.cf-care-product-btn.selected { border-color: #7c3aed; background: #f5f3ff; }
+.cf-care-product-name { font-size: 0.75rem; font-weight: 600; color: #1e293b; }
+.cf-care-product-wpb { font-size: 0.625rem; color: #94a3b8; }
+.cf-care-product-type { font-size: 0.625rem; color: #a855f7; }
+.cf-care-empty-list { text-align: center; padding: 1rem; color: #94a3b8; font-size: 0.8125rem; }
+.cf-care-qty-row { display: grid; grid-template-columns: 1fr 1fr; gap: 0.75rem; }
+@media (max-width: 400px) { .cf-care-qty-row { grid-template-columns: 1fr; } }
+.cf-care-qty-group { display: flex; flex-direction: column; gap: 0.25rem; }
+.cf-care-qty-label { font-size: 0.75rem; font-weight: 600; color: #64748b; }
+.cf-care-qty-input { padding: 0.5rem; border: 1px solid #e2e8f0; border-radius: 0.5rem; font-size: 0.875rem; }
+.cf-care-qty-preview { font-size: 0.75rem; color: #10b981; font-weight: 600; }
+.cf-care-form-group { display: flex; flex-direction: column; gap: 0.25rem; }
+.cf-care-form-label { font-size: 0.75rem; font-weight: 600; color: #64748b; }
+.cf-care-form-input { padding: 0.5rem; border: 1px solid #e2e8f0; border-radius: 0.5rem; font-size: 0.875rem; }
+.cf-care-save-btn { width: 100%; padding: 0.75rem; border: none; border-radius: 0.75rem; font-size: 0.9375rem; font-weight: 700; cursor: pointer; margin-top: 0.75rem; }
+.cf-care-save-btn.feed-btn { background: linear-gradient(135deg, #f59e0b, #d97706); color: white; box-shadow: 0 4px 12px rgba(245,158,11,0.3); }
+.cf-care-save-btn.med-btn { background: linear-gradient(135deg, #7c3aed, #a855f7); color: white; box-shadow: 0 4px 12px rgba(124,58,237,0.3); }
+.cf-care-history-card { background: white; border-radius: 1rem; padding: 1rem; border: 1px solid #e2e8f0; }
+.cf-care-history-header { display: flex; justify-content: space-between; align-items: center; margin-bottom: 0.75rem; padding-bottom: 0.75rem; border-bottom: 1px solid #f1f5f9; }
+.cf-care-history-title { font-weight: 700; color: #1e293b; font-size: 0.875rem; }
+.cf-care-history-count { background: #f1f5f9; color: #64748b; padding: 0.15rem 0.5rem; border-radius: 9999px; font-size: 0.6875rem; font-weight: 600; }
+.cf-care-history-list { display: flex; flex-direction: column; gap: 0.5rem; max-height: 300px; overflow-y: auto; }
+.cf-care-empty-state { text-align: center; padding: 1.5rem; color: #94a3b8; }
+.cf-care-empty-state p { margin: 0.25rem 0 0; font-size: 0.8125rem; }
+.cf-care-log-item { padding: 0.625rem; border-radius: 0.5rem; background: #f8fafc; border: 1px solid #e2e8f0; }
+.cf-care-log-main { display: flex; justify-content: space-between; align-items: flex-start; }
+.cf-care-log-info { display: flex; flex-direction: column; gap: 0.125rem; }
+.cf-care-log-product { font-weight: 600; color: #1e293b; font-size: 0.8125rem; }
+.cf-care-log-time { font-size: 0.6875rem; color: #94a3b8; }
+.cf-care-log-meta { display: flex; align-items: center; gap: 0.375rem; margin-top: 0.125rem; }
+.cf-care-log-qty { font-weight: 700; color: #1e293b; font-family: var(--font-mono); font-size: 0.8125rem; white-space: nowrap; }
+.cf-care-log-qty.med-qty { color: #7c3aed; }
+.cf-care-log-note { font-size: 0.75rem; color: #64748b; margin: 0.25rem 0 0; font-style: italic; }
+.cf-care-log-footer { display: flex; justify-content: space-between; align-items: center; margin-top: 0.375rem; }
+.cf-care-log-id { font-size: 0.625rem; color: #94a3b8; }
+.cf-care-log-del { font-size: 0.6875rem; color: #dc2626; background: none; border: none; cursor: pointer; padding: 0; }
+.cf-care-log-del:hover { text-decoration: underline; }
+.cf-care-history-agg { margin-top: 0.75rem; padding-top: 0.75rem; border-top: 1px solid #f1f5f9; font-size: 0.8125rem; font-weight: 600; color: #64748b; text-align: center; }
+.cf-care-med-type-badge { font-size: 0.625rem; padding: 0.1rem 0.4rem; border-radius: 9999px; font-weight: 700; }
+.cf-care-med-vaccine { background: #dbeafe; color: #1e40af; }
+.cf-care-med-antibiotic { background: #fde68a; color: #92400e; }
+.cf-care-med-vitamin { background: #dcfce7; color: #15803d; }
+.cf-care-med-probiotic { background: #ede9fe; color: #7c3aed; }
+.cf-care-med-default { background: #f1f5f9; color: #64748b; }
+
 @media (max-width: 767px) {
   .cf-inv-tabs { max-width: 100%; }
 }
