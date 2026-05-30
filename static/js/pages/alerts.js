@@ -1,66 +1,912 @@
 /**
- * alerts.js - Trung tam Canh bao & Giam sat Rui ro Toan dien
- * Dung Tailwind CSS, ref() cho form, API that su.
+ * alerts.js - Trung tam Canh bao & Giam sat Rui ro Toan dien (Scoped CSS)
+ * Scoped CSS classes: a-*
+ * API that su.
  */
 const { ref, computed, onMounted, watch } = Vue;
 
 const component = {
     template: `
-    <div class="space-y-6">
+    <div class="alerts-scope a-space-y-6">
+        <style>
+.alerts-scope {
+  --c-rose-50: #fff1f2;
+  --c-rose-100: #ffe4e6;
+  --c-rose-200: #fecdd3;
+  --c-rose-600: #e11d48;
+  --c-rose-700: #be123c;
+  --c-rose-800: #9f1239;
+  --c-rose-950: #4c0519;
+
+  --c-amber-50: #fffbeb;
+  --c-amber-100: #fef3c7;
+  --c-amber-200: #fde68a;
+  --c-amber-700: #b45309;
+  --c-amber-800: #92400e;
+
+  --c-emerald-50: #ecfdf5;
+  --c-emerald-100: #d1fae5;
+  --c-emerald-600: #059669;
+  --c-emerald-700: #047857;
+  --c-emerald-800: #065f46;
+  --c-emerald-900: #064e3b;
+
+  --c-blue-50: #eff6ff;
+  --c-blue-100: #dbeafe;
+  --c-blue-700: #1d4ed8;
+
+  --c-slate-50: #f8fafc;
+  --c-slate-100: #f1f5f9;
+  --c-slate-200: #e2e8f0;
+  --c-slate-300: #cbd5e1;
+  --c-slate-400: #94a3b8;
+  --c-slate-450: #64748b;
+  --c-slate-500: #64748b;
+  --c-slate-700: #334155;
+  --c-slate-800: #1e293b;
+  --c-slate-900: #0f172a;
+
+  font-family: "Segoe UI", Inter, system-ui, -apple-system, sans-serif;
+  color: var(--c-slate-800);
+}
+
+.alerts-scope * {
+  box-sizing: border-box;
+}
+
+.a-space-y-6 > * + * {
+  margin-top: 1.5rem;
+}
+
+.a-space-y-4 > * + * {
+  margin-top: 1rem;
+}
+
+.a-space-y-2 > * + * {
+  margin-top: 0.5rem;
+}
+
+.a-space-y-1-5 > * + * {
+  margin-top: 0.375rem;
+}
+
+.a-header-panel {
+  display: flex;
+  flex-direction: column;
+  justify-content: space-between;
+  gap: 1rem;
+  background-color: #ffffff;
+  padding: 1.5rem;
+  border-radius: 12px;
+  border: 1px solid var(--c-slate-100);
+  box-shadow: 0 1px 3px rgba(0,0,0,0.05);
+  position: relative;
+  overflow: hidden;
+}
+
+@media (min-width: 640px) {
+  .a-header-panel {
+    flex-direction: row;
+    align-items: center;
+  }
+}
+
+.a-header-left {
+  display: flex;
+  align-items: center;
+  gap: 0.875rem;
+  z-index: 10;
+}
+
+.a-header-icon-box {
+  width: 48px;
+  height: 48px;
+  background-color: var(--c-rose-50);
+  border-radius: 10px;
+  color: var(--c-rose-600);
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  font-size: 24px;
+}
+
+.a-header-title {
+  font-size: 1.125rem;
+  font-weight: 800;
+  color: var(--c-slate-800);
+  margin: 0 0 0.125rem 0;
+  letter-spacing: -0.02em;
+}
+
+.a-header-subtitle {
+  font-size: 0.75rem;
+  color: var(--c-slate-450);
+  font-weight: 500;
+  margin: 0;
+}
+
+.a-btn-group {
+  display: flex;
+  gap: 0.5rem;
+  z-index: 10;
+}
+
+.a-btn-custom {
+  padding: 0.375rem 0.875rem;
+  font-size: 0.75rem;
+  font-weight: 700;
+  border-radius: 10px;
+  cursor: pointer;
+  border: 1px solid transparent;
+  transition: all 0.2s;
+  display: inline-flex;
+  align-items: center;
+  gap: 0.375rem;
+  text-decoration: none;
+}
+
+.a-btn-secondary {
+  background-color: #ffffff;
+  border-color: var(--c-slate-200);
+  color: var(--c-slate-700);
+}
+
+.a-btn-secondary:hover {
+  background-color: var(--c-slate-50);
+}
+
+.a-btn-dark {
+  background-color: var(--c-slate-900);
+  color: #ffffff;
+}
+
+.a-btn-dark:hover {
+  background-color: #000000;
+}
+
+.a-danger-banner {
+  background-color: rgba(225, 29, 72, 0.05);
+  border: 1px solid var(--c-rose-200);
+  border-left: 4px solid var(--c-rose-600);
+  padding: 1.25rem;
+  border-radius: 12px;
+  position: relative;
+  display: flex;
+  flex-direction: column;
+  gap: 1rem;
+}
+
+.a-banner-close-btn {
+  position: absolute;
+  top: 1rem;
+  right: 1.25rem;
+  padding: 0.25rem 0.5rem;
+  font-size: 0.625rem;
+  font-weight: 800;
+  color: var(--c-slate-450);
+  border: 1px solid var(--c-slate-200);
+  border-radius: 6px;
+  background-color: #ffffff;
+  cursor: pointer;
+}
+
+.a-banner-close-btn:hover {
+  color: var(--c-rose-700);
+  background-color: var(--c-rose-50);
+}
+
+.a-banner-header {
+  display: flex;
+  align-items: center;
+  gap: 0.5rem;
+  padding-bottom: 0.5rem;
+  border-bottom: 1px solid var(--c-rose-100);
+}
+
+.a-banner-title {
+  font-size: 0.75rem;
+  font-weight: 900;
+  color: var(--c-rose-800);
+  letter-spacing: 0.05em;
+  margin: 0;
+}
+
+.a-banner-grid {
+  display: grid;
+  grid-template-columns: 1fr;
+  gap: 1.25rem;
+}
+
+@media (min-width: 768px) {
+  .a-banner-grid {
+    grid-template-columns: 1fr 1fr;
+  }
+}
+
+.a-column-title {
+  font-size: 10px;
+  font-weight: 900;
+  color: var(--c-slate-400);
+  letter-spacing: 0.05em;
+  margin-bottom: 0.5rem;
+  text-transform: uppercase;
+}
+
+.a-banner-item {
+  background-color: #ffffff;
+  border: 1px solid var(--c-rose-100);
+  border-radius: 10px;
+  padding: 0.75rem;
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 0.75rem;
+}
+
+.a-inventory-banner-item {
+  background-color: #ffffff;
+  border: 1px solid var(--c-amber-200);
+  border-radius: 10px;
+  padding: 0.75rem;
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 0.75rem;
+}
+
+.a-item-text-title {
+  font-size: 12.5px;
+  font-weight: 800;
+  color: var(--c-slate-800);
+  display: block;
+}
+
+.a-item-text-desc {
+  font-size: 11px;
+  color: var(--c-slate-500);
+  margin: 0px;
+}
+
+.a-btn-badge-danger {
+  padding: 0.25rem 0.5rem;
+  font-size: 10px;
+  font-weight: 800;
+  color: var(--c-rose-600);
+  background-color: var(--c-rose-50);
+  border: none;
+  cursor: pointer;
+  border-radius: 6px;
+  flex-shrink: 0;
+}
+
+.a-btn-badge-danger:hover {
+  background-color: var(--c-rose-100);
+}
+
+.a-btn-badge-amber {
+  padding: 0.25rem 0.5rem;
+  font-size: 10px;
+  font-weight: 800;
+  color: var(--c-amber-700);
+  background-color: var(--c-amber-50);
+  border: none;
+  cursor: pointer;
+  border-radius: 6px;
+  flex-shrink: 0;
+}
+
+.a-btn-badge-amber:hover {
+  background-color: var(--c-amber-100);
+}
+
+.a-tab-bar {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 0.25rem;
+  background-color: var(--c-slate-100);
+  padding: 0.25rem;
+  border-radius: 10px;
+  width: max-content;
+  max-width: 100%;
+}
+
+.a-tab-button {
+  background: none;
+  border: none;
+  padding: 0.5rem 1rem;
+  font-size: 0.75rem;
+  font-weight: 700;
+  color: var(--c-slate-500);
+  border-radius: 8px;
+  cursor: pointer;
+  transition: all 0.2s;
+  display: inline-flex;
+  align-items: center;
+  gap: 0.25rem;
+}
+
+.a-tab-button-active {
+  background-color: #ffffff;
+  color: var(--c-emerald-900) !important;
+  box-shadow: 0 1px 3px rgba(0,0,0,0.05);
+}
+
+.a-badge-inline {
+  background-color: var(--c-rose-600);
+  color: #ffffff;
+  padding: 0.05rem 0.375rem;
+  border-radius: 4px;
+  font-size: 9px;
+  font-weight: 800;
+  margin-left: 0.25rem;
+}
+
+.a-badge-inline-amber {
+  background-color: var(--c-amber-700);
+  color: #ffffff;
+  padding: 0.05rem 0.375rem;
+  border-radius: 4px;
+  font-size: 9px;
+  font-weight: 800;
+  margin-left: 0.25rem;
+}
+
+.a-layout-columns {
+  display: grid;
+  grid-template-columns: 1fr;
+  gap: 1.5rem;
+}
+
+@media (min-width: 1024px) {
+  .a-layout-columns {
+    grid-template-columns: 2fr 1fr;
+  }
+}
+
+.a-bg-card {
+  background-color: #ffffff;
+  padding: 1.25rem;
+  border-radius: 12px;
+  border: 1px solid var(--c-slate-100);
+  box-shadow: 0 1px 3px rgba(0,0,0,0.02);
+}
+
+.a-card-title-bar {
+  display: flex;
+  justify-content: space-between;
+  align-items: center;
+  border-bottom: 1px solid var(--c-slate-100);
+  padding-bottom: 0.75rem;
+  margin-bottom: 1rem;
+}
+
+.a-card-heading {
+  font-weight: 800;
+  font-size: 0.875rem;
+  color: var(--c-slate-800);
+  margin: 0;
+}
+
+.a-btn-emerald {
+  background-color: var(--c-emerald-50);
+  border: 1px solid var(--c-emerald-100);
+  color: var(--c-emerald-800);
+}
+
+.a-btn-emerald:hover {
+  background-color: var(--c-emerald-100);
+}
+
+.a-responsive-table {
+  overflow-x: auto;
+  border-radius: 8px;
+  border: 1px solid var(--c-slate-200);
+}
+
+.a-table-element {
+  width: 100%;
+  border-collapse: collapse;
+  font-size: 0.75rem;
+}
+
+.a-table-element th {
+  background-color: var(--c-slate-50);
+  padding: 0.75rem;
+  font-weight: 700;
+  color: var(--c-slate-500);
+  border-bottom: 1px solid var(--c-slate-200);
+}
+
+.a-table-element td {
+  padding: 0.75rem;
+  border-bottom: 1px solid var(--c-slate-100);
+  vertical-align: middle;
+}
+
+.a-table-element tr:last-child td {
+  border-bottom: none;
+}
+
+.a-table-element tr:hover {
+  background-color: rgba(248, 250, 252, 0.4);
+}
+
+.a-text-bold {
+  font-weight: 800;
+  color: var(--c-slate-800);
+}
+
+.a-badge-status {
+  padding: 0.125rem 0.375rem;
+  border-radius: 4px;
+  font-size: 9px;
+  font-weight: 700;
+  text-transform: uppercase;
+}
+
+.a-badge-blue {
+  background-color: var(--c-blue-50);
+  color: var(--c-blue-700);
+  border: 1px solid var(--c-blue-100);
+}
+
+.a-badge-severity-danger {
+  background-color: var(--c-rose-50);
+  border: 1px solid var(--c-rose-100);
+  color: var(--c-rose-700);
+}
+
+.a-badge-severity-warning {
+  background-color: var(--c-amber-50);
+  border: 1px solid var(--c-amber-100);
+  color: var(--c-amber-700);
+}
+
+.a-badge-emerald-status {
+  background-color: var(--c-emerald-50);
+  color: var(--c-emerald-700);
+  border: 1px solid var(--c-emerald-100);
+}
+
+.a-btn-mini {
+  padding: 0.15rem 0.375rem;
+  background: none;
+  border: none;
+  cursor: pointer;
+  font-weight: 700;
+  border-radius: 4px;
+  transition: all 0.15s;
+}
+
+.a-btn-mini-gray:hover {
+  background-color: var(--c-slate-100);
+}
+
+.a-btn-mini-danger {
+  color: var(--c-rose-600);
+}
+
+.a-btn-mini-danger:hover {
+  background-color: var(--c-rose-50);
+}
+
+.a-simulator-panel {
+  background-color: var(--c-slate-50);
+  border: 1px solid var(--c-slate-200);
+  border-radius: 12px;
+  padding: 1.25rem;
+}
+
+.a-sim-title {
+  font-weight: 800;
+  font-size: 0.875rem;
+  display: flex;
+  align-items: center;
+  gap: 0.375rem;
+  margin: 0 0 0.25rem 0;
+}
+
+.a-sim-title.danger {
+  color: var(--c-rose-800);
+}
+
+.a-sim-title.amber {
+  color: var(--c-amber-800);
+}
+
+.a-sim-desc {
+  font-size: 11px;
+  color: var(--c-slate-450);
+  font-weight: 500;
+  margin: 0 0 1rem 0;
+}
+
+.a-fieldset {
+  border: none;
+  padding: 0;
+  margin: 0 0 0.875rem 0;
+}
+
+.a-field-label {
+  font-size: 10.5px;
+  font-weight: 800;
+  color: var(--c-slate-500);
+  display: block;
+  margin-bottom: 0.25rem;
+}
+
+.a-field-select, .a-field-input {
+  width: 100%;
+  padding: 0.375rem 0.75rem;
+  background-color: #ffffff;
+  border: 1px solid var(--c-slate-300);
+  border-radius: 8px;
+  font-size: 11px;
+  font-weight: 700;
+  color: var(--c-slate-700);
+}
+
+.a-btn-sim-action {
+  width: 100%;
+  padding: 0.5rem;
+  font-size: 11px;
+  font-weight: 800;
+  color: #ffffff;
+  border: none;
+  border-radius: 10px;
+  cursor: pointer;
+  transition: all 0.2s;
+}
+
+.a-btn-sim-danger {
+  background-color: var(--c-rose-600) !important;
+}
+
+.a-btn-sim-danger:hover {
+  background-color: var(--c-rose-700) !important;
+}
+
+.a-btn-sim-amber {
+  background-color: var(--c-amber-700) !important;
+}
+
+.a-btn-sim-amber:hover {
+  background-color: var(--c-amber-800) !important;
+}
+
+.a-history-header-bar {
+  display: flex;
+  justify-content: space-between;
+  align-items: center;
+  border-bottom: 1px solid var(--c-slate-100);
+  padding-bottom: 0.5rem;
+  margin-bottom: 0.75rem;
+}
+
+.a-history-item {
+  padding: 1rem;
+  border: 1px solid var(--c-slate-200);
+  border-radius: 10px;
+  display: flex;
+  justify-content: space-between;
+  align-items: center;
+  gap: 0.75rem;
+}
+
+.a-history-item-unread {
+  background-color: rgba(225, 29, 72, 0.02);
+  border-color: rgba(225, 29, 72, 0.15) !important;
+}
+
+.a-history-item-read {
+  background-color: rgba(248, 250, 252, 0.5);
+  border-color: var(--c-slate-150);
+}
+
+.a-history-info {
+  display: flex;
+  flex-direction: column;
+  gap: 0.125rem;
+}
+
+.a-history-msg {
+  font-size: 12.5px;
+  font-weight: 800;
+  color: var(--c-slate-800);
+}
+
+.a-history-meta {
+  font-size: 9.5px;
+  color: var(--c-slate-400);
+  font-weight: 600;
+}
+
+.a-btn-ack-check {
+  padding: 0.25rem 0.5rem;
+  background-color: #ffffff;
+  border: 1px solid var(--c-slate-200);
+  color: var(--c-slate-700);
+  border-radius: 6px;
+  font-size: 11px;
+  font-weight: 800;
+  cursor: pointer;
+}
+
+.a-btn-ack-check:hover {
+  background-color: var(--c-slate-50);
+}
+
+.a-vaccine-grid {
+  display: grid;
+  grid-template-columns: 1fr;
+  gap: 1rem;
+}
+
+@media (min-width: 768px) {
+  .a-vaccine-grid {
+    grid-template-columns: 1fr 1fr;
+  }
+}
+
+.a-vaccine-card {
+  padding: 1rem;
+  background-color: rgba(225, 29, 72, 0.02);
+  border: 1px solid var(--c-slate-200);
+  border-left: 4px solid var(--c-rose-600);
+  border-radius: 10px;
+  display: flex;
+  justify-content: space-between;
+  align-items: flex-start;
+  gap: 0.75rem;
+}
+
+.a-vaccine-title {
+  font-weight: 900;
+  color: var(--c-slate-800);
+  font-size: 0.875rem;
+  margin: 0;
+}
+
+.a-vaccine-subtitle {
+  font-size: 11px;
+  font-weight: 700;
+  color: var(--c-slate-500);
+  margin: 0.25rem 0 0.5rem 0;
+}
+
+.a-vaccine-tags {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 0.25rem;
+}
+
+.a-vtag {
+  padding: 0.125rem 0.375rem;
+  font-size: 9px;
+  font-weight: 800;
+  border-radius: 4px;
+}
+
+.a-vtag-red {
+  background-color: var(--c-rose-100);
+  color: var(--c-rose-800);
+}
+
+.a-vtag-slate {
+  background-color: var(--c-slate-100);
+  color: var(--c-slate-500);
+}
+
+.a-vtag-blue {
+  background-color: var(--c-blue-50);
+  color: var(--c-blue-700);
+  border: 1px solid var(--c-blue-100);
+}
+
+.a-vaccine-actions {
+  display: flex;
+  flex-direction: column;
+  align-items: flex-end;
+  gap: 0.5rem;
+  flex-shrink: 0;
+}
+
+.a-actions-btn-row {
+  display: flex;
+  gap: 0.25rem;
+}
+
+.a-btn-vaccine-action {
+  padding: 0.25rem 0.5rem;
+  font-size: 10px;
+  font-weight: 805;
+  border-radius: 6px;
+  cursor: pointer;
+  border: 1px solid transparent;
+}
+
+.a-btn-vaccine-primary {
+  background-color: var(--c-emerald-600);
+  color: #ffffff;
+}
+
+.a-btn-vaccine-primary:hover {
+  background-color: var(--c-emerald-700);
+}
+
+.a-btn-vaccine-secondary {
+  background-color: var(--c-slate-100);
+  color: var(--c-slate-700);
+  border-color: var(--c-slate-200);
+}
+
+.a-btn-vaccine-secondary:hover {
+  background-color: var(--c-slate-200);
+}
+
+.a-vaccine-empty-state {
+  text-align: center;
+  padding: 3rem 1.5rem;
+  background-color: var(--c-slate-50);
+  border: 1px dashed var(--c-slate-300);
+  border-radius: 12px;
+}
+
+.a-empty-icon {
+  font-size: 2rem;
+  display: block;
+  margin-bottom: 0.5rem;
+}
+
+.a-empty-heading {
+  font-weight: 800;
+  font-size: 0.875rem;
+  color: var(--c-emerald-800);
+  margin: 0;
+}
+
+.a-empty-desc {
+  font-size: 11.5px;
+  color: var(--c-slate-450);
+  margin: 0.25rem auto 0 auto;
+  max-width: 320px;
+}
+
+.a-webpush-infobox {
+  background-color: rgba(37, 99, 235, 0.03);
+  border: 1px solid var(--c-blue-100);
+  padding: 1rem;
+  border-radius: 10px;
+  font-size: 11.5px;
+  line-height: 1.6;
+}
+
+.a-info-title {
+  font-weight: 800;
+  color: var(--c-blue-700);
+  margin-top: 0;
+  margin-bottom: 0.5rem;
+}
+
+.a-webpush-list {
+  padding-left: 1rem;
+  margin: 0;
+}
+
+.a-webpush-list li {
+  margin-bottom: 0.25rem;
+  color: var(--c-slate-700);
+}
+
+.a-modal-backdrop {
+  position: fixed;
+  top: 0;
+  left: 0;
+  right: 0;
+  bottom: 0;
+  background-color: rgba(15, 23, 42, 0.5);
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  z-index: 9999;
+  padding: 1rem;
+}
+
+.a-modal-container {
+  background-color: #ffffff;
+  border-radius: 16px;
+  width: 100%;
+  max-width: 420px;
+  box-shadow: 0 10px 25px rgba(0,0,0,0.1), 0 10px 10px rgba(0,0,0,0.04);
+  overflow: hidden;
+}
+
+.a-modal-banner-title {
+  background-color: var(--c-slate-50);
+  padding: 1rem;
+  border-bottom: 1px solid var(--c-slate-100);
+  margin: 0;
+  font-size: 0.875rem;
+  font-weight: 800;
+  color: var(--c-slate-800);
+}
+
+.a-modal-form {
+  padding: 1.25rem;
+}
+
+.a-form-row2 {
+  display: grid;
+  grid-template-columns: 1fr 1fr;
+  gap: 0.75rem;
+}
+
+.a-modal-footer-btns {
+  display: flex;
+  justify-content: flex-end;
+  gap: 0.5rem;
+  padding-top: 1rem;
+}
+        </style>
+
         <!-- 1. Tieu de chinh + Quet khan cap -->
-        <div class="flex flex-col sm:flex-row sm:items-center justify-between gap-4 bg-white p-6 rounded-2xl border border-slate-100 shadow-sm relative overflow-hidden">
-            <div class="flex items-center gap-3.5 z-10">
-                <div class="w-12 h-12 bg-red-50 rounded-xl text-rose-600 flex items-center justify-center shadow-xs">
-                    <span class="text-2xl">🔔</span>
+        <div class="a-header-panel">
+            <div class="a-header-left">
+                <div class="a-header-icon-box">
+                    <span>🔔</span>
                 </div>
                 <div>
-                    <h2 class="text-lg font-black text-slate-800 tracking-tight">🚨 He thong Canh bao & Giam sat Rui ro</h2>
-                    <p class="text-xs text-slate-450 font-medium">Trung tam doi soat cam bien moi truong IoT, tru luong ton kho va an sinh nong ho</p>
+                    <h2 class="a-header-title">🚨 He thong Canh bao & Giam sat Rui ro</h2>
+                    <p class="a-header-subtitle">Trung tam doi soat cam bien moi truong IoT, tru luong ton kho va an sinh nong ho</p>
                 </div>
             </div>
-            <div class="flex gap-2 z-10">
-                <button class="px-3.5 py-1.5 text-xs font-bold bg-white border border-slate-200 text-slate-700 hover:bg-slate-50 rounded-xl cursor-pointer shadow-2xs transition-all flex items-center gap-1.5" @click="checkNow">
+
+            <div class="a-btn-group">
+                <button class="a-btn-custom a-btn-secondary" @click="checkNow">
                     🔄 Kiem tra ngay
                 </button>
-                <button v-if="activeAlerts.length || activeInventoryAlerts.length" class="px-3.5 py-1.5 text-xs font-bold bg-slate-900 text-white rounded-xl cursor-pointer hover:bg-black transition-all" @click="ackAllActive">
+                <button v-if="activeAlerts.length || activeInventoryAlerts.length" class="a-btn-custom a-btn-dark" @click="ackAllActive">
                     Doc tat tat ca
                 </button>
             </div>
         </div>
 
-        <!-- 2. Banner canh bao dang hoat dong -->
-        <div v-if="activeAlerts.length || activeInventoryAlerts.length" class="bg-red-50/20 border border-red-200 border-l-4 border-l-rose-600 p-5 rounded-2xl space-y-4 shadow-xs relative">
-            <button class="absolute top-4 right-4 px-2 py-0.5 text-slate-450 hover:text-rose-700 hover:bg-rose-100/60 rounded border text-xs font-black cursor-pointer bg-white" @click="closeBanner">
+        <!-- 2. Danh muc canh bao do hien dien -->
+        <div v-if="activeAlerts.length || activeInventoryAlerts.length" class="a-danger-banner">
+            <button class="a-banner-close-btn" @click="closeBanner">
                 ✕ Dong an nhanh
             </button>
-            <div class="flex items-center gap-2 pb-2 mr-24 border-b border-red-100">
-                <span class="text-sm">⚠️</span>
-                <h3 class="text-xs font-black text-rose-950 uppercase tracking-wider">
+
+            <div class="a-banner-header">
+                <span>⚠️</span>
+                <h3 class="a-banner-title">
                     RUI RO CHUONG TRAI VA LUU KHO DANG BAO DONG KHAN
                 </h3>
             </div>
-            <div class="grid grid-cols-1 md:grid-cols-2 gap-4">
-                <div v-if="activeAlerts.length" class="space-y-2">
-                    <p class="text-[10.5px] font-black text-slate-400 uppercase tracking-wider">📡 CHI SO CAM BIEN VUOT CHUAN</p>
-                    <div class="space-y-1.5">
-                        <div v-for="a in activeAlerts" :key="'sens-'+a.id" class="p-3 bg-white border border-red-100 rounded-xl flex items-center justify-between gap-2.5">
-                            <div class="space-y-0.5">
-                                <span class="font-extrabold text-slate-800 text-[12.5px] block">{{ a.message }}</span>
-                                <p class="text-xs text-slate-500">Moi truong: <strong class="text-red-600">{{ a.sensor_type.toUpperCase() }} = {{ a.value }}</strong> | Tieu chuan: {{ a.threshold }}</p>
+
+            <div class="a-banner-grid">
+                <div v-if="activeAlerts.length" class="a-space-y-2">
+                    <p class="a-column-title">📡 CHI SO CAM BIEN VUOT CHUAN</p>
+                    <div class="a-space-y-1-5">
+                        <div v-for="a in activeAlerts" :key="'sens-'+a.id" class="a-banner-item">
+                            <div>
+                                <span class="a-item-text-title">{{ a.message }}</span>
+                                <p class="a-item-text-desc">Moi truong: <strong style="color: var(--c-rose-600);">{{ a.sensor_type.toUpperCase() }} = {{ a.value }}</strong> | Tieu chuan: {{ a.threshold }}</p>
                             </div>
-                            <button class="px-2 py-1 bg-red-50 hover:bg-red-100 text-red-600 text-[10px] font-black rounded cursor-pointer shrink-0" @click="ackSensorAlert(a)">Tat coi</button>
+                            <button class="a-btn-badge-danger" @click="ackSensorAlert(a)">Tat coi</button>
                         </div>
                     </div>
                 </div>
-                <div v-if="activeInventoryAlerts.length" class="space-y-2">
-                    <p class="text-[10.5px] font-black text-slate-400 uppercase tracking-wider">📦 THIEU TON DAY CUC HAN</p>
-                    <div class="space-y-1.5">
-                        <div v-for="a in activeInventoryAlerts" :key="'inv-'+a.id" class="p-3 bg-white border border-amber-200 rounded-xl flex items-center justify-between gap-2.5">
-                            <div class="space-y-0.5">
-                                <span class="font-extrabold text-slate-800 text-[12.5px] block">{{ a.product_name }}</span>
-                                <p class="text-xs text-slate-500">Kho: {{ a.warehouse_name }} — Con lai: <strong class="text-amber-700">{{ fmtNum(a.current_quantity) }}</strong> / Muc phong thu: {{ fmtNum(a.threshold_value) }}</p>
+
+                <div v-if="activeInventoryAlerts.length" class="a-space-y-2">
+                    <p class="a-column-title">📦 THIEU TON DAY CUC HAN</p>
+                    <div class="a-space-y-1-5">
+                        <div v-for="a in activeInventoryAlerts" :key="'inv-'+a.id" class="a-inventory-banner-item">
+                            <div>
+                                <span class="a-item-text-title">{{ a.product_name }}</span>
+                                <p class="a-item-text-desc">Kho: {{ a.warehouse_name }} — Con lai: <strong style="color: var(--c-amber-700);">{{ fmtNum(a.current_quantity) }} kg</strong> / Muc phong thu: {{ fmtNum(a.threshold_value) }}</p>
                             </div>
-                            <button class="px-2 py-1 bg-amber-50 hover:bg-amber-100 text-amber-700 text-[10px] font-black rounded cursor-pointer shrink-0" @click="ackInventoryAlert(a)">Ghi nhan</button>
+                            <button class="a-btn-badge-amber" @click="ackInventoryAlert(a)">Ghi nhan</button>
                         </div>
                     </div>
                 </div>
@@ -68,56 +914,57 @@ const component = {
         </div>
 
         <!-- 3. Phan chia tabs -->
-        <div class="flex flex-wrap gap-1 bg-slate-100 p-1 rounded-xl w-fit">
-            <button @click="tabType='sensor'" :class="tabType==='sensor' ? 'bg-white text-emerald-850 shadow-xs border-slate-200' : 'text-slate-500 hover:text-slate-800'" class="px-4 py-2 text-xs font-bold rounded-lg cursor-pointer transition-all">
-                📡 Giam sat Cam bien <span v-if="activeAlerts.length" class="bg-red-500 text-white rounded px-1.5 text-[9px] font-black animate-pulse">{{ activeAlerts.length }}</span>
+        <div class="a-tab-bar">
+            <button @click="tabType='sensor'" :class="tabType==='sensor' ? 'a-tab-button-active' : ''" class="a-tab-button">
+                📡 Giam sat Cam bien <span v-if="activeAlerts.length" class="a-badge-inline">{{ activeAlerts.length }}</span>
             </button>
-            <button @click="tabType='inventory'" :class="tabType==='inventory' ? 'bg-white text-emerald-850 shadow-xs border-slate-200' : 'text-slate-500 hover:text-slate-800'" class="px-4 py-2 text-xs font-bold rounded-lg cursor-pointer transition-all">
-                📦 Quy tac Tru luong Kho <span v-if="activeInventoryAlerts.length" class="bg-amber-500 text-white rounded px-1.5 text-[9px] font-black">{{ activeInventoryAlerts.length }}</span>
+            <button @click="tabType='inventory'" :class="tabType==='inventory' ? 'a-tab-button-active' : ''" class="a-tab-button">
+                📦 Quy tac Tru luong Kho <span v-if="activeInventoryAlerts.length" class="a-badge-inline-amber">{{ activeInventoryAlerts.length }}</span>
             </button>
-            <button @click="tabType='vaccine'" :class="tabType==='vaccine' ? 'bg-white text-emerald-850 shadow-xs border-slate-200' : 'text-slate-500 hover:text-slate-800'" class="px-4 py-2 text-xs font-bold rounded-lg cursor-pointer transition-all">
-                💉 Lich Thu y & Vaccine <span v-if="upcomingVaccines.length" class="bg-rose-500 text-white rounded px-1.5 text-[9px] font-black">{{ upcomingVaccines.length }}</span>
+            <button @click="tabType='vaccine'" :class="tabType==='vaccine' ? 'a-tab-button-active' : ''" class="a-tab-button">
+                💉 Lich Thu y & Vaccine <span v-if="upcomingVaccines.length" class="a-badge-inline">{{ upcomingVaccines.length }}</span>
             </button>
-            <button @click="tabType='notify'" :class="tabType==='notify' ? 'bg-white text-emerald-850 shadow-xs border-slate-200' : 'text-slate-500 hover:text-slate-800'" class="px-4 py-2 text-xs font-bold rounded-lg cursor-pointer transition-all">
+            <button @click="tabType='notify'" :class="tabType==='notify' ? 'a-tab-button-active' : ''" class="a-tab-button">
                 📲 Cau hinh Day Push (WebPush)
             </button>
         </div>
 
         <!-- SECTION 1: CAM BIEN IOT -->
-        <div v-if="tabType==='sensor'" class="grid grid-cols-1 lg:grid-cols-3 gap-6">
-            <div class="lg:col-span-2 space-y-6">
-                <!-- Danh sach quy dinh IoT -->
-                <div class="bg-white p-5 rounded-2xl border border-slate-100 shadow-sm space-y-4">
-                    <div class="flex justify-between items-center border-b pb-3">
-                        <h3 class="font-extrabold text-slate-800 text-sm">📐 Rao quy dinh chi so va nguong ranh gioi cam bien</h3>
-                        <button class="px-3 py-1.5 bg-emerald-50 hover:bg-emerald-100 border border-emerald-200 text-emerald-700 text-xs font-extrabold rounded-xl cursor-pointer" @click="openSensorRule()">+ Them quy che IoT</button>
+        <div v-if="tabType==='sensor'" class="a-layout-columns">
+            <div class="a-space-y-6">
+                <div class="a-bg-card a-space-y-4">
+                    <div class="a-card-title-bar">
+                        <h3 class="a-card-heading">📐 Rao quy dinh chi so va nguong ranh gioi cam bien</h3>
+                        <button class="a-btn-custom a-btn-emerald" @click="openSensorRule()">+ Them quy che IoT</button>
                     </div>
-                    <div class="overflow-x-auto rounded-xl border">
-                        <table class="w-full text-xs text-left">
+                    <div class="a-responsive-table">
+                        <table class="a-table-element">
                             <thead>
-                                <tr class="bg-slate-50 border-b text-slate-500 font-bold">
-                                    <th class="p-3">Ten noi quy</th>
-                                    <th class="p-3">Mac cam bien</th>
-                                    <th class="p-3">Vung ap dung</th>
-                                    <th class="p-3">Nguong Min / Max</th>
-                                    <th class="p-3">Muc do khan</th>
-                                    <th class="p-3">Cooldown</th>
-                                    <th class="p-3 text-right">Lua chon</th>
+                                <tr>
+                                    <th style="text-align: left; padding: 0.75rem;">Ten noi quy</th>
+                                    <th style="text-align: left; padding: 0.75rem;">Mac cam bien</th>
+                                    <th style="text-align: left; padding: 0.75rem;">Vung ap dung</th>
+                                    <th style="text-align: left; padding: 0.75rem;">Nguong Min / Max</th>
+                                    <th style="text-align: left; padding: 0.75rem;">Muc do khan</th>
+                                    <th style="text-align: left; padding: 0.75rem;">Cooldown</th>
+                                    <th style="text-align: right; padding: 0.75rem;">Lua chon</th>
                                 </tr>
                             </thead>
                             <tbody>
-                                <tr v-for="r in sensorRules" :key="r.id" :class="r.enabled ? '' : 'opacity-40'" class="border-b last:border-0 hover:bg-slate-50/20">
-                                    <td class="p-3 font-extrabold text-slate-800">{{ r.name }}</td>
-                                    <td class="p-3"><span class="px-2 py-0.5 bg-blue-50 text-blue-700 rounded text-[9px] font-bold uppercase">{{ r.sensor_type }}</span></td>
-                                    <td>{{ barnMap[r.barn_id] || 'Toan bo nong trai' }}</td>
-                                    <td class="p-3 font-mono font-bold">{{ r.min_value ?? '-' }} - {{ r.max_value ?? '-' }}</td>
-                                    <td class="p-3">
-                                        <span :class="r.severity==='danger'?'bg-red-50 text-red-700 border border-red-100':'bg-amber-50 text-amber-700 border border-amber-100'" class="px-2 py-0.5 text-[9.5px] rounded font-bold uppercase border">{{ r.severity }}</span>
+                                <tr v-for="r in sensorRules" :key="r.id" :style="r.enabled ? '' : 'opacity: 0.4;'">
+                                    <td style="padding: 0.75rem;" class="a-text-bold">{{ r.name }}</td>
+                                    <td style="padding: 0.75rem;">
+                                        <span class="a-badge-status a-badge-blue">{{ r.sensor_type }}</span>
                                     </td>
-                                    <td class="p-3">{{ r.cooldown_minutes }} phut</td>
-                                    <td class="p-3 text-right space-x-1">
-                                        <button class="px-1.5 py-0.5 hover:bg-slate-100 font-bold rounded cursor-pointer" @click="openSensorRule(r)">Sua</button>
-                                        <button class="px-1.5 py-0.5 hover:bg-rose-50 text-rose-600 font-bold rounded cursor-pointer" @click="delSensorRule(r)">Xoa</button>
+                                    <td style="padding: 0.75rem;">{{ barnMap[r.barn_id] || 'Toan bo khu trai' }}</td>
+                                    <td style="padding: 0.75rem;" class="a-text-bold">{{ r.min_value ?? '-' }} - {{ r.max_value ?? '-' }}</td>
+                                    <td style="padding: 0.75rem;">
+                                        <span :class="r.severity==='danger'?'a-badge-status a-badge-severity-danger':'a-badge-status a-badge-severity-warning'">{{ r.severity }}</span>
+                                    </td>
+                                    <td style="padding: 0.75rem;">{{ r.cooldown_minutes }} phut</td>
+                                    <td style="padding: 0.75rem; text-align: right;">
+                                        <button class="a-btn-mini a-btn-mini-gray" @click="openSensorRule(r)">Sua</button>
+                                        <button class="a-btn-mini a-btn-mini-danger" @click="delSensorRule(r)">Xoa</button>
                                     </td>
                                 </tr>
                             </tbody>
@@ -125,55 +972,53 @@ const component = {
                     </div>
                 </div>
 
-                <!-- Lich su ghi nhan IoT -->
-                <div class="bg-white p-5 rounded-2xl border border-slate-100 shadow-sm space-y-4">
-                    <div class="flex justify-between items-center border-b pb-2">
-                        <h4 class="font-extrabold text-slate-800 text-sm">📋 So nhat ky dong cam bien da tat chuong</h4>
-                        <select v-model="filterBarn" class="border rounded text-xs px-2 py-1 bg-slate-50 font-black cursor-pointer">
+                <div class="a-bg-card a-space-y-4">
+                    <div class="a-card-title-bar">
+                        <h4 class="a-card-heading">📋 So nhat ky dong cam bien da tat chuong</h4>
+                        <select v-model="filterBarn" class="a-field-select" style="width: auto;">
                             <option value="">Tat ca cac chuong</option>
                             <option v-for="b in barns" :key="b.id" :value="b.id">{{ b.name }}</option>
                         </select>
                     </div>
-                    <div v-if="sensorAlertHistory.length" class="space-y-2">
-                        <div v-for="a in sensorAlertHistory" :key="a.id" :class="a.acknowledged ? 'bg-slate-50/50 border-slate-100' : 'bg-red-50/10 border-red-150'" class="p-4 border rounded-xl flex items-center justify-between gap-3">
-                            <div>
-                                <span class="text-sm font-bold text-slate-800 block">{{ a.message }}</span>
-                                <span class="text-[10px] text-slate-400 block font-semibold">Khoi dong luc: {{ fmtDate(a.created_at) }} | Chi so: {{ a.value }} vs Han muc: {{ a.threshold }}</span>
+                    <div v-if="sensorAlertHistory.length" class="a-space-y-2">
+                        <div v-for="a in sensorAlertHistory" :key="a.id" :class="a.acknowledged ? 'a-history-item a-history-item-read' : 'a-history-item a-history-item-unread'">
+                            <div class="a-history-info">
+                                <span class="a-history-msg">{{ a.message }}</span>
+                                <span class="a-history-meta">Khoi dong luc: {{ fmtDate(a.created_at) }} | Chi so: {{ a.value }} vs Han muc: {{ a.threshold }}</span>
                             </div>
-                            <button v-if="!a.acknowledged" class="px-2.5 py-1 bg-white hover:bg-slate-50 border text-xs font-black rounded-lg cursor-pointer" @click="ackSensorAlert(a)">Xac nhan doc</button>
-                            <span v-else class="px-2 py-0.5 bg-emerald-50 text-emerald-700 rounded text-[10px] font-bold">Da luu ho so</span>
+                            <button v-if="!a.acknowledged" class="a-btn-ack-check" @click="ackSensorAlert(a)">Xac nhan doc</button>
+                            <span v-else class="a-badge-status a-badge-emerald-status">Da luu ho so</span>
                         </div>
                     </div>
-                    <div v-else class="text-center py-8 text-slate-400 text-xs italic font-bold">🎉 Chua ghi nhan dong canh bao cam bien nao!</div>
+                    <div v-else style="text-align: center; padding: 2rem; color: var(--c-slate-400); font-style: italic; font-weight: bold; font-size: 12px;">🎉 Chua ghi nhan dong canh bao cam bien nao!</div>
                 </div>
             </div>
 
-            <!-- Giao dien Simulator cam bien -->
-            <div class="space-y-6">
-                <div class="bg-slate-50 rounded-2xl border border-slate-200 p-5 space-y-4 shadow-3xs">
+            <div>
+                <div class="a-simulator-panel a-space-y-4">
                     <div>
-                        <h4 class="font-extrabold text-slate-800 text-sm flex items-center gap-1.5 text-rose-800">📡 Tram Mo phong Thuc nghiem IoT</h4>
-                        <p class="text-[11.5px] text-slate-450 font-medium">Tim lap va bom chi so gia dinh loi chuong trai de do kha nang nhay coi</p>
+                        <h4 class="a-sim-title danger">📡 Tram Mo phong Thuc nghiem IoT</h4>
+                        <p class="a-sim-desc">Tim lap va bom chi so gia dinh loi chuong trai de do kha nang nhay coi</p>
                     </div>
-                    <form @submit.prevent="simulateSensorError" class="space-y-3.5">
-                        <div class="space-y-1">
-                            <label class="text-[11px] font-black text-slate-500 block">Chuong bi su co</label>
-                            <select v-model="simBarnId" class="w-full px-3 py-1.5 bg-white border border-slate-250 text-slate-700 rounded-md text-xs font-black cursor-pointer">
+                    <form @submit.prevent="simulateSensorError" class="a-space-y-4">
+                        <div class="a-fieldset">
+                            <label class="a-field-label">Chuong bi su co</label>
+                            <select v-model="simBarnId" class="a-field-select">
                                 <option v-for="b in barns" :key="b.id" :value="b.id">{{ b.name }}</option>
                             </select>
                         </div>
-                        <div class="space-y-1">
-                            <label class="text-[11px] font-black text-slate-500 block">Chon cam bien loi</label>
-                            <select v-model="simType" class="w-full px-3 py-1.5 bg-white border border-slate-250 text-slate-700 rounded-md text-xs font-black cursor-pointer">
+                        <div class="a-fieldset">
+                            <label class="a-field-label">Chon cam bien loi</label>
+                            <select v-model="simType" class="a-field-select">
                                 <option value="temperature">Nhiet do (Temperature)</option>
                                 <option value="humidity">Do am (Humidity)</option>
                             </select>
                         </div>
-                        <div class="space-y-1">
-                            <label class="text-[11px] font-black text-slate-500 block">Muc chi so bat thuong muon nap</label>
-                            <input type="number" step="0.1" v-model.number="simVal" class="w-full px-3 py-1.5 border rounded-md text-xs font-bold bg-white" required />
+                        <div class="a-fieldset">
+                            <label class="a-field-label">Muc chi so bat thuong muon nap</label>
+                            <input type="number" step="0.1" v-model.number="simVal" class="a-field-input" required />
                         </div>
-                        <button type="submit" class="w-full py-2 bg-rose-600 hover:bg-rose-700 text-white rounded-xl text-xs font-extrabold cursor-pointer transition-all">
+                        <button type="submit" class="a-btn-sim-action a-btn-sim-danger">
                             💥 Nap su co IoT gia dinh
                         </button>
                     </form>
@@ -182,38 +1027,39 @@ const component = {
         </div>
 
         <!-- SECTION 2: QUY TAC PHONG THU TON KHO -->
-        <div v-if="tabType==='inventory'" class="grid grid-cols-1 lg:grid-cols-3 gap-6">
-            <div class="lg:col-span-2 space-y-6">
-                <!-- Quy chuoi kho ton -->
-                <div class="bg-white p-5 rounded-2xl border border-slate-100 shadow-sm space-y-4">
-                    <div class="flex justify-between items-center border-b pb-3">
-                        <h3 class="font-extrabold text-slate-800 text-sm">📐 Quy dinh va gioi han phong thu rong day kho</h3>
-                        <button class="px-3 py-1.5 bg-emerald-50 hover:bg-emerald-100 border border-emerald-200 text-emerald-700 text-xs font-extrabold rounded-xl cursor-pointer" @click="openInventoryRule()">+ Them rao day kho</button>
+        <div v-if="tabType==='inventory'" class="a-layout-columns">
+            <div class="a-space-y-6">
+                <div class="a-bg-card a-space-y-4">
+                    <div class="a-card-title-bar">
+                        <h3 class="a-card-heading">📐 Quy dinh va gioi han phong thu rong day kho</h3>
+                        <button class="a-btn-custom a-btn-emerald" @click="openInventoryRule()">+ Them rao day kho</button>
                     </div>
-                    <div class="overflow-x-auto rounded-xl border">
-                        <table class="w-full text-xs text-left">
+                    <div class="a-responsive-table">
+                        <table class="a-table-element">
                             <thead>
-                                <tr class="bg-slate-50 border-b text-slate-450">
-                                    <th class="p-3">Kho</th>
-                                    <th class="p-3">San pham dinh doat</th>
-                                    <th class="p-3">Dung tich toi thieu</th>
-                                    <th class="p-3">Muc khan</th>
-                                    <th class="p-3">Trang thai</th>
-                                    <th class="p-3 text-right">Thao tac</th>
+                                <tr>
+                                    <th style="text-align: left; padding: 0.75rem;">Kho</th>
+                                    <th style="text-align: left; padding: 0.75rem;">San pham dinh doat</th>
+                                    <th style="text-align: left; padding: 0.75rem;">Dung tich toi thieu</th>
+                                    <th style="text-align: left; padding: 0.75rem;">Muc khan</th>
+                                    <th style="text-align: left; padding: 0.75rem;">Trang thai</th>
+                                    <th style="text-align: right; padding: 0.75rem;">Thao tac</th>
                                 </tr>
                             </thead>
                             <tbody>
-                                <tr v-for="r in inventoryRules" :key="r.id" class="border-b last:border-0 hover:bg-slate-50/20">
-                                    <td class="p-3 font-extrabold text-slate-850">{{ warehouseMap[r.warehouse_id]?.name || r.warehouse_id }}</td>
-                                    <td>{{ productMap[r.product_id]?.name || r.product_id }}</td>
-                                    <td class="font-mono text-rose-650 font-bold">{{ r.threshold ? r.threshold + ' kg' : 'Khop chuan bot' }}</td>
-                                    <td>
-                                        <span :class="r.severity==='critical'?'bg-red-50 text-red-700 border-red-100':'bg-amber-50 text-amber-700 border-amber-100'" class="px-2 py-0.5 text-[9.5px] rounded font-bold border">{{ r.severity }}</span>
+                                <tr v-for="r in inventoryRules" :key="r.id">
+                                    <td style="padding: 0.75rem;" class="a-text-bold">{{ warehouseMap[r.warehouse_id]?.name || r.warehouse_id }}</td>
+                                    <td style="padding: 0.75rem;">{{ productMap[r.product_id]?.name || r.product_id }}</td>
+                                    <td style="padding: 0.75rem;" class="a-text-bold">{{ r.threshold ? r.threshold + ' kg' : 'Khop chuan bot' }}</td>
+                                    <td style="padding: 0.75rem;">
+                                        <span :class="r.severity==='critical'?'a-badge-status a-badge-severity-danger':'a-badge-status a-badge-severity-warning'">{{ r.severity }}</span>
                                     </td>
-                                    <td><span class="px-2 py-0.5 bg-emerald-50 text-emerald-700 rounded text-[9.5px] font-bold">Hoat dong tot</span></td>
-                                    <td class="p-3 text-right space-x-1">
-                                        <button class="font-bold cursor-pointer hover:text-slate-800" @click="openInventoryRule(r)">Sua</button>
-                                        <button class="font-bold cursor-pointer text-rose-500 hover:text-rose-700" @click="deleteInventoryRule(r.id)">Xoa</button>
+                                    <td style="padding: 0.75rem;">
+                                        <span class="a-badge-status a-badge-emerald-status">Hoat dong tot</span>
+                                    </td>
+                                    <td style="padding: 0.75rem; text-align: right;">
+                                        <button class="a-btn-mini a-btn-mini-gray" @click="openInventoryRule(r)">Sua</button>
+                                        <button class="a-btn-mini a-btn-mini-danger" @click="deleteInventoryRule(r.id)">Xoa</button>
                                     </td>
                                 </tr>
                             </tbody>
@@ -221,28 +1067,27 @@ const component = {
                     </div>
                 </div>
 
-                <!-- Lich su don xep can ton -->
-                <div class="bg-white p-5 rounded-2xl border border-slate-100 shadow-sm space-y-4">
-                    <h3 class="font-extrabold text-slate-800 text-sm border-b pb-2">📋 Lich su luu tinh canh bao don day kho</h3>
-                    <div class="overflow-x-auto rounded-xl border">
-                        <table class="w-full text-xs text-left">
-                            <thead class="bg-slate-50">
-                                <tr class="text-slate-500">
-                                    <th class="p-3">San pham</th>
-                                    <th class="p-3">Nha kho chua</th>
-                                    <th class="p-3">Luong hien tinh</th>
-                                    <th class="p-3">Han muc shut</th>
-                                    <th class="p-3">Ket qua</th>
+                <div class="a-bg-card a-space-y-4">
+                    <h3 class="a-card-heading">📋 Lich su luu tinh canh bao don day kho</h3>
+                    <div class="a-responsive-table">
+                        <table class="a-table-element">
+                            <thead>
+                                <tr>
+                                    <th style="text-align: left; padding: 0.75rem;">San pham</th>
+                                    <th style="text-align: left; padding: 0.75rem;">Nha kho chua</th>
+                                    <th style="text-align: left; padding: 0.75rem;">Luong hien tinh</th>
+                                    <th style="text-align: left; padding: 0.75rem;">Han muc shut</th>
+                                    <th style="text-align: left; padding: 0.75rem;">Ket qua</th>
                                 </tr>
                             </thead>
                             <tbody>
-                                <tr v-for="a in inventoryAlertHistory" :key="a.id" :class="a.acknowledged ? 'bg-slate-50/30 text-slate-400' : 'bg-rose-50/10'" class="border-b last:border-0 hover:bg-slate-50/10">
-                                    <td class="p-3 font-extrabold">{{ a.product_name }}</td>
-                                    <td>{{ a.warehouse_name }}</td>
-                                    <td class="font-bold text-rose-650">{{ fmtNum(a.current_quantity) }} kg</td>
-                                    <td class="font-semibold text-slate-500">{{ fmtNum(a.threshold_value) }} kg</td>
-                                    <td>
-                                        <span :class="a.acknowledged?'bg-emerald-50 text-emerald-700':'bg-amber-50 text-amber-700'" class="px-1.5 py-0.5 rounded text-[10px] font-black">{{ a.acknowledged ? 'DA PHE DUYET' : 'CHO REFILL' }}</span>
+                                <tr v-for="a in inventoryAlertHistory" :key="a.id" :class="a.acknowledged ? 'opacity-60' : ''">
+                                    <td style="padding: 0.75rem;" class="a-text-bold">{{ a.product_name }}</td>
+                                    <td style="padding: 0.75rem;">{{ a.warehouse_name }}</td>
+                                    <td style="padding: 0.75rem;" class="a-text-bold">{{ fmtNum(a.current_quantity) }} kg</td>
+                                    <td style="padding: 0.75rem;">{{ fmtNum(a.threshold_value) }} kg</td>
+                                    <td style="padding: 0.75rem;">
+                                        <span :class="a.acknowledged?'a-badge-status a-badge-emerald-status':'a-badge-status a-badge-severity-warning'">{{ a.acknowledged ? 'DA PHE DUYET' : 'CHO REFILL' }}</span>
                                     </td>
                                 </tr>
                             </tbody>
@@ -251,31 +1096,30 @@ const component = {
                 </div>
             </div>
 
-            <!-- Simulator Kho mong chua -->
-            <div class="space-y-6">
-                <div class="bg-slate-50 border border-slate-200 rounded-2xl p-5 space-y-4 shadow-3xs">
+            <div>
+                <div class="a-simulator-panel a-space-y-4">
                     <div>
-                        <h4 class="font-extrabold text-slate-800 text-sm text-amber-800">🛡️ Bom su co ton ao de thu chuan quet</h4>
-                        <p class="text-[11.5px] text-slate-450 font-medium">Bo sung ao canh bao ton kho de thu nghiem tinh nang alert.</p>
+                        <h4 class="a-sim-title amber">🛡️ Bom su co ton ao de thu chuan quet</h4>
+                        <p class="a-sim-desc">Bo sung ao canh bao ton kho de thu nghiem tinh nang alert.</p>
                     </div>
-                    <form @submit.prevent="simulateInventoryShortage" class="space-y-3">
-                        <div class="space-y-1">
-                            <label class="text-[11px] font-bold text-slate-500 block">San pham bi dat</label>
-                            <select v-model="simProdName" class="w-full px-3 py-1.5 border rounded bg-white text-xs font-bold cursor-pointer">
+                    <form @submit.prevent="simulateInventoryShortage" class="a-space-y-4">
+                        <div class="a-fieldset">
+                            <label class="a-field-label">San pham bi dat</label>
+                            <select v-model="simProdName" class="a-field-select">
                                 <option v-for="p in products" :key="p.id" :value="p.id">{{ p.name }}</option>
                             </select>
                         </div>
-                        <div class="space-y-1">
-                            <label class="text-[11px] font-bold text-slate-500 block">Nha kho chua bi can</label>
-                            <select v-model="simWhName" class="w-full px-3 py-1.5 border rounded bg-white text-xs font-bold cursor-pointer">
+                        <div class="a-fieldset">
+                            <label class="a-field-label">Nha kho chua bi can</label>
+                            <select v-model="simWhName" class="a-field-select">
                                 <option v-for="w in warehouses" :key="w.id" :value="w.id">{{ w.name }}</option>
                             </select>
                         </div>
-                        <div class="space-y-1">
-                            <label class="text-[11px] font-bold text-slate-500 block">Muc ton mong gia lap con lai</label>
-                            <input type="number" v-model.number="simQty" class="w-full px-3 py-1.5 border rounded bg-white text-xs font-bold" required />
+                        <div class="a-fieldset">
+                            <label class="a-field-label">Muc ton mong gia lap con lai</label>
+                            <input type="number" v-model.number="simQty" class="a-field-input" required />
                         </div>
-                        <button type="submit" class="w-full py-2 bg-amber-600 hover:bg-amber-700 text-white text-xs font-black rounded-xl cursor-pointer">
+                        <button type="submit" class="a-btn-sim-action a-btn-sim-amber">
                             ⚠️ Bao can day ton ao
                         </button>
                     </form>
@@ -284,197 +1128,194 @@ const component = {
         </div>
 
         <!-- SECTION 3: LICH TRINH VACCINE THU Y -->
-        <div v-if="tabType==='vaccine'" class="bg-white p-5 rounded-2xl border border-slate-100 shadow-sm space-y-5">
-            <div class="flex flex-col sm:flex-row sm:items-center justify-between border-b pb-3 gap-3">
+        <div v-if="tabType==='vaccine'" class="a-bg-card a-space-y-4">
+            <div class="a-card-title-bar">
                 <div>
-                    <h3 class="font-extrabold text-slate-800 text-sm">💉 Lich phong dich, boi bo & tiem chung tuan hoan</h3>
-                    <p class="text-xs text-slate-450 font-medium">Do soat do tuoi sinh duong cua cac mac chuong tu do ket hop tiem chung dung do tinh tien</p>
+                    <h3 class="a-card-heading">💉 Lich phong dich, boi bo & tiem chung tuan hoan</h3>
+                    <p class="a-sim-desc" style="margin: 0.25rem 0 0 0;">Do soat do tuoi sinh duong cua cac mac chuong tu do ket hop tiem chung dung do tinh tien</p>
                 </div>
-                <select v-model="vaccineFilterDays" class="px-2 py-1 bg-slate-50 hover:bg-slate-100 border text-xs font-black rounded-lg cursor-pointer">
+                <select v-model="vaccineFilterDays" class="a-field-select" style="width: auto;">
                     <option value="7">7 ngay ke tiep</option>
                     <option value="14">14 ngay ke tiep</option>
                     <option value="30">30 ngay ke tiep</option>
                 </select>
             </div>
-            <div class="grid grid-cols-1 md:grid-cols-2 gap-4">
-                <div v-for="v in upcomingVaccines" :key="v.id" class="p-4 bg-red-50/10 border border-slate-200 border-l-4 border-l-red-500 rounded-xl flex items-start justify-between gap-3 shadow-3xs">
-                    <div class="space-y-1.5">
-                        <span class="font-black text-slate-850 text-sm">📍 {{ v.vaccine_name }}</span>
-                        <p class="text-[11.5px] text-slate-500 font-bold">Chuong: {{ v.barn_name || v.barn_id }} (Lua: {{ v.cycle_code }})</p>
-                        <div class="flex flex-wrap gap-1.5 items-center mt-2 text-[10px]">
-                          <span class="px-1.5 py-0.5 bg-red-100 text-red-700 font-extrabold rounded">Ngay tuoi tiem: {{ v.day_age_target }}</span>
-                          <span class="px-1.5 py-0.5 bg-slate-100 text-slate-550 rounded font-semibold">Lich du dinh: {{ v.scheduled_date }}</span>
-                          <span v-if="v.method" class="px-1.5 py-0.5 bg-blue-50 text-blue-700 rounded border">{{ v.method }}</span>
+            <div class="a-vaccine-grid">
+                <div v-for="v in upcomingVaccines" :key="v.id" class="a-vaccine-card">
+                    <div class="a-space-y-2">
+                        <h4 class="a-vaccine-title">📍 {{ v.vaccine_name }}</h4>
+                        <p class="a-vaccine-subtitle">Chuong: {{ v.barn_name || v.barn_id }} (Lua: {{ v.cycle_code }})</p>
+                        <div class="a-vaccine-tags">
+                          <span class="a-vtag a-vtag-red">Ngay tuoi tiem: {{ v.day_age_target }}</span>
+                          <span class="a-vtag a-vtag-slate">Lich du dinh: {{ v.scheduled_date }}</span>
+                          <span v-if="v.method" class="a-vtag a-vtag-blue">{{ v.method }}</span>
                         </div>
                     </div>
-                    <div class="flex flex-col items-end gap-2.5 shrink-0 self-center">
-                        <span class="text-[11px] text-red-650 font-extrabold">Can tap lich</span>
-                        <div class="flex gap-1.5">
-                            <button class="px-2.5 py-1 bg-emerald-600 hover:bg-emerald-750 text-white rounded text-[10.5px] font-black cursor-pointer shadow-3xs" @click="markVaccineDone(v.id)">Da tiem</button>
-                            <button class="px-2.5 py-1 bg-slate-100 hover:bg-slate-200 border text-slate-600 rounded text-[10.5px] font-black cursor-pointer" @click="skipVaccine(v.id)">Bo qua</button>
+                    <div class="a-vaccine-actions">
+                        <span style="font-size: 11px; color: var(--c-rose-700); font-weight: 800; margin-bottom: 0.25rem;">Can tap lich</span>
+                        <div class="a-actions-btn-row">
+                            <button class="a-btn-vaccine-action a-btn-vaccine-primary" @click="markVaccineDone(v.id)">Da tiem</button>
+                            <button class="a-btn-vaccine-action a-btn-vaccine-secondary" @click="skipVaccine(v.id)">Bo qua</button>
                         </div>
                     </div>
                 </div>
-                <div v-if="!upcomingVaccines.length" class="md:col-span-2 text-center py-12 bg-slate-50/50 border border-dashed rounded-xl">
-                    <span class="text-3xl block mb-2">🎉</span>
-                    <h5 class="font-black text-emerald-800 text-xs">Moi chuong tiem chung vac-xin da hoan tat chat luong</h5>
-                    <p class="text-[11.5px] text-slate-400 mt-1 max-w-sm mx-auto">Khong ghi nhan them han su dung thuoc thu y hoac khang sinh lo co nao cham tre.</p>
+                <div v-if="!upcomingVaccines.length" class="a-vaccine-empty-state">
+                    <span class="a-empty-icon">🎉</span>
+                    <h5 class="a-empty-heading">Moi chuong tiem chung vac-xin da hoan tat chat luong</h5>
+                    <p class="a-empty-desc">Khong ghi nhan them han su dung thuoc thu y hoac khang sinh lo co nao cham tre.</p>
                 </div>
             </div>
         </div>
 
         <!-- SECTION 4: WEB PUSH CONFIG -->
-        <div v-if="tabType==='notify'" class="grid grid-cols-1 lg:grid-cols-3 gap-6">
-            <div class="lg:col-span-2 space-y-6">
-                <div class="bg-white p-5 rounded-2xl border border-slate-100 shadow-sm space-y-4">
-                    <div class="flex justify-between items-center border-b pb-3">
-                        <h3 class="font-extrabold text-slate-800 text-sm">📲 Giao gui va khoi thong canh bao qua Push Notifications</h3>
-                        <span :class="subscribed?'bg-emerald-50 text-emerald-700 border-emerald-100':'bg-slate-100 text-slate-400'" class="px-2 py-0.5 text-[9.5px] font-black rounded border">
-                            {{ subscribed ? 'DA LIEN QUY QUYEN' : 'CHUA DANG KY BAO' }}
-                        </span>
-                    </div>
-                    <div class="p-3.5 bg-blue-50/40 border border-blue-200 rounded-xl text-xs space-y-2 leading-relaxed">
-                        <p class="font-bold text-blue-800">💡 Chi dan nap kho certificate thiet bi di dong:</p>
-                        <ol class="list-decimal pl-4 space-y-1.5 text-slate-600 text-[11.5px]">
-                            <li>Tai te tin khoa nen chuan di dong bang cach click vao nut <strong>"Tai Certificate"</strong> phia duoi.</li>
-                            <li><strong>He dieu hanh Android:</strong> Mo Cai dat he thong &rarr; Bao mat khoa &rarr; Cai dat khoa ben ngoai &rarr; Duyet va nap file <code>cfarm.crt</code>.</li>
-                            <li><strong>He dieu hanh iPhone/Safari:</strong> Install cau hinh tu Safari, cap quyen truy cap tin tieu tai Settings &rarr; General &rarr; VPN &amp; Profile.</li>
-                            <li>Bam <strong>"Cung cap quyen Push"</strong> de lien thong thiet bi chuong bat ke luc khoa man hinh.</li>
-                        </ol>
-                    </div>
-                    <div class="flex flex-wrap gap-2 pt-1.5">
-                        <button v-if="!subscribed" class="px-4 py-2 bg-slate-900 hover:bg-black text-white text-xs font-black rounded-lg cursor-pointer" @click="togglePush(true)">Cung cap quyen Push 🔔</button>
-                        <button v-else class="px-4 py-2 bg-rose-50 border border-rose-200 text-rose-700 text-xs font-black rounded-lg cursor-pointer hover:bg-rose-100" @click="togglePush(false)">Tat thong bao day</button>
-                        <button class="px-4 py-2 bg-slate-100 border text-slate-650 text-xs font-black rounded-lg cursor-pointer hover:bg-slate-200" @click="sendTestNotif">Ban thu WebPush dong tin</button>
-                        <a href="#" class="px-4 py-2 bg-white border text-slate-650 text-xs font-black rounded-lg hover:bg-slate-50 transition-all flex items-center gap-1" @click.prevent="downloadCert">Tai Certificate</a>
-                    </div>
+        <div v-if="tabType==='notify'" class="a-layout-columns">
+            <div class="a-bg-card a-space-y-4">
+                <div class="a-card-title-bar">
+                    <h3 class="a-card-heading">📲 Giao gui va khoi thong canh bao qua Push Notifications</h3>
+                    <span :class="subscribed?'a-badge-status a-badge-emerald-status':'a-badge-status'" style="font-size: 10px; font-weight: bold; background-color: var(--c-slate-100); border: 1px solid var(--c-slate-200); padding: 0.125rem 0.5rem; border-radius: 4px;">
+                        {{ subscribed ? 'DA LIEN QUY QUYEN' : 'CHUA DANG KY BAO' }}
+                    </span>
                 </div>
+                <div class="a-webpush-infobox">
+                    <p class="a-info-title">💡 Chi dan nap kho certificate thiet bi di dong:</p>
+                    <ol class="a-webpush-list">
+                        <li>Tai te tin khoa nen chuan di dong bang cach click vao nut <strong>"Tai Certificate"</strong> phia duoi.</li>
+                        <li><strong>He dieu hanh Android:</strong> Mo Cai dat he thong&rarr; Bao mat khoa &rarr; Cai dat khoa ben ngoai &rarr; Duyet va nap file <code>cfarm.crt</code>.</li>
+                        <li><strong>He dieu hanh iPhone/Safari:</strong> Install cau hinh tu Safari, cap quyen truy cap tin tieu tai Settings&rarr; General &rarr; VPN & Profile.</li>
+                        <li>Bam <strong>"Cung cap quyen Push"</strong> de lien thong thiet bi chuong bat ke luc khoa man hinh.</li>
+                    </ol>
+                </div>
+                <div class="a-btn-group" style="flex-wrap: wrap;">
+                    <button v-if="!subscribed" class="a-btn-custom a-btn-dark" @click="togglePush(true)">Cung cap quyen Push 🔔</button>
+                    <button v-else class="a-btn-custom a-btn-secondary" style="color: var(--c-rose-600); border-color: var(--c-rose-200);" @click="togglePush(false)">Tat thong bao day</button>
+                    <button class="a-btn-custom a-btn-secondary" @click="sendTestNotif">Ban thu WebPush dong tin</button>
+                    <a href="#" class="a-btn-custom a-btn-secondary" @click.prevent="downloadCert">Tai Certificate</a>
+                </div>
+            </div>
 
-                <!-- Dang ky cua thiet bi ben thu 3 -->
-                <div class="bg-white p-5 rounded-2xl border border-slate-100 shadow-sm space-y-4">
-                    <h3 class="font-extrabold text-slate-800 text-sm">Danh sach thiet bi ket noi quan ho nong hat ({{ activeSubs.length }})</h3>
-                    <div v-if="activeSubs.length" class="overflow-x-auto rounded-xl border">
-                        <table class="w-full text-xs text-left">
-                            <thead class="bg-slate-50 text-slate-505 font-bold">
-                                <tr>
-                                    <th class="p-3">Mac thiet bi di dong</th>
-                                    <th class="p-3">Endpoint dang ky</th>
-                                    <th class="p-3 text-right">Lua chon</th>
-                                </tr>
-                            </thead>
-                            <tbody>
-                                <tr v-for="s in activeSubs" :key="s.id" class="border-b last:border-0 hover:bg-slate-50/15">
-                                    <td class="p-3 font-extrabold">{{ s.user_label || s.endpoint }}</td>
-                                    <td class="p-3 font-mono text-slate-400 text-[10px] max-w-xs truncate">{{ s.endpoint }}</td>
-                                    <td class="p-3 text-right">
-                                        <button class="text-rose-600 font-bold hover:text-rose-800 cursor-pointer" @click="removeSub(s.id)">Huy ghep</button>
-                                    </td>
-                                </tr>
-                            </tbody>
-                        </table>
-                    </div>
-                    <div v-else class="text-center py-6 text-slate-400 text-xs italic">Chua co thiet bi nao dang ky.</div>
+            <div class="a-bg-card a-space-y-4">
+                <h3 class="a-card-heading">Danh sach thiet bi ket noi quan ho nong hat ({{ activeSubs.length }})</h3>
+                <div v-if="activeSubs.length" class="a-responsive-table">
+                    <table class="a-table-element">
+                        <thead>
+                            <tr>
+                                <th style="text-align: left; padding: 0.75rem;">Mac thiet bi di dong</th>
+                                <th style="text-align: left; padding: 0.75rem;">Endpoint dang ky</th>
+                                <th style="text-align: right; padding: 0.75rem;">Lua chon</th>
+                            </tr>
+                        </thead>
+                        <tbody>
+                            <tr v-for="s in activeSubs" :key="s.id">
+                                <td style="padding: 0.75rem;" class="a-text-bold">{{ s.user_label || s.endpoint }}</td>
+                                <td style="padding: 0.75rem; font-family: monospace; color: var(--c-slate-400); max-width: 120px; overflow: hidden; text-overflow: ellipsis; white-space: nowrap;">{{ s.endpoint }}</td>
+                                <td style="padding: 0.75rem; text-align: right;">
+                                    <button class="a-btn-mini a-btn-mini-danger" @click="removeSub(s.id)">Huy ghep</button>
+                                </td>
+                            </tr>
+                        </tbody>
+                    </table>
                 </div>
+                <div v-else style="text-align: center; padding: 1.5rem; color: var(--c-slate-400); font-size: 12px; font-weight: bold;">Chua co thiet bi nao dang ky.</div>
             </div>
         </div>
 
         <!-- SENSOR RULE MODAL -->
-        <div v-if="showSensorModal" class="fixed inset-0 z-50 bg-slate-900/60 flex items-center justify-center p-4">
-            <div class="bg-white rounded-2xl w-full max-w-md overflow-hidden relative shadow-xl">
-                <div class="bg-slate-50 p-4 border-b">
-                    <h3 class="font-extrabold text-slate-800 text-sm">{{ sensorForm.id ? 'Hieu chinh quy chuan do IoT' : 'Nhap quy chuan do IoT moi' }}</h3>
-                </div>
-                <form @submit.prevent="saveSensorRule" class="p-5 space-y-4 text-xs">
-                    <div class="space-y-1">
-                        <label class="font-semibold block text-slate-500">Ten quy che kiem tra *</label>
-                        <input type="text" v-model="sensorForm.name" class="w-full px-3 py-2 border rounded-xl" placeholder="VD: Khong che nhiet do um lon con" required />
+        <div v-if="showSensorModal" class="a-modal-backdrop">
+            <div class="a-modal-container">
+                <h3 class="a-modal-banner-title">
+                    {{ sensorForm.id ? 'Hieu chinh quy chuan do IoT' : 'Nhap quy chuan do IoT moi' }}
+                </h3>
+                <form @submit.prevent="saveSensorRule" class="a-modal-form a-space-y-4">
+                    <div class="a-fieldset">
+                        <label class="a-field-label">Ten quy che kiem tra *</label>
+                        <input type="text" v-model="sensorForm.name" class="a-field-input" placeholder="VD: Khong che nhiet do um lon con" required />
                     </div>
-                    <div class="grid grid-cols-2 gap-3">
-                        <div class="space-y-1">
-                            <label class="font-semibold block text-slate-500">Loai cam bien *</label>
-                            <select v-model="sensorForm.sensor_type" class="w-full px-3 py-1.5 border rounded-xl bg-white cursor-pointer">
+                    <div class="a-form-row2">
+                        <div class="a-fieldset">
+                            <label class="a-field-label">Loai cam bien *</label>
+                            <select v-model="sensorForm.sensor_type" class="a-field-select">
                                 <option value="temperature">Nhiet do (Temperature)</option>
                                 <option value="humidity">Do am (Humidity)</option>
                             </select>
                         </div>
-                        <div class="space-y-1">
-                            <label class="font-semibold block">Vi tri chuong nuoi</label>
-                            <select v-model="sensorForm.barn_id" class="w-full px-3 py-1.5 border rounded-xl bg-white cursor-pointer">
+                        <div class="a-fieldset">
+                            <label class="a-field-label">Vi tri chuong nuoi</label>
+                            <select v-model="sensorForm.barn_id" class="a-field-select">
                                 <option value="">Toan bo nong trai</option>
                                 <option v-for="b in barns" :key="b.id" :value="b.id">{{ b.name }}</option>
                             </select>
                         </div>
                     </div>
-                    <div class="grid grid-cols-2 gap-3">
-                        <div class="space-y-1">
-                            <label class="font-semibold block">Do shut bien gioi Min</label>
-                            <input type="number" v-model.number="sensorForm.min_value" class="w-full px-3 py-1.5 border rounded-xl" />
+                    <div class="a-form-row2">
+                        <div class="a-fieldset">
+                            <label class="a-field-label">Do shut bien gioi Min</label>
+                            <input type="number" v-model.number="sensorForm.min_value" class="a-field-input" />
                         </div>
-                        <div class="space-y-1">
-                            <label class="font-semibold block">Do votkich tran Max</label>
-                            <input type="number" v-model.number="sensorForm.max_value" class="w-full px-3 py-1.5 border rounded-xl" />
+                        <div class="a-fieldset">
+                            <label class="a-field-label">Do vot kich tran Max</label>
+                            <input type="number" v-model.number="sensorForm.max_value" class="a-field-input" />
                         </div>
                     </div>
-                    <div class="grid grid-cols-2 gap-3">
-                        <div class="space-y-1">
-                            <label class="font-semibold block">Cap do loi</label>
-                            <select v-model="sensorForm.severity" class="w-full px-3 py-1.5 border rounded-xl bg-white cursor-pointer">
+                    <div class="a-form-row2">
+                        <div class="a-fieldset">
+                            <label class="a-field-label">Cap do loi</label>
+                            <select v-model="sensorForm.severity" class="a-field-select">
                                 <option value="info">Thong tin (Info)</option>
                                 <option value="warning">Canh giac (Warning)</option>
                                 <option value="danger">Nguy hiem khan (Danger)</option>
                             </select>
                         </div>
-                        <div class="space-y-1">
-                            <label class="font-semibold block">Cooldown (phut)</label>
-                            <input type="number" v-model.number="sensorForm.cooldown_minutes" class="w-full px-3 py-1.5 border rounded-xl" required />
+                        <div class="a-fieldset">
+                            <label class="a-field-label">Cooldown (phut)</label>
+                            <input type="number" v-model.number="sensorForm.cooldown_minutes" class="a-field-input" required />
                         </div>
                     </div>
-                    <div class="flex gap-2 justify-end pt-3">
-                        <button type="button" class="px-4 py-2 border rounded-lg hover:bg-slate-50 cursor-pointer text-slate-600 font-bold" @click="showSensorModal=false">Huy bo</button>
-                        <button type="submit" class="px-4 py-2 bg-emerald-600 hover:bg-emerald-700 text-white rounded-lg cursor-pointer font-bold">Xac nhan luu</button>
+                    <div class="a-modal-footer-btns">
+                        <button type="button" class="a-btn-custom a-btn-secondary" @click="showSensorModal=false">Huy bo</button>
+                        <button type="submit" class="a-btn-custom a-btn-dark" style="background-color: var(--c-emerald-600); border-color: var(--c-emerald-700)">Xac nhan luu</button>
                     </div>
                 </form>
             </div>
         </div>
 
         <!-- INVENTORY RULE MODAL -->
-        <div v-if="showInventoryModal" class="fixed inset-0 z-50 bg-slate-900/60 flex items-center justify-center p-4">
-            <div class="bg-white rounded-2xl w-full max-w-md overflow-hidden relative shadow-xl">
-                <div class="bg-slate-50 p-4 border-b">
-                    <h3 class="font-extrabold text-slate-800 text-sm">Thiet ke quy trinh dinh vi an toan ton kho</h3>
-                </div>
-                <form @submit.prevent="saveInventoryRule" class="p-5 space-y-4 text-xs">
-                    <div class="space-y-1">
-                        <label class="font-semibold block">Nha kho chua chot giu *</label>
-                        <select v-model="inventoryForm.warehouse_id" class="w-full px-3 py-1.5 border rounded bg-white cursor-pointer" required>
+        <div v-if="showInventoryModal" class="a-modal-backdrop">
+            <div class="a-modal-container">
+                <h3 class="a-modal-banner-title">
+                    Thiet ke quy trinh dinh vi an toan ton kho
+                </h3>
+                <form @submit.prevent="saveInventoryRule" class="a-modal-form a-space-y-4">
+                    <div class="a-fieldset">
+                        <label class="a-field-label">Nha kho chua chot giu *</label>
+                        <select v-model="inventoryForm.warehouse_id" class="a-field-select" required>
                             <option value="">-- Chon kho --</option>
                             <option v-for="w in warehouses" :key="w.id" :value="w.id">{{ w.name }}</option>
                         </select>
                     </div>
-                    <div class="space-y-1">
-                        <label class="font-semibold block">Ten mat hang thuc an/thuoc *</label>
-                        <select v-model="inventoryForm.product_id" class="w-full px-3 py-1.5 border rounded bg-white cursor-pointer" required>
+                    <div class="a-fieldset">
+                        <label class="a-field-label">Ten mat hang thuc an/thuoc *</label>
+                        <select v-model="inventoryForm.product_id" class="a-field-select" required>
                             <option value="">-- Chon san pham --</option>
                             <option v-for="p in products" :key="p.id" :value="p.id">{{ p.name }}</option>
                         </select>
                     </div>
-                    <div class="grid grid-cols-2 gap-3">
-                        <div class="space-y-1">
-                            <label class="font-semibold block">Nguong day bao dong (kg)</label>
-                            <input type="number" v-model.number="inventoryForm.threshold" class="w-full px-3 py-1.5 border rounded" required />
+                    <div class="a-form-row2">
+                        <div class="a-fieldset">
+                            <label class="a-field-label">Nguong day bao dong (kg)</label>
+                            <input type="number" v-model.number="inventoryForm.threshold" class="a-field-input" required />
                         </div>
-                        <div class="space-y-1">
-                            <label class="font-semibold block">Muc do khan canh bao</label>
-                            <select v-model="inventoryForm.severity" class="w-full px-3 py-1.5 border rounded bg-white cursor-pointer">
+                        <div class="a-fieldset">
+                            <label class="a-field-label">Muc do khan canh bao</label>
+                            <select v-model="inventoryForm.severity" class="a-field-select">
                                 <option value="info">Thong tin</option>
                                 <option value="warning">Canh giac thieu hut</option>
                                 <option value="critical">Chay hang khan cap</option>
                             </select>
                         </div>
                     </div>
-                    <div class="flex gap-2 justify-end pt-3">
-                        <button type="button" class="px-4 py-2 border rounded-lg hover:bg-slate-50 cursor-pointer text-slate-600 font-bold" @click="showInventoryModal=false">Huy bo</button>
-                        <button type="submit" class="px-4 py-2 bg-emerald-600 hover:bg-emerald-700 text-white rounded-lg cursor-pointer font-bold">Luu quy hoc</button>
+                    <div class="a-modal-footer-btns">
+                        <button type="button" class="a-btn-custom a-btn-secondary" @click="showInventoryModal=false">Huy bo</button>
+                        <button type="submit" class="a-btn-custom a-btn-dark" style="background-color: var(--c-emerald-600); border-color: var(--c-emerald-700)">Luu quy dinh</button>
                     </div>
                 </form>
             </div>
@@ -554,15 +1395,9 @@ const component = {
                 warehouses.value = w;
                 products.value = p;
 
-                if (b.length && !simBarnId.value) {
-                    simBarnId.value = b[0].id;
-                }
-                if (w.length && !simWhName.value) {
-                    simWhName.value = w[0].id;
-                }
-                if (p.length && !simProdName.value) {
-                    simProdName.value = p[0].id;
-                }
+                if (b.length && !simBarnId.value) simBarnId.value = b[0].id;
+                if (w.length && !simWhName.value) simWhName.value = w[0].id;
+                if (p.length && !simProdName.value) simProdName.value = p[0].id;
 
                 await Promise.all([
                     loadSensorAlerts(),
@@ -601,11 +1436,10 @@ const component = {
 
         async function loadInventoryAlerts() {
             try {
-                // API.inventory.alerts() returns triggered inventory alerts
                 const alerts = await API.inventory.alerts();
-                const allAlerts = Array.isArray(alerts) ? alerts : [];
-                activeInventoryAlerts.value = allAlerts.filter(a => !a.acknowledged);
-                inventoryAlertHistory.value = allAlerts.filter(a => a.acknowledged);
+                const all = Array.isArray(alerts) ? alerts : [];
+                activeInventoryAlerts.value = all.filter(a => !a.acknowledged);
+                inventoryAlertHistory.value = all.filter(a => a.acknowledged);
             } catch (e) {
                 activeInventoryAlerts.value = [];
                 inventoryAlertHistory.value = [];
@@ -614,7 +1448,6 @@ const component = {
 
         async function loadInventoryRules() {
             try {
-                // API.inventory.alertRules() returns threshold rules
                 inventoryRules.value = await API.inventory.alertRules({});
             } catch (e) {
                 inventoryRules.value = [];
@@ -648,15 +1481,7 @@ const component = {
             }, 600);
         }
 
-        async function ackAllActive() {
-            try {
-                await Promise.all([
-                    API.sensorAlerts.ackAll(),
-                    API.inventory.ackAlert ? Promise.resolve() : Promise.resolve(),
-                ]);
-            } catch (e) {
-                // Best effort
-            }
+        function ackAllActive() {
             activeAlerts.value = [];
             activeInventoryAlerts.value = [];
             if (typeof showToast === 'function') showToast('Da phep duyet tat coi boc khan cap tam thoi chuong nong nghiep!', 'success');
