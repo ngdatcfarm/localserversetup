@@ -479,6 +479,16 @@ return {
             setTimeout(() => showToast('Kiem tra hoan tat!'), 800);
         }
 
+        function fmtDate(d) {
+            if (!d) return '';
+            return new Date(d).toLocaleDateString('vi-VN');
+        }
+
+        function fmtNum(n, dec = 0) {
+            if (n == null) return '0';
+            return Number(n).toLocaleString('vi-VN', { minimumFractionDigits: dec, maximumFractionDigits: dec });
+        }
+
         onMounted(() => { loadAll(); });
 
         // ── Return ──────────────────────────────────────
@@ -498,7 +508,8 @@ return {
             openInventoryRule, saveInventoryRule, deleteInventoryRule, ackInventoryAlert,
             markVaccineDone, skipVaccine, changeVaccineDays,
             simulateSensorAlert, simulateInventoryAlert,
-            togglePush, sendTestPush, removeSub, downloadCert, checkAlertsNow
+            togglePush, sendTestPush, removeSub, downloadCert, checkAlertsNow,
+            fmtDate, fmtNum
         };
     },
 
