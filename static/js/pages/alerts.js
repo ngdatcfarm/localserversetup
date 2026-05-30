@@ -174,7 +174,7 @@ return {
 
         async function loadVaccineSchedules() {
             try {
-                vaccineSchedules.value = await API.vaccineSchedules.upcoming(vaccineFilterDays.value);
+                vaccineSchedules.value = await API.vaccines.upcoming(vaccineFilterDays.value);
                 upcomingVaccines.value = vaccineSchedules.value;
             } catch (e) {
                 upcomingVaccines.value = [];
@@ -367,7 +367,7 @@ return {
         // ── Vaccine Actions ────────────────────────────
         async function markVaccineDone(id) {
             try {
-                await API.vaccineSchedules.done(id);
+                await API.vaccines.done(id);
                 vaccineSchedules.value = vaccineSchedules.value.map(v =>
                     v.id === id ? { ...v, status: 'completed' } : v
                 );
@@ -380,7 +380,7 @@ return {
 
         async function skipVaccine(id) {
             try {
-                await API.vaccineSchedules.skip(id);
+                await API.vaccines.skip(id);
                 vaccineSchedules.value = vaccineSchedules.value.map(v =>
                     v.id === id ? { ...v, status: 'skipped' } : v
                 );
