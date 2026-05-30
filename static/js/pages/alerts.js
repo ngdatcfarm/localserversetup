@@ -1,919 +1,494 @@
-const { ref, computed, onMounted, watch } = Vue;
+/**
+ * Alerts Page - He thong Canh bao & Giam sat Rong ro
+ * - 4 tabs: Cam bien, Kho, Vaccine, Push
+ * - Semantic .cf-* CSS classes (no Tailwind)
+ * - Real API calls throughout
+ */
+const { ref, reactive, computed, onMounted, watch } = Vue;
 
-const component = {
-    template: `
-    <div>
-        <div class="page-header">
-            <h2 class="page-title">Canh bao</h2>
-            <div class="flex gap-2">
-                <span v-if="activeSensorCount > 0" class="badge badge-red animate-pulse">{{ activeSensorCount }}</span>
-                <span v-if="activeInventoryCount > 0" class="badge badge-orange animate-pulse">{{ activeInventoryCount }}</span>
-                <button class="btn btn-sm btn-secondary" @click="checkNow">Kiem tra ngay</button>
-                <button v-if="activeAlerts.length || activeInventoryAlerts.length" class="btn btn-sm btn-secondary" @click="ackAllActive">Doc tat ca</button>
-            </div>
-        </div>
-
-        <!-- Active Alerts Summary -->
-        <div v-if="activeAlerts.length || activeInventoryAlerts.length" class="card mb-4 border-l-4 border-red-500">
-            <div class="flex justify-between items-center mb-3">
-                <h3 class="font-semibold text-red-700">Canh bao dang hoat dong</h3>
-                <button class="btn btn-sm btn-ghost" @click="activeAlerts=[]; activeInventoryAlerts=[];">Dong</button>
-            </div>
-
-            <!-- Sensor Alerts -->
-            <div v-if="activeAlerts.length" class="mb-3">
-                <h4 class="text-sm font-semibold text-gray-600 mb-2">Cam bien</h4>
-                <div class="space-y-2">
-                    <div v-for="a in activeAlerts" :key="'sensor-'+a.id" class="flex items-center justify-between p-2 rounded bg-red-50">
-                        <div>
-                            <span class="font-medium">{{ a.message }}</span>
-                            <span class="text-sm text-gray-500 ml-2">({{ a.sensor_type }}: {{ a.value }})</span>
-                        </div>
-                        <div class="flex gap-2">
-                            <span class="badge badge-red">{{ a.severity }}</span>
-                            <button class="btn btn-xs btn-secondary" @click="ackSensorAlert(a)">Doc</button>
-                        </div>
-                    </div>
-                </div>
-            </div>
-
-            <!-- Inventory Alerts -->
-            <div v-if="activeInventoryAlerts.length">
-                <h4 class="text-sm font-semibold text-gray-600 mb-2">Ton kho</h4>
-                <div class="space-y-2">
-                    <div v-for="a in activeInventoryAlerts" :key="'inv-'+a.id" class="flex items-center justify-between p-2 rounded bg-orange-50">
-                        <div>
-                            <span class="font-medium">{{ a.product_name }}</span>
-                            <span class="text-sm text-gray-500 ml-2">- {{ a.warehouse_name }}</span>
-                            <span class="text-sm text-gray-500 ml-2">({{ fmtNum(a.current_quantity) }}/{{ fmtNum(a.threshold_value) }})</span>
-                        </div>
-                        <div class="flex gap-2">
-                            <span class="badge" :class="a.severity === 'critical' ? 'badge-red' : 'badge-yellow'">{{ a.alert_type }}</span>
-                            <button class="btn btn-xs btn-secondary" @click="ackInventoryAlert(a)">Doc</button>
-                        </div>
-                    </div>
-                </div>
-            </div>
-        </div>
-
-        <div class="tabs mb-4">
-            <div class="tab" :class="{active: tab==='sensor'}" @click="tab='sensor'">
-                Cam bien
-                <span v-if="activeSensorCount > 0" class="badge badge-red ml-1">{{ activeSensorCount }}</span>
-            </div>
-            <div class="tab" :class="{active: tab==='inventory'}" @click="tab='inventory'">
-                Ton kho
-                <span v-if="activeInventoryCount > 0" class="badge badge-orange ml-1">{{ activeInventoryCount }}</span>
-            </div>
-            <div class="tab" :class="{active: tab==='vaccine'}" @click="tab='vaccine'">
-                Vaccine
-                <span v-if="upcomingVaccines.length > 0" class="badge badge-red ml-1 animate-pulse">{{ upcomingVaccines.length }}</span>
-            </div>
-            <div class="tab" :class="{active: tab==='notify'}" @click="tab='notify'">
-                Thong bao
-                <span v-if="notifSubscribed" class="badge badge-green ml-1">On</span>
-            </div>
-        </div>
-
-        <!-- Sensor Alerts Tab -->
-        <div v-if="tab==='sensor'">
-            <div class="mb-3 flex gap-2 items-center">
-                <select v-model="filterBarn" @change="loadActiveSensorAlerts(); loadSensorAlerts();" class="border rounded px-3 py-1.5 text-sm">
-                    <option value="">Tat ca chuong</option>
-                    <option v-for="b in barns" :key="b.id" :value="b.id">{{ b.name }}</option>
-                </select>
-                <div class="flex gap-1">
-                    <button class="btn btn-sm" :class="filterAck===false ? 'btn-primary' : 'btn-secondary'" @click="filterAck=false; loadSensorAlerts()">Chua doc</button>
-                    <button class="btn btn-sm" :class="filterAck===true ? 'btn-primary' : 'btn-secondary'" @click="filterAck=true; loadSensorAlerts()">Da doc</button>
-                    <button class="btn btn-sm" :class="filterAck===undefined ? 'btn-primary' : 'btn-secondary'" @click="filterAck=undefined; loadSensorAlerts()">Tat ca</button>
-                </div>
-            </div>
-
-            <div class="flex justify-between items-center mb-3">
-                <h3 class="font-semibold">Quy tac cam bien</h3>
-                <button class="btn btn-primary btn-sm" @click="openSensorRule()">+ Them quy tac</button>
-            </div>
-
-            <div v-if="sensorRules.length" class="table-wrap mb-4">
-                <table>
-                    <thead>
-                        <tr>
-                            <th>Ten</th><th>Sensor</th><th>Chuong</th><th>Min</th><th>Max</th><th>Muc do</th><th>Cooldown</th><th>Trang thai</th><th>Thao tac</th>
-                        </tr>
-                    </thead>
-                    <tbody>
-                        <tr v-for="r in sensorRules" :key="r.id" :class="r.enabled ? '' : 'opacity-50'">
-                            <td class="font-medium">{{ r.name }}</td>
-                            <td><span class="badge badge-blue">{{ r.sensor_type }}</span></td>
-                            <td>{{ r.barn_id || 'Tat ca' }}</td>
-                            <td>{{ r.min_value != null ? r.min_value : '-' }}</td>
-                            <td>{{ r.max_value != null ? r.max_value : '-' }}</td>
-                            <td>
-                                <span v-if="r.severity==='danger'" class="badge badge-red">Nguy hiem</span>
-                                <span v-else-if="r.severity==='warning'" class="badge badge-yellow">Canh chu</span>
-                                <span v-else class="badge badge-blue">Thong tin</span>
-                            </td>
-                            <td>{{ r.cooldown_minutes }} phut</td>
-                            <td><span :class="r.enabled ? 'badge badge-green' : 'badge badge-gray'">{{ r.enabled ? 'Bat' : 'Tat' }}</span></td>
-                            <td class="flex gap-1">
-                                <button class="btn btn-xs btn-secondary" @click="openSensorRule(r)">Sua</button>
-                                <button class="btn btn-xs btn-danger" @click="delSensorRule(r)">Xoa</button>
-                            </td>
-                        </tr>
-                    </tbody>
-                </table>
-            </div>
-            <div v-else class="empty-state mb-4"><p>Chua co quy tac cam bien</p></div>
-
-            <h3 class="font-semibold mb-2">Lich su</h3>
-            <div v-if="sensorAlerts.length" class="space-y-2">
-                <div v-for="a in sensorAlerts" :key="a.id" class="card flex items-start gap-3">
-                    <span class="text-xl mt-0.5">{{ a.severity==='danger' ? '🔴' : a.severity==='warning' ? '🟡' : '🔵' }}</span>
-                    <div class="flex-1">
-                        <div class="text-sm font-medium">{{ a.message }}</div>
-                        <div class="text-xs text-gray-400 mt-1">
-                            {{ fmtDate(a.created_at) }}
-                            | {{ a.sensor_type }} = {{ a.value }}
-                            | Nguong: {{ a.threshold }}
-                        </div>
-                    </div>
-                    <button v-if="!a.acknowledged" class="btn btn-sm btn-secondary" @click="ackSensorAlert(a)">Doc</button>
-                    <span v-else class="badge badge-green">Da doc</span>
-                </div>
-            </div>
-            <div v-else class="empty-state"><p>Khong co lich su</p></div>
-        </div>
-
-        <!-- Inventory Alerts Tab -->
-        <div v-if="tab==='inventory'">
-            <div class="mb-3 flex gap-2 items-center">
-                <select v-model="filterWh" @change="loadActiveInventoryAlerts(); loadInventoryAlerts();" class="border rounded px-3 py-1.5 text-sm">
-                    <option value="">Tat ca kho</option>
-                    <option v-for="w in warehouses" :key="w.id" :value="w.id">{{ w.name }}</option>
-                </select>
-                <button class="btn btn-sm btn-secondary" @click="checkInventoryAlerts">Kiem tra ton kho</button>
-            </div>
-
-            <div class="flex justify-between items-center mb-3">
-                <h3 class="font-semibold">Quy tac ton kho</h3>
-                <button class="btn btn-primary btn-sm" @click="openInventoryRule()">+ Them quy tac</button>
-            </div>
-
-            <div v-if="inventoryRules.length" class="table-wrap mb-4">
-                <table>
-                    <thead>
-                        <tr>
-                            <th>Kho</th><th>San pham</th><th>Loai</th><th>Nguong</th><th>Tan suat</th><th>Muc do</th><th>Trang thai</th><th>Thao tac</th>
-                        </tr>
-                    </thead>
-                    <tbody>
-                        <tr v-for="r in inventoryRules" :key="r.id" :class="r.enabled ? '' : 'opacity-50'">
-                            <td>{{ r.warehouse_name || 'Tat ca' }}</td>
-                            <td>{{ r.product_name || 'Tat ca' }}</td>
-                            <td>
-                                <span v-if="r.alert_type === 'low_stock'" class="badge badge-yellow">Ton thap</span>
-                                <span v-else-if="r.alert_type === 'out_of_stock'" class="badge badge-red">Het hang</span>
-                                <span v-else class="badge badge-gray">{{ r.alert_type }}</span>
-                            </td>
-                            <td>{{ r.threshold ? fmtNum(r.threshold) : '(mac dinh)' }}</td>
-                            <td>{{ r.frequency_minutes ? r.frequency_minutes + ' phut' : 'thu cong' }}</td>
-                            <td>
-                                <span v-if="r.severity === 'critical'" class="badge badge-red">Nguy hiem</span>
-                                <span v-else-if="r.severity === 'warning'" class="badge badge-yellow">Canh chu</span>
-                                <span v-else class="badge badge-blue">Thong tin</span>
-                            </td>
-                            <td><span :class="r.enabled ? 'badge badge-green' : 'badge badge-gray'">{{ r.enabled ? 'Bat' : 'Tat' }}</span></td>
-                            <td class="flex gap-1">
-                                <button class="btn btn-xs btn-secondary" @click="openInventoryRule(r)">Sua</button>
-                                <button class="btn btn-xs btn-danger" @click="delInventoryRule(r)">Xoa</button>
-                            </td>
-                        </tr>
-                    </tbody>
-                </table>
-            </div>
-            <div v-else class="empty-state mb-4"><p>Chua co quy tac ton kho</p></div>
-
-            <h3 class="font-semibold mb-2">Lich su ton kho</h3>
-            <div v-if="inventoryAlerts.length" class="table-wrap">
-                <table>
-                    <thead>
-                        <tr>
-                            <th>Thoi gian</th><th>Kho</th><th>San pham</th><th>So luong</th><th>Nguong</th><th>Loai</th><th>Muc do</th><th>Trang thai</th>
-                        </tr>
-                    </thead>
-                    <tbody>
-                        <tr v-for="a in inventoryAlerts" :key="a.id" :class="!a.acknowledged ? 'bg-red-50' : ''">
-                            <td class="text-sm">{{ fmtDate(a.created_at) }}</td>
-                            <td>{{ a.warehouse_name }}</td>
-                            <td>{{ a.product_name }}</td>
-                            <td class="font-semibold">{{ fmtNum(a.current_quantity) }}</td>
-                            <td>{{ fmtNum(a.threshold_value) }}</td>
-                            <td>
-                                <span v-if="a.alert_type === 'low_stock'" class="badge badge-yellow">Ton thap</span>
-                                <span v-else-if="a.alert_type === 'out_of_stock'" class="badge badge-red">Het hang</span>
-                                <span v-else class="badge badge-gray">{{ a.alert_type }}</span>
-                            </td>
-                            <td>
-                                <span v-if="a.severity === 'critical'" class="badge badge-red">Nguy hiem</span>
-                                <span v-else-if="a.severity === 'warning'" class="badge badge-yellow">Canh chu</span>
-                                <span v-else class="badge badge-blue">Thong tin</span>
-                            </td>
-                            <td>
-                                <span v-if="a.acknowledged" class="badge badge-green">Da doc</span>
-                                <span v-else class="badge badge-red">Chua doc</span>
-                            </td>
-                        </tr>
-                    </tbody>
-                </table>
-            </div>
-            <div v-else class="empty-state"><p>Khong co lich su ton kho</p></div>
-        </div>
-
-        <!-- Vaccine Tab -->
-        <div v-if="tab==='vaccine'">
-            <div class="mb-3 flex gap-2 items-center">
-                <select v-model="vaccineFilterCycle" @change="loadUpcomingVaccines();" class="border rounded px-3 py-1.5 text-sm">
-                    <option value="">Tat ca chuong</option>
-                    <option v-for="c in cycles" :key="c.id" :value="c.id">{{ c.name || 'Chuong ' + c.barn_id }}</option>
-                </select>
-                <select v-model="vaccineFilterDays" @change="loadUpcomingVaccines();" class="border rounded px-3 py-1.5 text-sm">
-                    <option value="7">7 ngay toi</option>
-                    <option value="14">14 ngay toi</option>
-                    <option value="21">21 ngay toi</option>
-                    <option value="30">30 ngay toi</option>
-                </select>
-            </div>
-
-            <div v-if="loadingVaccines" class="text-center py-8 text-gray-400">
-                <div class="text-2xl animate-spin">⏳</div>
-                <p>Dang tai...</p>
-            </div>
-
-            <div v-else-if="upcomingVaccines.length === 0" class="empty-state text-center py-12">
-                <div class="text-5xl mb-4">💉</div>
-                <p class="text-lg text-gray-600">Khong co vaccine nao trong lich</p>
-                <p class="text-sm text-gray-400 mt-2">Tat ca vaccine da duoc ghi nhan hoac chua tao lich</p>
-            </div>
-
-            <div v-else class="space-y-3">
-                <div v-for="v in upcomingVaccines" :key="v.id"
-                    class="card border-l-4 border-red-400">
-                    <div class="flex items-start justify-between">
-                        <div>
-                            <div class="font-semibold text-gray-900">{{ v.vaccine_name }}</div>
-                            <div class="text-sm text-gray-500 mt-1">
-                                {{ v.barn_name || v.barn_id }} | {{ v.cycle_code || 'Chuong ' + v.barn_id }}
-                            </div>
-                            <div class="flex items-center gap-2 mt-2">
-                                <span class="badge badge-red">Ngay {{ v.day_age_target }}</span>
-                                <span class="text-sm text-gray-500">{{ fmtDate(v.scheduled_date) }}</span>
-                                <span v-if="v.method" class="badge badge-blue">{{ v.method }}</span>
-                            </div>
-                        </div>
-                        <div class="flex flex-col items-end gap-2">
-                            <span class="text-sm text-red-600 font-medium">
-                                Còn {{ getDaysUntil(v.scheduled_date) }} ngay
-                            </span>
-                            <div class="flex gap-2">
-                                <button @click="markVaccineDone(v)" class="btn btn-sm btn-primary">Da tiêm</button>
-                                <button @click="skipVaccine(v)" class="btn btn-sm btn-secondary">Bo qua</button>
-                            </div>
-                        </div>
-                    </div>
-                </div>
-            </div>
-
-            <!-- Push notification toggle for vaccines -->
-            <div class="card mt-4 border-l-4 border-green-400">
-                <div class="flex items-center justify-between">
-                    <div>
-                        <h4 class="font-semibold">Thong bao vaccine</h4>
-                        <p class="text-sm text-gray-500 mt-1">Nhan thong bao khi vaccine sap toi lich</p>
-                    </div>
-                    <div class="flex items-center gap-2">
-                        <label class="flex items-center gap-2 cursor-pointer">
-                            <input type="checkbox" v-model="vaccineNotifyEnabled"
-                                @change="toggleVaccineNotifications()"
-                                class="rounded w-5 h-5 accent-green-600">
-                            <span>{{ vaccineNotifyEnabled ? 'Bat' : 'Tat' }}</span>
-                        </label>
-                    </div>
-                </div>
-            </div>
-        </div>
-
-        <!-- Notifications Tab -->
-        <div v-if="tab==='notify'">
-            <!-- Push Notification Status Card -->
-            <div class="card mb-4">
-                <div class="flex justify-between items-center mb-3">
-                    <h3 class="font-semibold">Push Notifications</h3>
-                    <span v-if="notifStatus.ready" class="badge badge-green">San sang</span>
-                    <span v-else class="badge badge-red">Chua cau hinh</span>
-                </div>
-
-                <p v-if="!notifStatus.vapid_configured" class="text-sm text-yellow-600 mb-3">
-                    VAPID keys chua duoc cau hinh. Vui long cau hinh vapid keys de nhan thong bao push.
-                </p>
-
-                <div class="mb-4 p-3 bg-gray-50 rounded text-sm">
-                    <p><strong>Trang thai:</strong> {{ notifStatus.ready ? 'Da san sang' : 'Chua san sang' }}</p>
-                    <p><strong>VAPID cau hinh:</strong> {{ notifStatus.vapid_configured ? 'Co' : 'Khong' }}</p>
-                </div>
-
-                <div v-if="notifStatus.ready" class="flex gap-2 flex-wrap">
-                    <button v-if="!notifSubscribed" class="btn btn-primary" @click="subscribePush" :disabled="notifLoading">
-                        <span v-if="notifLoading">Dang dang ky...</span>
-                        <span v-else>Bat thong bao</span>
-                    </button>
-                    <button v-else class="btn btn-secondary" @click="unsubscribePush" :disabled="notifLoading">
-                        Tat thong bao
-                    </button>
-                    <button class="btn btn-sm btn-secondary" @click="sendTestNotif" :disabled="!notifSubscribed || notifSending">
-                        Gui thong bao test
-                    </button>
-                    <a :href="certDownloadUrl" download class="btn btn-sm btn-secondary" title="Tai certificate de cai dat tren dien thoai">
-                        Tai Certificate
-                    </a>
-                </div>
-
-                <div class="mt-3 p-3 bg-blue-50 rounded text-sm">
-                    <p class="font-semibold text-blue-700">Huong dan cai dat tren dien thoai:</p>
-                    <ol class="mt-2 ml-4 list-decimal text-gray-700 space-y-1">
-                        <li>Tai certificate ve bang nut <strong>"Tai Certificate"</strong> ben duoi</li>
-                        <li><strong>Android:</strong> Settings → Security → Install from storage → chon file cfarm.crt</li>
-                        <li><strong>iPhone:</strong> Mo file → Install → Settings → General → VPN & Device Management → Install</li>
-                        <li>Su dung Safari (iPhone) hoac Chrome (Android) de truy cap: <code>{{ certDownloadUrl }}</code></li>
-                        <li>Vao Alerts → Thong bao → Bat thong bao</li>
-                    </ol>
-                </div>
-            </div>
-
-            <!-- Subscription Info -->
-            <div v-if="notifSubscribed" class="card mb-4 border-l-4 border-green-500">
-                <h3 class="font-semibold text-green-700 mb-2">Da dang ky nhan thong bao</h3>
-                <p class="text-sm text-gray-600">
-                    Thiet bi nay se nhan thong bao khi co canh bao moi.
-                    Tin nhan se hien thi ngay ca khi trinh duyet dang dong.
-                </p>
-                <div class="mt-2 text-xs text-gray-400">
-                    Endpoint: {{ notifEndpoint ? notifEndpoint.substring(0, 50) + '...' : 'N/A' }}
-                </div>
-            </div>
-
-            <!-- Active Subscriptions (Admin view) -->
-            <div v-if="notifSubs.length > 0" class="card">
-                <h3 class="font-semibold mb-3">Dang ky hien tai ({{ notifSubs.length }})</h3>
-                <div class="table-wrap">
-                    <table>
-                        <thead>
-                            <tr>
-                                <th>Thiet bi</th><th>Endpoint</th><th>Tao luc</th><th>Hoat dong</th><th>Thao tac</th>
-                            </tr>
-                        </thead>
-                        <tbody>
-                            <tr v-for="s in notifSubs" :key="s.id">
-                                <td>{{ s.user_label || 'Unknown' }}</td>
-                                <td class="text-xs max-w-xs truncate">{{ s.endpoint }}</td>
-                                <td class="text-sm">{{ fmtDate(s.created_at) }}</td>
-                                <td><span :class="s.active ? 'badge badge-green' : 'badge badge-gray'">{{ s.active ? 'Bat' : 'Tat' }}</span></td>
-                                <td>
-                                    <button class="btn btn-xs btn-danger" @click="removeSub(s)">Xoa</button>
-                                </td>
-                            </tr>
-                        </tbody>
-                    </table>
-                </div>
-            </div>
-        </div>
-
-        <!-- Sensor Rule Modal -->
-        <div v-if="showSensorModal" class="modal-overlay" @click.self="showSensorModal=false">
-            <div class="modal">
-                <h3>{{ sensorRuleForm.id ? 'Sua quy tac cam bien' : 'Them quy tac cam bien' }}</h3>
-
-                <div class="form-group">
-                    <label>Ten *</label>
-                    <input v-model="sensorRuleForm.name" placeholder="VD: Nhiet do qua cao" class="border rounded w-full px-2 py-1">
-                </div>
-
-                <div class="form-group">
-                    <label>Sensor type *</label>
-                    <select v-model="sensorRuleForm.sensor_type" class="border rounded w-full px-2 py-1">
-                        <option value="">-- Chon sensor --</option>
-                        <option v-for="s in sensorTypes" :key="s" :value="s">{{ s }}</option>
-                    </select>
-                </div>
-
-                <div class="form-group">
-                    <label>Chuong (tuy chon)</label>
-                    <select v-model="sensorRuleForm.barn_id" class="border rounded w-full px-2 py-1">
-                        <option value="">-- Tat ca chuong --</option>
-                        <option v-for="b in barns" :key="b.id" :value="b.id">{{ b.name }}</option>
-                    </select>
-                </div>
-
-                <div class="grid grid-cols-2 gap-4">
-                    <div class="form-group">
-                        <label>Gia tri Min</label>
-                        <input v-model.number="sensorRuleForm.min_value" type="number" step="0.1" class="border rounded w-full px-2 py-1">
-                    </div>
-                    <div class="form-group">
-                        <label>Gia tri Max</label>
-                        <input v-model.number="sensorRuleForm.max_value" type="number" step="0.1" class="border rounded w-full px-2 py-1">
-                    </div>
-                </div>
-
-                <div class="grid grid-cols-2 gap-4">
-                    <div class="form-group">
-                        <label>Muc do *</label>
-                        <select v-model="sensorRuleForm.severity" class="border rounded w-full px-2 py-1">
-                            <option value="info">Thong tin</option>
-                            <option value="warning">Canh chu y</option>
-                            <option value="danger">Nguy hiem</option>
-                        </select>
-                    </div>
-                    <div class="form-group">
-                        <label>Cooldown (phut) *</label>
-                        <input v-model.number="sensorRuleForm.cooldown_minutes" type="number" min="1" class="border rounded w-full px-2 py-1">
-                    </div>
-                </div>
-
-                <div class="form-group">
-                    <label class="flex items-center gap-2">
-                        <input type="checkbox" v-model="sensorRuleForm.enabled" class="rounded">
-                        Bat hien tai
-                    </label>
-                </div>
-
-                <div class="flex justify-end gap-2 mt-4">
-                    <button class="btn btn-secondary" @click="showSensorModal=false">Huy</button>
-                    <button class="btn btn-primary" @click="saveSensorRule">Luu</button>
-                </div>
-            </div>
-        </div>
-
-        <!-- Inventory Rule Modal -->
-        <div v-if="showInventoryModal" class="modal-overlay" @click.self="showInventoryModal=false">
-            <div class="modal">
-                <h3>{{ inventoryRuleForm.id ? 'Sua quy tac ton kho' : 'Them quy tac ton kho' }}</h3>
-
-                <div class="form-group">
-                    <label>Kho *</label>
-                    <select v-model="inventoryRuleForm.warehouse_id" class="border rounded w-full px-2 py-1">
-                        <option value="">-- Chon kho --</option>
-                        <option v-for="w in warehouses" :key="w.id" :value="w.id">{{ w.name }}</option>
-                    </select>
-                </div>
-
-                <div class="form-group">
-                    <label>San pham *</label>
-                    <select v-model="inventoryRuleForm.product_id" class="border rounded w-full px-2 py-1">
-                        <option value="">-- Chon san pham --</option>
-                        <option v-for="p in products" :key="p.id" :value="p.id">{{ p.name }}</option>
-                    </select>
-                </div>
-
-                <div class="form-group">
-                    <label>Loai canh bao *</label>
-                    <select v-model="inventoryRuleForm.alert_type" class="border rounded w-full px-2 py-1">
-                        <option value="low_stock">Ton kho thap</option>
-                        <option value="out_of_stock">Het hang</option>
-                        <option value="overstock">Qua nhieu</option>
-                    </select>
-                </div>
-
-                <div class="form-group">
-                    <label>Nguong (bo trong = dung nguong mac dinh san pham)</label>
-                    <input v-model.number="inventoryRuleForm.threshold" type="number" step="0.1" placeholder="VD: 100" class="border rounded w-full px-2 py-1">
-                </div>
-
-                <div class="form-group">
-                    <label>Tan suat kiem tra (phut, 0 hoac de trong = thu cong)</label>
-                    <input v-model.number="inventoryRuleForm.frequency_minutes" type="number" step="5" min="0" placeholder="60" class="border rounded w-full px-2 py-1">
-                </div>
-
-                <div class="form-group">
-                    <label>Muc do</label>
-                    <select v-model="inventoryRuleForm.severity" class="border rounded w-full px-2 py-1">
-                        <option value="info">Thong tin</option>
-                        <option value="warning">Canh chu y</option>
-                        <option value="critical">Nguy hiem</option>
-                    </select>
-                </div>
-
-                <div class="form-group">
-                    <label class="flex items-center gap-2">
-                        <input type="checkbox" v-model="inventoryRuleForm.enabled" class="rounded">
-                        Bat hien tai
-                    </label>
-                </div>
-
-                <div class="flex justify-end gap-2 mt-4">
-                    <button class="btn btn-secondary" @click="showInventoryModal=false">Huy</button>
-                    <button class="btn btn-primary" @click="saveInventoryRule">Luu</button>
-                </div>
-            </div>
-        </div>
-    </div>`,
-
+return {
     setup() {
-        // Sensor alerts state
-        const sensorAlerts = ref([]);
-        const activeAlerts = ref([]);
-        const sensorRules = ref([]);
-        const sensorTypes = ['temperature', 'humidity', 'heat_index'];
+        // ── State ──────────────────────────────────────
+        const tabType = ref('sensor');
+        const filterBarn = ref('');
+        const vaccineFilterDays = ref(14);
+        const loading = ref(false);
+        const loadingSensorRules = ref(false);
+        const loadingInventoryRules = ref(false);
 
-        // Inventory alerts state
-        const inventoryAlerts = ref([]);
-        const activeInventoryAlerts = ref([]);
-        const inventoryRules = ref([]);
+        // Modals
+        const showSensorModal = ref(false);
+        const showInventoryModal = ref(false);
+
+        // Sensor form
+        const sensorForm = reactive({
+            id: null, name: '', sensor_type: 'temperature', barn_id: '',
+            min_value: null, max_value: null, severity: 'warning',
+            cooldown_minutes: 15, enabled: true
+        });
+
+        // Inventory form
+        const inventoryForm = reactive({
+            id: null, warehouse_id: null, product_id: null,
+            threshold: null, severity: 'warning'
+        });
+
+        // Data lists
+        const barns = ref([]);
         const warehouses = ref([]);
         const products = ref([]);
 
-        // Common state
-        const barns = ref([]);
-        const cycles = ref([]);
-        const tab = ref('sensor');
-        const filterAck = ref(false);
-        const filterBarn = ref('');
-        const filterWh = ref('');
-        const showSensorModal = ref(false);
-        const showInventoryModal = ref(false);
-        const sensorRuleForm = ref({});
-        const inventoryRuleForm = ref({});
+        const activeSensorAlerts = ref([]);
+        const sensorAlertHistory = ref([]);
+        const sensorRules = ref([]);
 
-        // Vaccine state
+        const activeInventoryAlerts = ref([]);
+        const inventoryAlertHistory = ref([]);
+        const inventoryRules = ref([]);
+
+        const vaccineSchedules = ref([]);
         const upcomingVaccines = ref([]);
-        const loadingVaccines = ref(false);
-        const vaccineFilterCycle = ref('');
-        const vaccineFilterDays = ref('7');
-        const vaccineNotifyEnabled = ref(false);
 
-        // Notification state
-        const notifStatus = ref({ ready: false, vapid_configured: false });
-        const notifSubs = ref([]);
-        const notifSubscribed = ref(false);
-        const notifEndpoint = ref('');
-        const notifLoading = ref(false);
-        const notifSending = ref(false);
-        const certDownloadUrl = window.location.origin + '/cfarm.crt';
+        const pushSubscriptions = ref([]);
+        const pushSubscribed = ref(false);
 
-        const activeSensorCount = computed(() => activeAlerts.value.length);
+        // Simulation
+        const simBarnId = ref('');
+        const simType = ref('temperature');
+        const simVal = ref(40);
+        const simProdName = ref('');
+        const simWhName = ref('');
+        const simQty = ref(0);
+
+        // ── Computed ────────────────────────────────────
         const activeInventoryCount = computed(() => activeInventoryAlerts.value.length);
+        const activeSensorCount = computed(() => activeSensorAlerts.value.length);
 
-        // Sensor Alert functions
-        async function loadActiveSensorAlerts() {
+        const filteredInventoryRules = computed(() => {
+            let list = inventoryRules.value;
+            if (filterBarn.value) {
+                list = list.filter(r => r.warehouse_id && String(r.warehouse_id) === filterBarn.value);
+            }
+            return list;
+        });
+
+        const barnMap = computed(() => {
+            const m = {};
+            barns.value.forEach(b => { m[b.id] = b; });
+            return m;
+        });
+
+        const warehouseMap = computed(() => {
+            const m = {};
+            warehouses.value.forEach(w => { m[w.id] = w; });
+            return m;
+        });
+
+        const productMap = computed(() => {
+            const m = {};
+            products.value.forEach(p => { m[p.id] = p; });
+            return m;
+        });
+
+        // ── API ────────────────────────────────────────
+        async function loadAll() {
+            loading.value = true;
             try {
-                activeAlerts.value = await API.sensorAlerts.active(filterBarn.value || undefined);
-            } catch { activeAlerts.value = []; }
+                const [b, w, p] = await Promise.all([
+                    API.barns.list(),
+                    API.warehouses.list(),
+                    API.products.list(),
+                ]);
+                barns.value = b;
+                warehouses.value = w;
+                products.value = p;
+
+                if (barns.value.length && !simBarnId.value) {
+                    simBarnId.value = b[0].id;
+                }
+
+                await Promise.all([
+                    loadSensorAlerts(),
+                    loadSensorRules(),
+                    loadInventoryAlerts(),
+                    loadInventoryRules(),
+                    loadVaccineSchedules(),
+                    loadPushSubscriptions(),
+                ]);
+            } catch (e) {
+                if (typeof showToast === 'function') showToast('Loi tai du lieu: ' + e.message, 'error');
+            } finally {
+                loading.value = false;
+            }
         }
 
         async function loadSensorAlerts() {
             try {
-                sensorAlerts.value = await API.sensorAlerts.list(filterAck.value, filterBarn.value || undefined);
-            } catch { sensorAlerts.value = []; }
+                const [active, history] = await Promise.all([
+                    API.sensorAlerts.active(),
+                    API.sensorAlerts.list(true, undefined, 50),
+                ]);
+                activeSensorAlerts.value = Array.isArray(active) ? active : [];
+                sensorAlertHistory.value = Array.isArray(history) ? history.filter(a => a.acknowledged) : [];
+            } catch (e) {
+                activeSensorAlerts.value = [];
+                sensorAlertHistory.value = [];
+            }
         }
 
         async function loadSensorRules() {
+            loadingSensorRules.value = true;
             try {
-                sensorRules.value = await API.sensorAlerts.rules.list(filterBarn.value || undefined);
-            } catch { sensorRules.value = []; }
-        }
-
-        async function loadBarns() {
-            try { barns.value = await API.barns.list(); } catch { barns.value = []; }
-        }
-
-        async function ackSensorAlert(a) {
-            try {
-                await API.sensorAlerts.ack(a.id);
-                showToast('Da doc');
-                await loadActiveSensorAlerts();
-                await loadSensorAlerts();
-            } catch(e) { showToast(e.message, 'error'); }
-        }
-
-        function openSensorRule(r) {
-            if (r) {
-                sensorRuleForm.value = {
-                    id: r.id,
-                    name: r.name,
-                    sensor_type: r.sensor_type,
-                    barn_id: r.barn_id || '',
-                    min_value: r.min_value,
-                    max_value: r.max_value,
-                    severity: r.severity,
-                    cooldown_minutes: r.cooldown_minutes,
-                    enabled: r.enabled
-                };
-            } else {
-                sensorRuleForm.value = {
-                    name: '', sensor_type: '', barn_id: '',
-                    min_value: null, max_value: null,
-                    severity: 'warning', cooldown_minutes: 15, enabled: true
-                };
+                sensorRules.value = await API.sensorAlerts.rules.list();
+            } catch (e) {
+                sensorRules.value = [];
+            } finally {
+                loadingSensorRules.value = false;
             }
-            showSensorModal.value = true;
-        }
-
-        async function saveSensorRule() {
-            try {
-                if (!sensorRuleForm.value.name) { showToast('Vui long nhap ten', 'error'); return; }
-                if (!sensorRuleForm.value.sensor_type) { showToast('Vui long chon sensor type', 'error'); return; }
-
-                const data = { ...sensorRuleForm.value };
-                if (!data.barn_id) data.barn_id = null;
-
-                if (data.id) {
-                    await API.sensorAlerts.rules.update(data.id, data);
-                } else {
-                    await API.sensorAlerts.rules.create(data);
-                }
-                showSensorModal.value = false;
-                showToast('Da luu');
-                await loadSensorRules();
-            } catch(e) { showToast(e.message, 'error'); }
-        }
-
-        async function delSensorRule(r) {
-            if (!confirm('Xoa quy tac "' + r.name + '"?')) return;
-            try {
-                await API.sensorAlerts.rules.delete(r.id);
-                showToast('Da xoa');
-                await loadSensorRules();
-            } catch(e) { showToast(e.message, 'error'); }
-        }
-
-        // Inventory Alert functions
-        async function loadWarehouses() {
-            try { warehouses.value = await API.warehouses.list(); } catch { warehouses.value = []; }
-        }
-
-        async function loadProducts() {
-            try { products.value = await API.products.list(); } catch { products.value = []; }
-        }
-
-        async function loadActiveInventoryAlerts() {
-            try {
-                activeInventoryAlerts.value = await API.inventory.alerts();
-            } catch { activeInventoryAlerts.value = []; }
         }
 
         async function loadInventoryAlerts() {
             try {
-                inventoryAlerts.value = await API.inventory.alerts();
-            } catch { inventoryAlerts.value = []; }
+                const [active, history] = await Promise.all([
+                    API.inventory.alerts(),
+                    API.inventory.alertRules({}),
+                ]);
+                // Filter to unacknowledged for active, all for history
+                activeInventoryAlerts.value = Array.isArray(active) ? active.filter(a => !a.acknowledged) : [];
+                inventoryAlertHistory.value = Array.isArray(history) ? history.filter(r => r.acknowledged) : [];
+            } catch (e) {
+                activeInventoryAlerts.value = [];
+            }
         }
 
         async function loadInventoryRules() {
+            loadingInventoryRules.value = true;
             try {
-                inventoryRules.value = await API.inventory.alertRules();
-            } catch { inventoryRules.value = []; }
+                inventoryRules.value = await API.inventory.alertRules({});
+            } catch (e) {
+                inventoryRules.value = [];
+            } finally {
+                loadingInventoryRules.value = false;
+            }
         }
 
-        async function checkInventoryAlerts() {
+        async function loadVaccineSchedules() {
             try {
-                await API.inventory.checkAlerts();
-                showToast('Da kiem tra');
-                await loadActiveInventoryAlerts();
+                vaccineSchedules.value = await API.vaccineSchedules.upcoming(vaccineFilterDays.value);
+                upcomingVaccines.value = vaccineSchedules.value;
+            } catch (e) {
+                upcomingVaccines.value = [];
+            }
+        }
+
+        async function loadPushSubscriptions() {
+            try {
+                pushSubscriptions.value = await API.notifications.subscriptions();
+                pushSubscribed.value = pushSubscriptions.value.length > 0;
+            } catch (e) {
+                pushSubscriptions.value = [];
+            }
+        }
+
+        // ── Sensor Alert Actions ─────────────────────────
+        async function ackSensorAlert(a) {
+            try {
+                await API.sensorAlerts.ack(a.id);
+                sensorAlertHistory.value.unshift({ ...a, acknowledged: true, acknowledged_at: new Date().toISOString() });
+                activeSensorAlerts.value = activeSensorAlerts.value.filter(x => x.id !== a.id);
+                if (typeof showToast === 'function') showToast('Da tat thong bao cam bien', 'success');
+            } catch (e) {
+                if (typeof showToast === 'function') showToast(e.message, 'error');
+            }
+        }
+
+        async function ackAllSensor() {
+            try {
+                await API.sensorAlerts.ackAll();
+                const now = new Date().toISOString();
+                activeSensorAlerts.value.forEach(a => {
+                    sensorAlertHistory.value.unshift({ ...a, acknowledged: true, acknowledged_at: now });
+                });
+                activeSensorAlerts.value = [];
+                if (typeof showToast === 'function') showToast('Da tat tat ca thong bao cam bien', 'success');
+            } catch (e) {
+                if (typeof showToast === 'function') showToast(e.message, 'error');
+            }
+        }
+
+        async function checkNow() {
+            if (typeof showToast === 'function') showToast('Dang kiem tra...', 'info');
+            try {
+                await API.sensorAlerts.check();
+                await loadSensorAlerts();
                 await loadInventoryAlerts();
-            } catch(e) { showToast(e.message, 'error'); }
+                if (typeof showToast === 'function') showToast('Kiem tra xong!', 'success');
+            } catch (e) {
+                if (typeof showToast === 'function') showToast(e.message, 'error');
+            }
+        }
+
+        // ── Sensor Rule CRUD ────────────────────────────
+        function openSensorRule(r = null) {
+            if (r) {
+                Object.assign(sensorForm, {
+                    id: r.id, name: r.name, sensor_type: r.sensor_type, barn_id: r.barn_id || '',
+                    min_value: r.min_value, max_value: r.max_value,
+                    severity: r.severity, cooldown_minutes: r.cooldown_minutes, enabled: r.enabled
+                });
+            } else {
+                Object.assign(sensorForm, {
+                    id: null, name: '', sensor_type: 'temperature', barn_id: '',
+                    min_value: null, max_value: null, severity: 'warning',
+                    cooldown_minutes: 15, enabled: true
+                });
+            }
+            showSensorModal.value = true;
+        }
+
+        function closeSensorModal() { showSensorModal.value = false; }
+
+        async function saveSensorRule() {
+            if (!sensorForm.name.trim()) {
+                if (typeof showToast === 'function') showToast('Ten quy dinh khong duoc trong', 'error');
+                return;
+            }
+            try {
+                const payload = {
+                    name: sensorForm.name,
+                    sensor_type: sensorForm.sensor_type,
+                    barn_id: sensorForm.barn_id || null,
+                    min_value: sensorForm.min_value,
+                    max_value: sensorForm.max_value,
+                    severity: sensorForm.severity,
+                    cooldown_minutes: sensorForm.cooldown_minutes,
+                    enabled: sensorForm.enabled,
+                };
+                if (sensorForm.id) {
+                    await API.sensorAlerts.rules.update(sensorForm.id, payload);
+                    if (typeof showToast === 'function') showToast('Da cap nhat quy dinh', 'success');
+                } else {
+                    await API.sensorAlerts.rules.create(payload);
+                    if (typeof showToast === 'function') showToast('Da them quy dinh moi', 'success');
+                }
+                closeSensorModal();
+                await loadSensorRules();
+            } catch (e) {
+                if (typeof showToast === 'function') showToast(e.message, 'error');
+            }
+        }
+
+        async function delSensorRule(r) {
+            if (!confirm('Xoa quy dinh "' + r.name + '"?')) return;
+            try {
+                await API.sensorAlerts.rules.delete(r.id);
+                sensorRules.value = sensorRules.value.filter(x => x.id !== r.id);
+                if (typeof showToast === 'function') showToast('Da xoa quy dinh', 'success');
+            } catch (e) {
+                if (typeof showToast === 'function') showToast(e.message, 'error');
+            }
+        }
+
+        // ── Inventory Rule CRUD ────────────────────────
+        function openInventoryRule(r = null) {
+            if (r) {
+                Object.assign(inventoryForm, {
+                    id: r.id, warehouse_id: r.warehouse_id, product_id: r.product_id,
+                    threshold: r.threshold, severity: r.severity
+                });
+            } else {
+                Object.assign(inventoryForm, {
+                    id: null, warehouse_id: null, product_id: null,
+                    threshold: null, severity: 'warning'
+                });
+            }
+            showInventoryModal.value = true;
+        }
+
+        function closeInventoryModal() { showInventoryModal.value = false; }
+
+        async function saveInventoryRule() {
+            if (!inventoryForm.warehouse_id || !inventoryForm.product_id) {
+                if (typeof showToast === 'function') showToast('Chon kho va san pham', 'error');
+                return;
+            }
+            try {
+                const payload = {
+                    warehouse_id: Number(inventoryForm.warehouse_id),
+                    product_id: Number(inventoryForm.product_id),
+                    threshold: inventoryForm.threshold,
+                    severity: inventoryForm.severity,
+                };
+                if (inventoryForm.id) {
+                    await API.inventory.updateAlertRule(inventoryForm.id, payload);
+                    if (typeof showToast === 'function') showToast('Da cap nhat ngưỡng kho', 'success');
+                } else {
+                    await API.inventory.createAlertRule(payload);
+                    if (typeof showToast === 'function') showToast('Da them ngưỡng kho moi', 'success');
+                }
+                closeInventoryModal();
+                await loadInventoryRules();
+            } catch (e) {
+                if (typeof showToast === 'function') showToast(e.message, 'error');
+            }
+        }
+
+        async function deleteInventoryRule(r) {
+            if (!confirm('Xoa ngưỡng "' + r.product_name + '"?')) return;
+            try {
+                await API.inventory.deleteAlertRule(r.id);
+                inventoryRules.value = inventoryRules.value.filter(x => x.id !== r.id);
+                if (typeof showToast === 'function') showToast('Da xoa ngưỡng', 'success');
+            } catch (e) {
+                if (typeof showToast === 'function') showToast(e.message, 'error');
+            }
         }
 
         async function ackInventoryAlert(a) {
             try {
                 await API.inventory.ackAlert(a.id);
-                showToast('Da doc');
-                await loadActiveInventoryAlerts();
-                await loadInventoryAlerts();
-            } catch(e) { showToast(e.message, 'error'); }
+                activeInventoryAlerts.value = activeInventoryAlerts.value.filter(x => x.id !== a.id);
+                await loadInventoryRules();
+                if (typeof showToast === 'function') showToast('Da xac nhan canh bao kho', 'success');
+            } catch (e) {
+                if (typeof showToast === 'function') showToast(e.message, 'error');
+            }
         }
 
-        function openInventoryRule(r) {
-            if (r) {
-                inventoryRuleForm.value = {
-                    id: r.id,
-                    warehouse_id: r.warehouse_id || '',
-                    product_id: r.product_id || '',
-                    alert_type: r.alert_type || 'low_stock',
-                    threshold: r.threshold,
-                    frequency_minutes: r.frequency_minutes,
-                    severity: r.severity || 'warning',
-                    enabled: r.enabled
-                };
+        async function toggleInventoryRule(r) {
+            try {
+                await API.inventory.toggleAlertRule(r.id, !r.enabled);
+                r.enabled = !r.enabled;
+            } catch (e) {
+                if (typeof showToast === 'function') showToast(e.message, 'error');
+            }
+        }
+
+        // ── Vaccine Actions ────────────────────────────
+        async function markVaccineDone(id) {
+            try {
+                await API.vaccineSchedules.done(id);
+                vaccineSchedules.value = vaccineSchedules.value.map(v =>
+                    v.id === id ? { ...v, status: 'completed' } : v
+                );
+                upcomingVaccines.value = vaccineSchedules.value.filter(v => v.status === 'pending');
+                if (typeof showToast === 'function') showToast('Da ghi nhan tieu chuan!', 'success');
+            } catch (e) {
+                if (typeof showToast === 'function') showToast(e.message, 'error');
+            }
+        }
+
+        async function skipVaccine(id) {
+            try {
+                await API.vaccineSchedules.skip(id);
+                vaccineSchedules.value = vaccineSchedules.value.map(v =>
+                    v.id === id ? { ...v, status: 'skipped' } : v
+                );
+                upcomingVaccines.value = vaccineSchedules.value.filter(v => v.status === 'pending');
+                if (typeof showToast === 'function') showToast('Da bo qua lich', 'info');
+            } catch (e) {
+                if (typeof showToast === 'function') showToast(e.message, 'error');
+            }
+        }
+
+        // ── Push Notifications ────────────────────────
+        async function togglePush(enable) {
+            if (enable) {
+                try {
+                    const reg = await navigator.serviceWorker.ready;
+                    const sub = await reg.pushManager.subscribe({
+                        userVisibleOnly: true,
+                        applicationServerKey: urlBase64ToUint8Array(
+                            (await API.notifications.vapidKey()).publicKey
+                        ),
+                    });
+                    await API.notifications.subscribe(sub.toJSON());
+                    pushSubscribed.value = true;
+                    await loadPushSubscriptions();
+                    if (typeof showToast === 'function') showToast('Da dang ky nhan thong bao!', 'success');
+                } catch (e) {
+                    if (typeof showToast === 'function') showToast('Loi dang ky: ' + e.message, 'error');
+                }
             } else {
-                inventoryRuleForm.value = {
-                    warehouse_id: '', product_id: '',
-                    alert_type: 'low_stock',
-                    threshold: null, frequency_minutes: 60,
-                    severity: 'warning', enabled: true
-                };
-            }
-            showInventoryModal.value = true;
-        }
-
-        async function saveInventoryRule() {
-            try {
-                if (!inventoryRuleForm.value.warehouse_id) { showToast('Vui long chon kho', 'error'); return; }
-                if (!inventoryRuleForm.value.product_id) { showToast('Vui long chon san pham', 'error'); return; }
-
-                const data = { ...inventoryRuleForm.value };
-                if (!data.warehouse_id) data.warehouse_id = null;
-                if (!data.product_id) data.product_id = null;
-
-                if (data.id) {
-                    await API.inventory.updateAlertRule(data.id, data);
-                } else {
-                    await API.inventory.createAlertRule(data);
+                try {
+                    const subs = await API.notifications.subscriptions();
+                    for (const s of subs) {
+                        await API.notifications.unsubscribe(s.endpoint);
+                    }
+                    pushSubscribed.value = false;
+                    pushSubscriptions.value = [];
+                    if (typeof showToast === 'function') showToast('Da tat thong bao', 'info');
+                } catch (e) {
+                    if (typeof showToast === 'function') showToast(e.message, 'error');
                 }
-                showInventoryModal.value = false;
-                showToast('Da luu');
-                await loadInventoryRules();
-            } catch(e) { showToast(e.message, 'error'); }
-        }
-
-        async function delInventoryRule(r) {
-            if (!confirm('Xoa quy tac "' + (r.product_name || r.alert_type) + '"?')) return;
-            try {
-                await API.inventory.deleteAlertRule(r.id);
-                showToast('Da xoa');
-                await loadInventoryRules();
-            } catch(e) { showToast(e.message, 'error'); }
-        }
-
-        // Vaccine functions
-        async function loadUpcomingVaccines() {
-            loadingVaccines.value = true;
-            try {
-                const days = parseInt(vaccineFilterDays.value);
-                const allVaccines = await API.vaccines.schedules.upcoming(days);
-
-                // Filter by cycle if selected
-                if (vaccineFilterCycle.value) {
-                    upcomingVaccines.value = allVaccines.filter(v =>
-                        v.cycle_id === parseInt(vaccineFilterCycle.value)
-                    );
-                } else {
-                    upcomingVaccines.value = allVaccines;
-                }
-            } catch(e) {
-                console.error('Error loading vaccines:', e);
-                upcomingVaccines.value = [];
             }
-            loadingVaccines.value = false;
-        }
-
-        function getDaysUntil(dateStr) {
-            const today = new Date();
-            today.setHours(0, 0, 0, 0);
-            const target = new Date(dateStr);
-            target.setHours(0, 0, 0, 0);
-            const diff = Math.ceil((target - today) / (1000 * 60 * 60 * 24));
-            return diff;
-        }
-
-        async function markVaccineDone(v) {
-            try {
-                await API.vaccines.schedules.done(v.id);
-                showToast('Da danh dau da tiem');
-                await loadUpcomingVaccines();
-            } catch(e) { showToast(e.message, 'error'); }
-        }
-
-        async function skipVaccine(v) {
-            try {
-                await API.vaccines.schedules.skip(v.id, 'Skip');
-                showToast('Da bo qua');
-                await loadUpcomingVaccines();
-            } catch(e) { showToast(e.message, 'error'); }
-        }
-
-        async function toggleVaccineNotifications() {
-            try {
-                const newValue = !vaccineNotifyEnabled.value;
-                await API.notifications.setVaccineSetting(newValue);
-                vaccineNotifyEnabled.value = newValue;
-                localStorage.setItem('cfarm_vaccine_notify', newValue);
-                showToast(newValue ? 'Da bat thong bao vaccine' : 'Da tat thong bao vaccine');
-            } catch(e) { showToast(e.message, 'error'); }
-        }
-
-        async function loadCycles() {
-            try {
-                cycles.value = await API.cycles.list();
-            } catch { cycles.value = []; }
-        }
-
-        // Notification functions
-        async function loadNotifStatus() {
-            try {
-                notifStatus.value = await API.notifications.status();
-            } catch { notifStatus.value = { ready: false, vapid_configured: false }; }
-        }
-
-        async function loadNotifSubs() {
-            try {
-                notifSubs.value = await API.notifications.subscriptions();
-            } catch { notifSubs.value = []; }
-        }
-
-        async function subscribePush() {
-            console.log('[Notif] Starting subscription...');
-            if (!('Notification' in window) || !('PushManager' in window)) {
-                showToast('Trinh duyet khong ho tro push notifications', 'error');
-                return;
-            }
-            notifLoading.value = true;
-            try {
-                console.log('[Notif] Requesting permission...');
-                const perm = await Notification.requestPermission();
-                console.log('[Notif] Permission result:', perm);
-                if (perm !== 'granted') {
-                    showToast('Quyen push bi tu choi', 'error');
-                    notifLoading.value = false;
-                    return;
-                }
-
-                console.log('[Notif] Getting VAPID key...');
-                const keyRes = await API.notifications.vapidKey();
-                console.log('[Notif] VAPID key received:', keyRes.publicKey ? 'OK' : 'EMPTY');
-
-                console.log('[Notif] Registering for push...');
-                const sub = await registrationForPush(keyRes.publicKey);
-                console.log('[Notif] Push registration:', sub);
-
-                console.log('[Notif] Subscribing to server...');
-                await API.notifications.subscribe(sub);
-                console.log('[Notif] Subscribed successfully!');
-                notifSubscribed.value = true;
-                notifEndpoint.value = sub.endpoint;
-                showToast('Da bat thong bao push');
-            } catch(e) {
-                console.error('[Notif] Error:', e);
-                showToast('Loi dang ky: ' + e.message, 'error');
-            }
-            notifLoading.value = false;
-        }
-
-        async function registrationForPush(vapidPublicKey) {
-            console.log('[Notif] Getting service worker registration...');
-            const registration = await navigator.serviceWorker.ready;
-            console.log('[Notif] SW ready, registration:', registration.scope);
-            console.log('[Notif] Creating push subscription with key...');
-            const sub = await registration.pushManager.subscribe({
-                userVisibleOnly: true,
-                applicationServerKey: urlBase64ToUint8Array(vapidPublicKey)
-            });
-            console.log('[Notif] Push subscription created!');
-            return sub.toJSON();
-        }
-
-        async function unsubscribePush() {
-            notifLoading.value = true;
-            try {
-                const registration = await navigator.serviceWorker.ready;
-                const sub = await registration.pushManager.getSubscription();
-                if (sub) {
-                    await sub.unsubscribe();
-                    await API.notifications.unsubscribe(sub.endpoint);
-                }
-                notifSubscribed.value = false;
-                notifEndpoint.value = '';
-                showToast('Da tat thong bao');
-            } catch(e) {
-                showToast('Loi huy: ' + e.message, 'error');
-            }
-            notifLoading.value = false;
         }
 
         async function sendTestNotif() {
-            notifSending.value = true;
             try {
-                await API.notifications.test('Test Alert', 'Day la thong bao test tu CFarm!');
-                showToast('Da gui thong bao test');
-            } catch(e) {
-                showToast('Loi gui: ' + e.message, 'error');
+                await API.notifications.test('Test thong bao CFarm', 'Day la thong bao test!');
+                if (typeof showToast === 'function') showToast('Da gui thong bao test!', 'success');
+            } catch (e) {
+                if (typeof showToast === 'function') showToast(e.message, 'error');
             }
-            notifSending.value = false;
         }
 
-        async function removeSub(s) {
-            if (!confirm('Xoa dang ky nay?')) return;
+        async function removeSub(id) {
             try {
-                await API.notifications.unsubscribe(s.endpoint);
-                showToast('Da xoa');
-                await loadNotifSubs();
-            } catch(e) { showToast(e.message, 'error'); }
+                const sub = pushSubscriptions.value.find(s => s.id === id);
+                if (sub) await API.notifications.unsubscribe(sub.endpoint);
+                pushSubscriptions.value = pushSubscriptions.value.filter(s => s.id !== id);
+                if (typeof showToast === 'function') showToast('Da goi thiet bi', 'info');
+            } catch (e) {
+                if (typeof showToast === 'function') showToast(e.message, 'error');
+            }
         }
 
-        async function checkNotifSubscribed() {
-            try {
-                const registration = await navigator.serviceWorker.ready;
-                const sub = await registration.pushManager.getSubscription();
-                notifSubscribed.value = !!sub;
-                if (sub) notifEndpoint.value = sub.endpoint;
-            } catch { notifSubscribed.value = false; }
+        // ── Simulators (local only) ───────────────────
+        function simulateSensorError() {
+            const bName = barnMap.value[simBarnId.value]?.name || simBarnId.value;
+            activeSensorAlerts.value.unshift({
+                id: 'sim_' + Date.now(),
+                sensor_type: simType.value,
+                value: simVal.value,
+                threshold: simType.value === 'temperature' ? '38' : '85',
+                message: '[Mô phỏng] Cam bien ' + simType.value + ' bat thuong tai ' + bName + ': ' + simVal.value,
+                barn_id: simBarnId.value,
+                created_at: new Date().toISOString(),
+                acknowledged: false,
+            });
+            if (typeof showToast === 'function') showToast('Da tao canh bao cam bien gia!', 'success');
+        }
+
+        function simulateInventoryShortage() {
+            const whName = warehouseMap.value[simWhName.value]?.name || simWhName.value;
+            const prodName = productMap.value[simProdName.value]?.name || simProdName.value;
+            activeInventoryAlerts.value.unshift({
+                id: 'sim_inv_' + Date.now(),
+                warehouse_name: whName,
+                product_name: prodName,
+                current_quantity: simQty.value,
+                threshold_value: 100,
+                created_at: new Date().toISOString(),
+                acknowledged: false,
+            });
+            if (typeof showToast === 'function') showToast('Da tao canh bao kho gia!', 'success');
+        }
+
+        // ── Helpers ───────────────────────────────────
+        function fmtNum(n) {
+            if (n == null) return '-';
+            return Number(n).toLocaleString('vi-VN');
+        }
+
+        function fmtDate(d) {
+            if (!d) return '-';
+            return new Date(d).toLocaleDateString('vi-VN');
+        }
+
+        function severityClass(s) {
+            const map = { danger: 'cf-alert-severity-danger', warning: 'cf-alert-severity-warning', critical: 'cf-alert-severity-critical', info: 'cf-alert-severity-info' };
+            return map[s] || 'cf-alert-severity-info';
         }
 
         function urlBase64ToUint8Array(base64String) {
@@ -923,89 +498,463 @@ const component = {
             return new Uint8Array([...rawData].map(c => c.charCodeAt(0)));
         }
 
-        async function ackAllActive() {
-            try {
-                if (activeAlerts.value.length) {
-                    await API.sensorAlerts.ackAll(filterBarn.value || undefined);
-                }
-                showToast('Da doc tat ca');
-                await loadActiveSensorAlerts();
-                await loadSensorAlerts();
-                await loadActiveInventoryAlerts();
-                await loadInventoryAlerts();
-            } catch(e) { showToast(e.message, 'error'); }
-        }
+        watch(vaccineFilterDays, () => loadVaccineSchedules());
 
-        async function checkNow() {
-            showToast('Dang kiem tra...', 'info');
-            await loadActiveSensorAlerts();
-            await loadActiveInventoryAlerts();
-            await loadSensorAlerts();
-            await loadInventoryAlerts();
-        }
-
-        // Watch tab changes
-        watch(() => tab.value, async (newTab) => {
-            if (newTab === 'sensor') {
-                await loadActiveSensorAlerts();
-                await loadSensorAlerts();
-                await loadSensorRules();
-            } else if (newTab === 'inventory') {
-                await loadActiveInventoryAlerts();
-                await loadInventoryAlerts();
-                await loadInventoryRules();
-            } else if (newTab === 'vaccine') {
-                await loadCycles();
-                await loadUpcomingVaccines();
-            } else if (newTab === 'notify') {
-                await loadNotifStatus();
-                await loadNotifSubs();
-                await checkNotifSubscribed();
-            }
-        });
-
-        onMounted(async () => {
-            await loadBarns();
-            await loadWarehouses();
-            await loadProducts();
-            await loadActiveSensorAlerts();
-            await loadSensorAlerts();
-            await loadSensorRules();
-            // Load vaccine notification preference from backend
-            try {
-                const res = await API.notifications.getVaccineSetting();
-                vaccineNotifyEnabled.value = res.enabled;
-                localStorage.setItem('cfarm_vaccine_notify', res.enabled);
-            } catch {
-                vaccineNotifyEnabled.value = localStorage.getItem('cfarm_vaccine_notify') === 'true';
-            }
-        });
+        onMounted(() => { loadAll(); });
 
         return {
-            // Sensor
-            sensorAlerts, activeAlerts, sensorRules, sensorTypes,
-            filterBarn, filterAck,
-            loadActiveSensorAlerts, loadSensorAlerts, loadSensorRules,
-            ackSensorAlert, openSensorRule, saveSensorRule, delSensorRule,
-            // Inventory
-            inventoryAlerts, activeInventoryAlerts, inventoryRules, warehouses, products,
-            filterWh,
-            loadActiveInventoryAlerts, loadInventoryAlerts, loadInventoryRules,
-            checkInventoryAlerts, ackInventoryAlert, openInventoryRule, saveInventoryRule, delInventoryRule,
-            // Vaccine
-            upcomingVaccines, loadingVaccines, vaccineFilterCycle, vaccineFilterDays, vaccineNotifyEnabled,
-            loadUpcomingVaccines, getDaysUntil, markVaccineDone, skipVaccine, toggleVaccineNotifications,
-            cycles,
-            // Notifications
-            notifStatus, notifSubs, notifSubscribed, notifEndpoint, notifLoading, notifSending,
-            subscribePush, unsubscribePush, sendTestNotif, removeSub, certDownloadUrl,
-            // Common
-            barns, tab, showSensorModal, showInventoryModal,
-            sensorRuleForm, inventoryRuleForm,
-            activeSensorCount, activeInventoryCount,
-            checkNow, ackAllActive, fmtDate, fmtNum
+            tabType, filterBarn, vaccineFilterDays, loading,
+            showSensorModal, showInventoryModal,
+            sensorForm, inventoryForm,
+            barns, warehouses, products,
+            activeSensorAlerts, sensorAlertHistory, sensorRules, loadingSensorRules,
+            activeInventoryAlerts, inventoryAlertHistory, inventoryRules, loadingInventoryRules,
+            vaccineSchedules, upcomingVaccines,
+            pushSubscriptions, pushSubscribed,
+            simBarnId, simType, simVal, simProdName, simWhName, simQty,
+            activeInventoryCount, activeSensorCount,
+            filteredInventoryRules,
+            loadSensorAlerts, loadSensorRules, loadInventoryAlerts, loadInventoryRules,
+            loadVaccineSchedules, loadPushSubscriptions,
+            ackSensorAlert, ackAllSensor, checkNow,
+            openSensorRule, closeSensorModal, saveSensorRule, delSensorRule,
+            openInventoryRule, closeInventoryModal, saveInventoryRule, deleteInventoryRule, ackInventoryAlert, toggleInventoryRule,
+            markVaccineDone, skipVaccine,
+            togglePush, sendTestNotif, removeSub,
+            simulateSensorError, simulateInventoryShortage,
+            fmtNum, fmtDate, severityClass
         };
-    }
-};
+    },
 
-return component;
+    template: `
+    <div class="cf-alerts-container">
+
+        <!-- ── HEADER ── -->
+        <div class="cf-alerts-header">
+            <div class="cf-alerts-header-left">
+                <div class="cf-alerts-header-icon">🔔</div>
+                <div>
+                    <h1 class="cf-alerts-title">He thong Canh bao</h1>
+                    <p class="cf-alerts-subtitle">Giam sat cam bien, kho & vaccine</p>
+                </div>
+            </div>
+            <div class="cf-alerts-header-actions">
+                <button @click="checkNow" class="cf-btn-sm cf-btn-outline">
+                    🔄 Kiem tra ngay
+                </button>
+                <button v-if="activeSensorCount || activeInventoryCount"
+                    @click="activeSensorAlerts=[]; activeInventoryAlerts=[];"
+                    class="cf-btn-sm cf-btn-ghost">
+                    Dong tat ca
+                </button>
+            </div>
+        </div>
+
+        <!-- ── ACTIVE ALERTS BANNER ── -->
+        <div v-if="activeSensorCount || activeInventoryCount" class="cf-alerts-banner">
+            <div class="cf-alerts-banner-header">
+                <span>⚠️ CO HIEU LUC - {{ (activeSensorCount + activeInventoryCount) }} CANH BAO</span>
+            </div>
+            <div class="cf-alerts-banner-grid">
+                <div v-if="activeSensorCount" class="cf-alerts-banner-section">
+                    <div class="cf-alerts-banner-section-title">📡 Cam bien</div>
+                    <div v-for="a in activeSensorAlerts.slice(0,3)" :key="a.id" class="cf-alerts-banner-item">
+                        <span class="cf-alerts-banner-msg">{{ a.message }}</span>
+                        <button @click="ackSensorAlert(a)" class="cf-alerts-banner-btn">Tat</button>
+                    </div>
+                </div>
+                <div v-if="activeInventoryCount" class="cf-alerts-banner-section">
+                    <div class="cf-alerts-banner-section-title">📦 Kho</div>
+                    <div v-for="a in activeInventoryAlerts.slice(0,3)" :key="a.id" class="cf-alerts-banner-item">
+                        <span class="cf-alerts-banner-msg">{{ a.product_name }} - con {{ fmtNum(a.current_quantity) }}</span>
+                        <button @click="ackInventoryAlert(a)" class="cf-alerts-banner-btn">Xac nhan</button>
+                    </div>
+                </div>
+            </div>
+        </div>
+
+        <!-- ── TABS ── -->
+        <div class="cf-alerts-tabs">
+            <button @click="tabType = 'sensor'" :class="['cf-alerts-tab', tabType === 'sensor' ? 'active' : '']">
+                📡 Cam bien
+                <span v-if="activeSensorCount" class="cf-alerts-tab-badge red">{{ activeSensorCount }}</span>
+            </button>
+            <button @click="tabType = 'inventory'" :class="['cf-alerts-tab', tabType === 'inventory' ? 'active' : '']">
+                📦 Kho
+                <span v-if="activeInventoryCount" class="cf-alerts-tab-badge orange">{{ activeInventoryCount }}</span>
+            </button>
+            <button @click="tabType = 'vaccine'" :class="['cf-alerts-tab', tabType === 'vaccine' ? 'active' : '']">
+                💉 Vaccine
+                <span v-if="upcomingVaccines.length" class="cf-alerts-tab-badge">{{ upcomingVaccines.length }}</span>
+            </button>
+            <button @click="tabType = 'notify'" :class="['cf-alerts-tab', tabType === 'notify' ? 'active' : '']">
+                📲 Push
+            </button>
+        </div>
+
+        <!-- ── TAB: CAM BIEN ── -->
+        <div v-if="tabType === 'sensor'" class="cf-alerts-tab-body">
+            <div class="cf-alerts-main">
+                <!-- Sensor Rules -->
+                <div class="cf-alerts-card">
+                    <div class="cf-alerts-card-header">
+                        <h3 class="cf-alerts-card-title">Quy dinh nguong cam bien</h3>
+                        <button @click="openSensorRule()" class="cf-btn-sm cf-btn-primary">+ Them quy dinh</button>
+                    </div>
+                    <div v-if="loadingSensorRules" class="cf-alerts-loading">Dang tai...</div>
+                    <div v-else-if="!sensorRules.length" class="cf-alerts-empty">
+                        <span>📡</span><p>Chua co quy dinh nao</p>
+                    </div>
+                    <div v-else class="cf-table-wrapper">
+                        <table class="cf-table">
+                            <thead>
+                                <tr>
+                                    <th>Ten</th>
+                                    <th>Loai</th>
+                                    <th>Chuong</th>
+                                    <th>Min / Max</th>
+                                    <th>Muc do</th>
+                                    <th>Cooldown</th>
+                                    <th></th>
+                                </tr>
+                            </thead>
+                            <tbody>
+                                <tr v-for="r in sensorRules" :key="r.id" :class="r.enabled ? '' : 'cf-row-disabled'">
+                                    <td class="cf-font-semibold">{{ r.name }}</td>
+                                    <td><span class="cf-badge cf-badge-blue">{{ r.sensor_type }}</span></td>
+                                    <td class="cf-text-muted">{{ barnMap[r.barn_id]?.name || 'Toan trai' }}</td>
+                                    <td class="cf-font-mono">{{ r.min_value ?? '-' }} / {{ r.max_value ?? '-' }}</td>
+                                    <td><span :class="['cf-badge', severityClass(r.severity)]">{{ r.severity }}</span></td>
+                                    <td class="cf-text-muted">{{ r.cooldown_minutes }} phut</td>
+                                    <td class="cf-row-actions">
+                                        <button @click="openSensorRule(r)" class="cf-btn-icon-sm">✏️</button>
+                                        <button @click="delSensorRule(r)" class="cf-btn-icon-sm danger">🗑️</button>
+                                    </td>
+                                </tr>
+                            </tbody>
+                        </table>
+                    </div>
+                </div>
+
+                <!-- Sensor Alert History -->
+                <div class="cf-alerts-card">
+                    <div class="cf-alerts-card-header">
+                        <h3 class="cf-alerts-card-title">Lich su canh bao cam bien</h3>
+                        <select v-model="filterBarn" class="cf-select cf-select-sm">
+                            <option value="">Tat ca chuong</option>
+                            <option v-for="b in barns" :key="b.id" :value="b.id">{{ b.name }}</option>
+                        </select>
+                    </div>
+                    <div v-if="!sensorAlertHistory.length" class="cf-alerts-empty">
+                        <span>🎉</span><p>Chua co canh bao nao!</p>
+                    </div>
+                    <div v-else class="cf-alerts-list">
+                        <div v-for="a in sensorAlertHistory" :key="a.id" class="cf-alerts-log-item">
+                            <div class="cf-alerts-log-main">
+                                <span class="cf-alerts-log-msg">{{ a.message }}</span>
+                                <span class="cf-alerts-log-time">{{ fmtDate(a.acknowledged_at || a.created_at) }}</span>
+                            </div>
+                            <span class="cf-badge cf-badge-green">Da xu ly</span>
+                        </div>
+                    </div>
+                </div>
+            </div>
+
+            <!-- Simulator -->
+            <div class="cf-alerts-sidebar">
+                <div class="cf-alerts-card cf-alerts-sim-card">
+                    <h4 class="cf-alerts-sim-title">📡 Mo phong loi cam bien</h4>
+                    <form @submit.prevent="simulateSensorError" class="cf-alerts-sim-form">
+                        <div class="cf-form-group">
+                            <label class="cf-label">Chuong</label>
+                            <select v-model="simBarnId" class="cf-input">
+                                <option v-for="b in barns" :key="b.id" :value="b.id">{{ b.name }}</option>
+                            </select>
+                        </div>
+                        <div class="cf-form-group">
+                            <label class="cf-label">Loai cam bien</label>
+                            <select v-model="simType" class="cf-input">
+                                <option value="temperature">Nhiet do</option>
+                                <option value="humidity">Do am</option>
+                            </select>
+                        </div>
+                        <div class="cf-form-group">
+                            <label class="cf-label">Gia tri</label>
+                            <input v-model.number="simVal" type="number" step="0.1" class="cf-input" required>
+                        </div>
+                        <button type="submit" class="cf-btn-sm cf-btn-danger">Tao loi gia</button>
+                    </form>
+                </div>
+            </div>
+        </div>
+
+        <!-- ── TAB: KHO ── -->
+        <div v-if="tabType === 'inventory'" class="cf-alerts-tab-body">
+            <div class="cf-alerts-main">
+                <!-- Inventory Rules -->
+                <div class="cf-alerts-card">
+                    <div class="cf-alerts-card-header">
+                        <h3 class="cf-alerts-card-title">Ngưỡng ton kho</h3>
+                        <button @click="openInventoryRule()" class="cf-btn-sm cf-btn-primary">+ Them ngưỡng</button>
+                    </div>
+                    <div v-if="loadingInventoryRules" class="cf-alerts-loading">Dang tai...</div>
+                    <div v-else-if="!filteredInventoryRules.length" class="cf-alerts-empty">
+                        <span>📦</span><p>Chua co ngưỡng nao</p>
+                    </div>
+                    <div v-else class="cf-table-wrapper">
+                        <table class="cf-table">
+                            <thead>
+                                <tr>
+                                    <th>Kho</th>
+                                    <th>San pham</th>
+                                    <th>Ngưỡng</th>
+                                    <th>Muc do</th>
+                                    <th>Trang thai</th>
+                                    <th></th>
+                                </tr>
+                            </thead>
+                            <tbody>
+                                <tr v-for="r in filteredInventoryRules" :key="r.id">
+                                    <td class="cf-font-semibold">{{ warehouseMap[r.warehouse_id]?.name || r.warehouse_id }}</td>
+                                    <td>{{ productMap[r.product_id]?.name || r.product_id }}</td>
+                                    <td class="cf-font-mono">{{ r.threshold }} kg</td>
+                                    <td><span :class="['cf-badge', severityClass(r.severity)]">{{ r.severity }}</span></td>
+                                    <td>
+                                        <span v-if="r.enabled" class="cf-badge cf-badge-green">Hoat dong</span>
+                                        <span v-else class="cf-badge cf-badge-gray">Tat</span>
+                                    </td>
+                                    <td class="cf-row-actions">
+                                        <button @click="toggleInventoryRule(r)" class="cf-btn-icon-sm">{{ r.enabled ? '⏸️' : '▶️' }}</button>
+                                        <button @click="openInventoryRule(r)" class="cf-btn-icon-sm">✏️</button>
+                                        <button @click="deleteInventoryRule(r)" class="cf-btn-icon-sm danger">🗑️</button>
+                                    </td>
+                                </tr>
+                            </tbody>
+                        </table>
+                    </div>
+                </div>
+            </div>
+
+            <!-- Simulator -->
+            <div class="cf-alerts-sidebar">
+                <div class="cf-alerts-card cf-alerts-sim-card">
+                    <h4 class="cf-alerts-sim-title">🛡️ Mo phong ton kho thap</h4>
+                    <form @submit.prevent="simulateInventoryShortage" class="cf-alerts-sim-form">
+                        <div class="cf-form-group">
+                            <label class="cf-label">San pham</label>
+                            <select v-model="simProdName" class="cf-input">
+                                <option v-for="p in products" :key="p.id" :value="p.id">{{ p.name }}</option>
+                            </select>
+                        </div>
+                        <div class="cf-form-group">
+                            <label class="cf-label">Kho</label>
+                            <select v-model="simWhName" class="cf-input">
+                                <option v-for="w in warehouses" :key="w.id" :value="w.id">{{ w.name }}</option>
+                            </select>
+                        </div>
+                        <div class="cf-form-group">
+                            <label class="cf-label">So luong ton</label>
+                            <input v-model.number="simQty" type="number" class="cf-input" required>
+                        </div>
+                        <button type="submit" class="cf-btn-sm cf-btn-warning">Tao canh bao gia</button>
+                    </form>
+                </div>
+            </div>
+        </div>
+
+        <!-- ── TAB: VACCINE ── -->
+        <div v-if="tabType === 'vaccine'" class="cf-alerts-tab-body">
+            <div class="cf-alerts-card">
+                <div class="cf-alerts-card-header">
+                    <h3 class="cf-alerts-card-title">Lich vaccine & thu y</h3>
+                    <select v-model="vaccineFilterDays" class="cf-select cf-select-sm">
+                        <option :value="7">7 ngay toi</option>
+                        <option :value="14">14 ngay toi</option>
+                        <option :value="30">30 ngay toi</option>
+                    </select>
+                </div>
+                <div v-if="!upcomingVaccines.length" class="cf-alerts-empty">
+                    <span>🎉</span><p>Tat ca lich da hoan thanh!</p>
+                </div>
+                <div v-else class="cf-alerts-vaccine-grid">
+                    <div v-for="v in upcomingVaccines" :key="v.id" class="cf-alerts-vaccine-card">
+                        <div class="cf-alerts-vaccine-info">
+                            <span class="cf-alerts-vaccine-name">{{ v.vaccine_name }}</span>
+                            <span class="cf-alerts-vaccine-meta">
+                                {{ barnMap[v.barn_id]?.name || v.barn_id }} | Ngay {{ v.day_age_target }}
+                            </span>
+                            <span v-if="v.method" class="cf-badge cf-badge-blue">{{ v.method }}</span>
+                        </div>
+                        <div class="cf-alerts-vaccine-actions">
+                            <button @click="markVaccineDone(v.id)" class="cf-btn-sm cf-btn-success">Da tiem</button>
+                            <button @click="skipVaccine(v.id)" class="cf-btn-sm cf-btn-ghost">Bo qua</button>
+                        </div>
+                    </div>
+                </div>
+            </div>
+        </div>
+
+        <!-- ── TAB: PUSH ── -->
+        <div v-if="tabType === 'notify'" class="cf-alerts-tab-body">
+            <div class="cf-alerts-main">
+                <div class="cf-alerts-card">
+                    <div class="cf-alerts-card-header">
+                        <h3 class="cf-alerts-card-title">Cau hinh Push Notifications</h3>
+                        <span :class="['cf-badge', pushSubscribed ? 'cf-badge-green' : 'cf-badge-gray']">
+                            {{ pushSubscribed ? 'DA DANG KY' : 'CHUA DANG KY' }}
+                        </span>
+                    </div>
+                    <div class="cf-alerts-notify-info">
+                        <p>Web Push cho phep nhan thong bao ngay ca khi trinh duyet dong.</p>
+                    </div>
+                    <div class="cf-alerts-notify-actions">
+                        <button v-if="!pushSubscribed" @click="togglePush(true)" class="cf-btn-primary">Bat thong bao</button>
+                        <button v-else @click="togglePush(false)" class="cf-btn-danger">Tat thong bao</button>
+                        <button @click="sendTestNotif" class="cf-btn-outline">Gui test</button>
+                    </div>
+                </div>
+
+                <!-- Device list -->
+                <div class="cf-alerts-card">
+                    <h3 class="cf-alerts-card-title">Thiet bi da dang ky ({{ pushSubscriptions.length }})</h3>
+                    <div v-if="!pushSubscriptions.length" class="cf-alerts-empty">
+                        <span>📲</span><p>Chua co thiet bi nao</p>
+                    </div>
+                    <div v-else class="cf-table-wrapper">
+                        <table class="cf-table">
+                            <thead>
+                                <tr>
+                                    <th>Thiet bi</th>
+                                    <th>Endpoint</th>
+                                    <th></th>
+                                </tr>
+                            </thead>
+                            <tbody>
+                                <tr v-for="s in pushSubscriptions" :key="s.id">
+                                    <td class="cf-font-semibold">{{ s.user_label || s.endpoint?.slice(0,30) || 'Unknown' }}</td>
+                                    <td class="cf-text-muted cf-text-xs">{{ s.endpoint }}</td>
+                                    <td class="cf-row-actions">
+                                        <button @click="removeSub(s.id)" class="cf-btn-icon-sm danger">🗑️</button>
+                                    </td>
+                                </tr>
+                            </tbody>
+                        </table>
+                    </div>
+                </div>
+            </div>
+        </div>
+
+        <!-- ── SENSOR RULE MODAL ── -->
+        <teleport to="body">
+            <div v-if="showSensorModal" class="cf-modal-overlay" @click.self="closeSensorModal">
+                <div class="cf-modal-box">
+                    <div class="cf-modal-header">
+                        <h3 class="cf-modal-title">{{ sensorForm.id ? 'Sua quy dinh' : 'Them quy dinh cam bien' }}</h3>
+                        <button @click="closeSensorModal" class="cf-modal-close-btn">✕</button>
+                    </div>
+                    <form @submit.prevent="saveSensorRule">
+                        <div class="cf-modal-body">
+                            <div class="cf-form-group">
+                                <label class="cf-label">Ten quy dinh *</label>
+                                <input v-model="sensorForm.name" type="text" class="cf-input" placeholder="VD: Nhiet do chuong heo" required>
+                            </div>
+                            <div class="cf-form-row">
+                                <div class="cf-form-group">
+                                    <label class="cf-label">Loai cam bien</label>
+                                    <select v-model="sensorForm.sensor_type" class="cf-input">
+                                        <option value="temperature">Nhiet do</option>
+                                        <option value="humidity">Do am</option>
+                                    </select>
+                                </div>
+                                <div class="cf-form-group">
+                                    <label class="cf-label">Chuong</label>
+                                    <select v-model="sensorForm.barn_id" class="cf-input">
+                                        <option value="">Toan trai</option>
+                                        <option v-for="b in barns" :key="b.id" :value="b.id">{{ b.name }}</option>
+                                    </select>
+                                </div>
+                            </div>
+                            <div class="cf-form-row">
+                                <div class="cf-form-group">
+                                    <label class="cf-label">Nguong Min</label>
+                                    <input v-model.number="sensorForm.min_value" type="number" step="0.1" class="cf-input">
+                                </div>
+                                <div class="cf-form-group">
+                                    <label class="cf-label">Nguong Max</label>
+                                    <input v-model.number="sensorForm.max_value" type="number" step="0.1" class="cf-input">
+                                </div>
+                            </div>
+                            <div class="cf-form-row">
+                                <div class="cf-form-group">
+                                    <label class="cf-label">Muc do</label>
+                                    <select v-model="sensorForm.severity" class="cf-input">
+                                        <option value="info">Thong tin</option>
+                                        <option value="warning">Canh giac</option>
+                                        <option value="danger">Nguy hiem</option>
+                                    </select>
+                                </div>
+                                <div class="cf-form-group">
+                                    <label class="cf-label">Cooldown (phut)</label>
+                                    <input v-model.number="sensorForm.cooldown_minutes" type="number" class="cf-input">
+                                </div>
+                            </div>
+                        </div>
+                        <div class="cf-modal-footer">
+                            <button type="button" @click="closeSensorModal" class="cf-btn-secondary">Huy</button>
+                            <button type="submit" class="cf-btn-primary">Luu</button>
+                        </div>
+                    </form>
+                </div>
+            </div>
+        </teleport>
+
+        <!-- ── INVENTORY RULE MODAL ── -->
+        <teleport to="body">
+            <div v-if="showInventoryModal" class="cf-modal-overlay" @click.self="closeInventoryModal">
+                <div class="cf-modal-box">
+                    <div class="cf-modal-header">
+                        <h3 class="cf-modal-title">{{ inventoryForm.id ? 'Sua ngưỡng kho' : 'Them ngưỡng ton kho' }}</h3>
+                        <button @click="closeInventoryModal" class="cf-modal-close-btn">✕</button>
+                    </div>
+                    <form @submit.prevent="saveInventoryRule">
+                        <div class="cf-modal-body">
+                            <div class="cf-form-group">
+                                <label class="cf-label">Kho *</label>
+                                <select v-model="inventoryForm.warehouse_id" class="cf-input" required>
+                                    <option value="">-- Chon kho --</option>
+                                    <option v-for="w in warehouses" :key="w.id" :value="w.id">{{ w.name }}</option>
+                                </select>
+                            </div>
+                            <div class="cf-form-group">
+                                <label class="cf-label">San pham *</label>
+                                <select v-model="inventoryForm.product_id" class="cf-input" required>
+                                    <option value="">-- Chon san pham --</option>
+                                    <option v-for="p in products" :key="p.id" :value="p.id">{{ p.name }}</option>
+                                </select>
+                            </div>
+                            <div class="cf-form-row">
+                                <div class="cf-form-group">
+                                    <label class="cf-label">Nguong (kg) *</label>
+                                    <input v-model.number="inventoryForm.threshold" type="number" class="cf-input" required>
+                                </div>
+                                <div class="cf-form-group">
+                                    <label class="cf-label">Muc do</label>
+                                    <select v-model="inventoryForm.severity" class="cf-input">
+                                        <option value="info">Thong tin</option>
+                                        <option value="warning">Canh giac</option>
+                                        <option value="critical">Nguy hiem</option>
+                                    </select>
+                                </div>
+                            </div>
+                        </div>
+                        <div class="cf-modal-footer">
+                            <button type="button" @click="closeInventoryModal" class="cf-btn-secondary">Huy</button>
+                            <button type="submit" class="cf-btn-primary">Luu</button>
+                        </div>
+                    </form>
+                </div>
+            </div>
+        </teleport>
+    </div>
+    `
+};

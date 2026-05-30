@@ -115,6 +115,14 @@ async def list_alert_rules(barn_id: str = None):
     return await alert_service.list_rules(barn_id)
 
 
+@router.get("/alerts/rules/{rule_id}")
+async def get_alert_rule(rule_id: int):
+    rule = await alert_service.get_rule(rule_id)
+    if not rule:
+        raise HTTPException(404, "Alert rule not found")
+    return rule
+
+
 @router.post("/alerts/rules")
 async def create_alert_rule(req: AlertRuleRequest):
     result = await alert_service.create_rule(req.model_dump())

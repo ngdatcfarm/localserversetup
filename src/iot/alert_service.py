@@ -163,6 +163,10 @@ class AlertService:
             rows = await db.fetch("SELECT * FROM alert_rules ORDER BY name")
         return [dict(r) for r in rows]
 
+    async def get_rule(self, rule_id: int) -> dict | None:
+        row = await db.fetchrow("SELECT * FROM alert_rules WHERE id = $1", rule_id)
+        return dict(row) if row else None
+
     async def create_rule(self, data: dict) -> dict:
         row = await db.fetchrow(
             """INSERT INTO alert_rules

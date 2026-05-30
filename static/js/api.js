@@ -130,6 +130,40 @@ const API = {
         update(id, d) { return API.put(`/api/farm/products/${id}`, d); },
         del(id) { return API.del(`/api/farm/products/${id}`); },
     },
+
+    // Sensor Alerts
+    sensorAlerts: {
+        list(ack, barnId) {
+            const params = [];
+            if (ack !== undefined) params.push('acknowledged=' + ack);
+            if (barnId) params.push('barn_id=' + barnId);
+            const q = params.length ? '?' + params.join('&') : '';
+            return API.get('/api/alerts' + q);
+        },
+        active(barnId) {
+            const q = barnId ? '?barn_id=' + barnId : '';
+            return API.get('/api/alerts/active' + q);
+        },
+        ack(id) { return API.post('/api/alerts/' + id + '/acknowledge'); },
+        ackAll(barnId) {
+            const q = barnId ? '?barn_id=' + barnId : '';
+            return API.post('/api/alerts/acknowledge-all' + q);
+        },
+        check() { return API.post('/api/alerts/check'); },
+        // Rules
+        rules: {
+            list(barnId) {
+                const q = barnId ? '?barn_id=' + barnId : '';
+                return API.get('/api/alerts/rules' + q);
+            },
+            get(id) { return API.get('/api/alerts/rules/' + id); },
+            create(d) { return API.post('/api/alerts/rules', d); },
+            update(id, d) { return API.put('/api/alerts/rules/' + id, d); },
+            delete(id) { return API.del('/api/alerts/rules/' + id); },
+        },
+    },
+
+    // Inventory Alerts
     inventory: {
         list(whId) { return API.get(`/api/farm/inventory${whId ? '?warehouse_id=' + whId : ''}`); },
         import(d) { return API.post('/api/farm/inventory/import', d); },
