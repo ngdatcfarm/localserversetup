@@ -87,6 +87,24 @@ return {
             currentMedLogs.value.filter(l => l.shift === currentShift.value || l.shift === 'all_day')
         );
 
+        // Whether current shift has any data logged
+        const shiftHasFeedData = computed(() => shiftFeedLogs.value.length > 0);
+        const shiftHasMedData = computed(() => shiftMedLogs.value.length > 0);
+
+        // Per-shift data flags (independent of currentShift selection)
+        const sangHasFeed = computed(() =>
+            currentFeedLogs.value.filter(l => l.meal === 'sang').length > 0
+        );
+        const chieuHasFeed = computed(() =>
+            currentFeedLogs.value.filter(l => l.meal === 'chieu').length > 0
+        );
+        const sangHasMed = computed(() =>
+            currentMedLogs.value.filter(l => l.shift === 'sang').length > 0
+        );
+        const chieuHasMed = computed(() =>
+            currentMedLogs.value.filter(l => l.shift === 'chieu').length > 0
+        );
+
         // Totals for widgets
         const totalKgToday = computed(() =>
             currentFeedLogs.value.reduce((sum, log) => sum + (log.quantity || 0), 0)
@@ -283,6 +301,8 @@ return {
             feedProducts, medProducts, feedWarehouses, medWarehouses,
             currentFeedLogs, currentMedLogs, shiftFeedLogs, shiftMedLogs,
             totalKgToday, totalMedToday,
+            shiftHasFeedData, shiftHasMedData,
+            sangHasFeed, chieuHasFeed, sangHasMed, chieuHasMed,
             saveFeed, saveMedication, deleteLog, changeDate,
             medMethodLabels, medTypeLabels, medTypeColour,
             fmtNum
@@ -306,17 +326,7 @@ return {
                         <input type="date" v-model="selectedDate" class="cf-care-date-input">
                         <button @click="changeDate(1)" class="cf-care-date-btn">→</button>
                     </div>
-                    <!-- Shift switcher -->
-                    <div class="cf-care-shift-group">
-                        <button @click="currentShift = 'sang'"
-                            :class="['cf-care-shift-btn', currentShift === 'sang' ? 'active sang' : '']">
-                            ☀️ Ca sáng
-                        </button>
-                        <button @click="currentShift = 'chieu'"
-                            :class="['cf-care-shift-btn', currentShift === 'chieu' ? 'active chieu' : '']">
-                            🌆 Ca chiều
-                        </button>
-                    </div>
+                    
                 </div>
             </div>
 
@@ -350,6 +360,9 @@ return {
             </div>
         </div>
 
+
+        
+
         <!-- ── TOTALS WIDGETS ── -->
         <div class="cf-care-totals-row">
             <div class="cf-care-total-card feed-total">
@@ -363,7 +376,19 @@ return {
                 <div class="cf-care-total-sub">lượt dùng thú y</div>
             </div>
         </div>
-
+    <!-- Shift switcher -->
+            <div class="cf-care-shift-group">
+                        <button @click="currentShift = 'sang'"
+                            :class="['cf-care-shift-btn', currentShift === 'sang' ? 'active sang' : '']">
+                            ☀️ Ca sáng
+                            <span v-if="sangHasFeed" class="cf-care-shift-tick feed-tick">✓</span>
+                        </button>
+                        <button @click="currentShift = 'chieu'"
+                            :class="['cf-care-shift-btn', currentShift === 'chieu' ? 'active chieu' : '']">
+                            🌆 Ca chiều
+                            <span v-if="chieuHasFeed" class="cf-care-shift-tick feed-tick">✓</span>
+                        </button>
+            </div>
         <!-- ── TAB SWITCHER ── -->
         <div class="cf-care-tabs">
             <button @click="activeTab = 'feed'" :class="['cf-care-tab', activeTab === 'feed' ? 'active' : '']">
