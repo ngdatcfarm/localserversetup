@@ -12,7 +12,6 @@ return {
         // ── State ──────────────────────────────────────
         const cycles = ref([]);
         const products = ref([]);
-        const warehouses = ref([]);
         const feedLogs = ref([]);
         const medLogs = ref([]);
 
@@ -68,8 +67,12 @@ return {
 
         const feedProducts = computed(() => products.value.filter(p => p.product_type === 'feed'));
         const medProducts = computed(() => products.value.filter(p => p.product_type === 'medication' || p.product_type === 'medicine'));
-        const feedWarehouses = computed(() => warehouses.value.filter(w => w.warehouse_type === 'feed' || w.warehouse_type === 'mixed'));
-        const medWarehouses = computed(() => warehouses.value.filter(w => w.warehouse_type === 'medication' || w.warehouse_type === 'mixed'));
+
+        // Barn-specific warehouses (fetched when cycle changes via suggested-warehouses)
+        const barnFeedWarehouse = ref(null);   // { id, name, stock }
+        const barnMedWarehouse = ref(null);    // { id, name, stock }
+        const feedWarehouses = computed(() => barnFeedWarehouse.value?.stock || []);
+        const medWarehouses = computed(() => barnMedWarehouse.value?.stock || []);
 
         // Filter logs by cycle + date
         const currentFeedLogs = computed(() =>
@@ -118,15 +121,15 @@ return {
             probiotic: 'cf-care-med-probiotic'
         };
 
-        // Auto-set default feed warehouse & product
-        watch(() => selectedCycleId.value, () => {
-            if (feedWarehouses.value.length && !feedForm.warehouse_id) {
-                feedForm.warehouse_id = feedWarehouses.value[0].id;
+        // When cycle changes: load barn warehouses + reload logs
+        watch(() => selectedCycleId.value, async (newId) => {
+            if (!newId) return;
+            const cycle = cycles.value.find(c => c.id == newId);
+            if (cycle?.barn_id) {
+                await loadBarnWarehouses(cycle.barn_id);
             }
-            if (feedProducts.value.length && !feedForm.product_id) {
-                feedForm.product_id = feedProducts.value[0].id;
-            }
-        }, { immediate: true });
+            await loadLogs();
+        });
 
         // Auto-set unit when med product changes
         watch(() => medForm.product_id, (newId) => {
@@ -140,22 +143,19 @@ return {
         async function loadData() {
             loading.value = true;
             try {
-                const [c, p, w] = await Promise.all([
+                const [c, p] = await Promise.all([
                     API.cycles.list(),
                     API.products.list(),
-                    API.warehouses.list(),
                 ]);
                 cycles.value = c;
                 products.value = p;
-                warehouses.value = w;
 
                 if (!selectedCycleId.value && cycles.value.length > 0) {
-                    // Find first active cycle that has feed data today
                     const today = new Date().toISOString().slice(0, 10);
                     const activeCycles = cycles.value.filter(cl => !cl.end_date);
                     let best = activeCycles[0] || cycles.value[0];
 
-                    // Check cycles in order of most recent activity: newest first (desc by id)
+                    // Pick first active cycle that has feed data today
                     for (const cl of activeCycles) {
                         try {
                             const fl = await API.care.feedHistory(cl.id);
@@ -168,21 +168,36 @@ return {
                     selectedCycleId.value = best.id;
                 }
 
-                if (feedWarehouses.value.length && !feedForm.warehouse_id) {
-                    feedForm.warehouse_id = feedWarehouses.value[0].id;
-                }
                 if (feedProducts.value.length && !feedForm.product_id) {
                     feedForm.product_id = feedProducts.value[0].id;
                 }
                 if (medProducts.value.length && !medForm.product_id) {
                     medForm.product_id = medProducts.value[0].id;
                 }
-
-                await loadLogs();
             } catch (e) {
                 if (typeof showToast === 'function') showToast('Lỗi tải dữ liệu: ' + e.message, 'error');
             } finally {
                 loading.value = false;
+            }
+        }
+
+        // Load barn-specific warehouses when cycle changes
+        async function loadBarnWarehouses(barnId) {
+            if (!barnId) return;
+            try {
+                const sug = await API.barns.suggestedWarehouses(barnId);
+                barnFeedWarehouse.value = sug.feed_warehouse || null;
+                barnMedWarehouse.value = sug.medication_warehouse || null;
+                // Auto-set warehouse in forms
+                if (barnFeedWarehouse.value?.warehouse_id && !feedForm.warehouse_id) {
+                    feedForm.warehouse_id = barnFeedWarehouse.value.warehouse_id;
+                }
+                if (barnMedWarehouse.value?.warehouse_id && !medForm.warehouse_id) {
+                    medForm.warehouse_id = barnMedWarehouse.value.warehouse_id;
+                }
+            } catch (e) {
+                barnFeedWarehouse.value = null;
+                barnMedWarehouse.value = null;
             }
         }
 
@@ -308,11 +323,12 @@ return {
         onMounted(() => { loadData(); });
 
         return {
-            cycles, products, warehouses, feedLogs, medLogs,
+            cycles, products, feedLogs, medLogs,
             selectedCycleId, selectedDate, currentShift, activeTab,
             feedForm, medForm,
             selectedCycle, dayAge,
             feedProducts, medProducts, feedWarehouses, medWarehouses,
+            barnFeedWarehouse, barnMedWarehouse,
             currentFeedLogs, currentMedLogs, shiftFeedLogs, shiftMedLogs,
             totalKgToday, totalMedToday,
             shiftHasFeedData, shiftHasMedData,
