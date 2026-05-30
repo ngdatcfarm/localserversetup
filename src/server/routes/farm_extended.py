@@ -34,6 +34,8 @@ class FeedTypeRequest(BaseModel):
 class MedicationRequest(BaseModel):
     name: str = Field(..., min_length=1, max_length=200)
     unit: Optional[str] = Field(None, max_length=50)
+    packaging: Optional[str] = Field(None, max_length=200)
+    unit_spec: Optional[str] = Field(None, max_length=50)
     category: Optional[str] = Field(None, max_length=100)
     manufacturer: Optional[str] = Field(None, max_length=200)
     price_per_unit: Optional[float] = Field(None, ge=0)

@@ -23,11 +23,30 @@ return {
         const searchText = ref('');
 
         const form = reactive({
-            name: '', unit: 'g', packaging: '', category: '', manufacturer: '',
+            name: '', unit: 'g', packaging: '', unit_spec: '', category: '', manufacturer: '',
             price_per_unit: null, recommended_dose: '', note: '', status: 'active'
         });
 
         const categories = ['antibiotic', 'vaccine', 'vitamin', 'probiotic', 'disinfectant', 'other'];
+
+        // ── Parse unit_spec from packaging text ──────────
+        // "Túi 100g" → "100g", "Chai 1L" → "1000ml", "Hộp 10 chai" → "10 chai"
+        function parseUnitSpec(packaging) {
+            if (!packaging) return '';
+            const text = packaging.trim();
+            // Try to find a number followed by a unit
+            const match = text.match(/(\d+(?:[.,]\d+)?)\s*(kg|g|ml|l|con|chai|túi|gói|hộp|viên|lọ)/i);
+            if (!match) return '';
+            let qty = parseFloat(match[1].replace(',', '.'));
+            const unit = match[2].toLowerCase().trim();
+            // Normalize to base units
+            if (unit === 'kg') qty = qty * 1000;          // kg → g
+            else if (unit === 'l') qty = qty * 1000;       // L → ml
+            else if (unit === 'túi' || unit === 'gói' || unit === 'chai' || unit === 'hộp' || unit === 'viên' || unit === 'lọ' || unit === 'con') {
+                return qty + ' ' + unit;               // keep as-fabricated unit
+            }
+            return qty + ' ' + unit;
+        }
 
         // ── Computed ────────────────────────────────────
         const filteredMeds = computed(() => {
@@ -91,13 +110,15 @@ return {
             if (med) {
                 Object.assign(form, {
                     name: med.name, unit: med.unit || 'g', packaging: med.packaging || '',
+                    unit_spec: med.unit_spec || '',   // restore from DB
                     category: med.category || '', manufacturer: med.manufacturer || '',
                     price_per_unit: med.price_per_unit, recommended_dose: med.recommended_dose || '',
                     note: med.note || '', status: med.status
                 });
             } else {
                 Object.assign(form, {
-                    name: '', unit: 'g', packaging: '', category: '', manufacturer: '',
+                    name: '', unit: 'g', packaging: '', unit_spec: '',
+                    category: '', manufacturer: '',
                     price_per_unit: null, recommended_dose: '', note: '', status: 'active'
                 });
             }

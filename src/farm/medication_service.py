@@ -30,11 +30,11 @@ class MedicationService:
     async def create(self, data: dict) -> dict:
         row = await db.fetchrow(
             """INSERT INTO medications
-            (name, unit, category, manufacturer, price_per_unit,
+            (name, unit, unit_spec, packaging, category, manufacturer, price_per_unit,
              recommended_dose, note, status)
-            VALUES ($1, $2, $3, $4, $5, $6, $7, $8) RETURNING *""",
-            data["name"], data.get("unit"), data.get("category"),
-            data.get("manufacturer"), data.get("price_per_unit"),
+            VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10) RETURNING *""",
+            data["name"], data.get("unit"), data.get("unit_spec"), data.get("packaging"),
+            data.get("category"), data.get("manufacturer"), data.get("price_per_unit"),
             data.get("recommended_dose"), data.get("note"),
             data.get("status", "active"),
         )
@@ -45,15 +45,17 @@ class MedicationService:
             """UPDATE medications SET
                 name = COALESCE($2, name),
                 unit = COALESCE($3, unit),
-                category = COALESCE($4, category),
-                manufacturer = COALESCE($5, manufacturer),
-                price_per_unit = COALESCE($6, price_per_unit),
-                recommended_dose = COALESCE($7, recommended_dose),
-                note = COALESCE($8, note),
-                status = COALESCE($9, status)
+                unit_spec = COALESCE($4, unit_spec),
+                packaging = COALESCE($5, packaging),
+                category = COALESCE($6, category),
+                manufacturer = COALESCE($7, manufacturer),
+                price_per_unit = COALESCE($8, price_per_unit),
+                recommended_dose = COALESCE($9, recommended_dose),
+                note = COALESCE($10, note),
+                status = COALESCE($11, status)
             WHERE id = $1 RETURNING *""",
-            med_id, data.get("name"), data.get("unit"),
-            data.get("category"), data.get("manufacturer"),
+            med_id, data.get("name"), data.get("unit"), data.get("unit_spec"),
+            data.get("packaging"), data.get("category"), data.get("manufacturer"),
             data.get("price_per_unit"), data.get("recommended_dose"),
             data.get("note"), data.get("status"),
         )
