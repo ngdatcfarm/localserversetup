@@ -238,12 +238,13 @@ class CareService:
         row = await db.fetchrow(
             """INSERT INTO care_medications
             (cycle_id, barn_id, med_date, med_type, product_id, quantity,
-             method, warehouse_id, purpose, notes)
-            VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10) RETURNING *""",
+             method, warehouse_id, purpose, notes, unit, custom_name, shift)
+            VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10, $11, $12, $13) RETURNING *""",
             data["cycle_id"], data["barn_id"], data["med_date"],
             data["med_type"], data.get("product_id"), data.get("quantity"),
             data.get("method"), data.get("warehouse_id"),
             data.get("purpose"), data.get("notes"),
+            data.get("unit"), data.get("custom_name"), data.get("shift"),
         )
 
         # Queue sync to cloud - map local field names to cloud schema

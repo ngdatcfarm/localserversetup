@@ -3053,6 +3053,8 @@ img {
 .cf-care-log-id { font-size: 0.625rem; color: #94a3b8; }
 .cf-care-log-del { font-size: 0.6875rem; color: #dc2626; background: none; border: none; cursor: pointer; padding: 0; }
 .cf-care-log-del:hover { text-decoration: underline; }
+.cf-care-shift-indicator-bottom { display: flex; align-items: center; justify-content: center; gap: 0.75rem; padding: 0.5rem 0; border-top: 1px dashed #e2e8f0; margin-top: 0.25rem; }
+.cf-care-shift-date { font-size: 0.75rem; color: #94a3b8; font-family: var(--font-mono); }
 .cf-care-history-agg { margin-top: 0.75rem; padding-top: 0.75rem; border-top: 1px solid #f1f5f9; font-size: 0.8125rem; font-weight: 600; color: #64748b; text-align: center; }
 .cf-care-med-type-badge { font-size: 0.625rem; padding: 0.1rem 0.4rem; border-radius: 9999px; font-weight: 700; }
 .cf-care-med-vaccine { background: #dbeafe; color: #1e40af; }

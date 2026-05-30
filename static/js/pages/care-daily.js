@@ -76,7 +76,7 @@ return {
             feedLogs.value.filter(log => log.cycle_id === selectedCycleId.value && log.feed_date === selectedDate.value)
         );
         const currentMedLogs = computed(() =>
-            medLogs.value.filter(log => log.cycle_id === selectedCycleId.value && log.med_date === selectedDate.value)
+            medLogs.value.filter(log => log.cycle_id == selectedCycleId.value && log.med_date === selectedDate.value)
         );
 
         // Filter logs by cycle + date + shift
@@ -178,7 +178,6 @@ return {
 
             let finalQty = feedForm.manual_qty;
             if (feedForm.bag_count > 0) {
-                // weight per bag from product or default 25kg
                 const wpb = prod.capacity_kg || prod.kg_per_bag || 25;
                 finalQty = feedForm.bag_count * wpb;
             }
@@ -188,15 +187,17 @@ return {
                 return;
             }
 
+            const barnId = selectedCycle.value?.barn_id ? String(selectedCycle.value.barn_id) : '';
+
             try {
                 await API.care.logFeed({
-                    cycle_id: selectedCycleId.value,
-                    barn_id: selectedCycle.value?.barn_id || '',
+                    cycle_id: Number(selectedCycleId.value),
+                    barn_id: barnId,
                     feed_date: selectedDate.value,
                     meal: currentShift.value,
                     quantity: finalQty,
-                    product_id: feedForm.product_id,
-                    warehouse_id: feedForm.warehouse_id || undefined,
+                    product_id: feedForm.product_id ? Number(feedForm.product_id) : undefined,
+                    warehouse_id: feedForm.warehouse_id ? Number(feedForm.warehouse_id) : undefined,
                     notes: feedForm.notes
                 });
                 if (typeof showToast === 'function') showToast('Đã ghi nhận cho ăn: ' + finalQty + ' kg', 'success');
@@ -221,20 +222,21 @@ return {
                 return;
             }
 
+            const barnId = selectedCycle.value?.barn_id ? String(selectedCycle.value.barn_id) : '';
+
             try {
                 await API.care.logMedication({
-                    cycle_id: selectedCycleId.value,
-                    barn_id: selectedCycle.value?.barn_id || '',
+                    cycle_id: Number(selectedCycleId.value),
+                    barn_id: barnId,
                     med_date: selectedDate.value,
-                    shift: currentShift.value,
-                    product_id: medForm.product_id || undefined,
-                    custom_name: prodName,
                     med_type: medForm.med_type || 'medicine',
+                    product_id: medForm.product_id ? Number(medForm.product_id) : undefined,
                     quantity: medForm.quantity,
                     unit: medForm.unit,
                     method: medForm.method,
-                    warehouse_id: medForm.warehouse_id || undefined,
-                    notes: medForm.notes
+                    shift: currentShift.value,
+                    warehouse_id: medForm.warehouse_id ? Number(medForm.warehouse_id) : undefined,
+                    notes: medForm.notes || undefined,
                 });
                 if (typeof showToast === 'function') showToast('Đã lưu cấp thuốc thú y!', 'success');
                 medForm.custom_name = '';
@@ -386,13 +388,6 @@ return {
                 </div>
 
                 <div class="cf-care-form-body">
-                    <div class="cf-care-shift-indicator">
-                        <span class="cf-care-shift-label">Ca ăn hiện hành:</span>
-                        <span :class="['cf-care-shift-badge', currentShift]">
-                            {{ currentShift === 'sang' ? '☀️ Bữa Sáng' : '🌆 Bữa Chiều' }}
-                        </span>
-                    </div>
-
                     <!-- Product grid -->
                     <div class="cf-care-product-section">
                         <div class="cf-care-product-label">Chọn loại cám</div>
@@ -436,6 +431,14 @@ return {
                         <input v-model="feedForm.notes" type="text" class="cf-care-form-input"
                             placeholder="VD: Đàn gà ăn hăng, dọn sạch máng...">
                     </div>
+                </div>
+
+                <!-- Shift indicator below form body -->
+                <div class="cf-care-shift-indicator-bottom">
+                    <span :class="['cf-care-shift-badge', currentShift]">
+                        {{ currentShift === 'sang' ? '☀️ Ca sáng' : '🌆 Ca chiều' }}
+                    </span>
+                    <span class="cf-care-shift-date">{{ selectedDate }}</span>
                 </div>
 
                 <button @click="saveFeed" class="cf-care-save-btn feed-btn">
@@ -489,13 +492,6 @@ return {
                 </div>
 
                 <div class="cf-care-form-body">
-                    <div class="cf-care-shift-indicator">
-                        <span class="cf-care-shift-label">Ca thú y hiện tại:</span>
-                        <span :class="['cf-care-shift-badge', currentShift]">
-                            {{ currentShift === 'sang' ? '☀️ Bồi bổ sáng' : '🌆 Phòng bệnh chiều' }}
-                        </span>
-                    </div>
-
                     <!-- Method select -->
                     <div class="cf-care-form-group">
                         <label class="cf-care-form-label">Đường dùng lâm sàng</label>
@@ -552,6 +548,14 @@ return {
                         <input v-model="medForm.notes" type="text" class="cf-care-form-input"
                             placeholder="VD: Pha loãng kĩ tránh vón cục...">
                     </div>
+                </div>
+
+                <!-- Shift indicator below form body -->
+                <div class="cf-care-shift-indicator-bottom">
+                    <span :class="['cf-care-shift-badge', currentShift]">
+                        {{ currentShift === 'sang' ? '☀️ Ca sáng' : '🌆 Ca chiều' }}
+                    </span>
+                    <span class="cf-care-shift-date">{{ selectedDate }}</span>
                 </div>
 
                 <button @click="saveMedication" class="cf-care-save-btn med-btn">
