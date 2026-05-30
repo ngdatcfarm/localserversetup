@@ -583,7 +583,7 @@ const component = {
                         <h4 class="a-vaccine-title">📍 {{ v.vaccine_name }}</h4>
                         <p class="a-vaccine-subtitle">Chuong: {{ v.barn_name || v.barn_id }} (Lua: {{ v.cycle_code }})</p>
                         <div class="a-vaccine-tags">
- <span class="a-vtag a-vtag-red">Ngay tuoi tiem: {{ v.day_age_target }}</span>
+                          <span class="a-vtag a-vtag-red">Ngay tuoi tiem: {{ v.day_age_target }}</span>
                           <span class="a-vtag a-vtag-slate">Lich du dinh: {{ v.scheduled_date }}</span>
                           <span v-if="v.method" class="a-vtag a-vtag-blue">{{ v.method }}</span>
                         </div>
