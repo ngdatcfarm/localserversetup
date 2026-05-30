@@ -325,29 +325,6 @@ const API = {
         timed(d) { return API.post('/api/iot/relay/timed', d); },
     },
 
-    // Sensor Alert Rules
-    sensorAlerts: {
-        rules: {
-            list(barnId) { return API.get(`/api/alerts/rules${barnId ? '?barn_id=' + barnId : ''}`); },
-            get(id) { return API.get(`/api/alerts/rules/${id}`); },
-            create(d) { return API.post('/api/alerts/rules', d); },
-            update(id, d) { return API.put(`/api/alerts/rules/${id}`, d); },
-            delete(id) { return API.del(`/api/alerts/rules/${id}`); },
-        },
-        // Alerts (triggered)
-        list(acknowledged, barnId) {
-            let url = '/api/alerts';
-            const params = [];
-            if (acknowledged !== undefined) params.push('acknowledged=' + acknowledged);
-            if (barnId) params.push('barn_id=' + barnId);
-            if (params.length) url += '?' + params.join('&');
-            return API.get(url);
-        },
-        active(barnId) { return API.get('/api/alerts/active' + (barnId ? '?barn_id=' + barnId : '')); },
-        ack(id) { return API.post(`/api/alerts/${id}/acknowledge`); },
-        ackAll(barnId) { return API.post('/api/alerts/acknowledge-all' + (barnId ? '?barn_id=' + barnId : '')); },
-    },
-
     // Notifications / Push
     notifications: {
         status() { return API.get('/api/notifications/status'); },
