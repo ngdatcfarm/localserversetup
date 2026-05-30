@@ -73,7 +73,7 @@ return {
 
         // Filter logs by cycle + date
         const currentFeedLogs = computed(() =>
-            feedLogs.value.filter(log => log.cycle_id === selectedCycleId.value && log.feed_date === selectedDate.value)
+            feedLogs.value.filter(log => log.cycle_id == selectedCycleId.value && log.feed_date === selectedDate.value)
         );
         const currentMedLogs = computed(() =>
             medLogs.value.filter(log => log.cycle_id == selectedCycleId.value && log.med_date === selectedDate.value)
@@ -150,8 +150,22 @@ return {
                 warehouses.value = w;
 
                 if (!selectedCycleId.value && cycles.value.length > 0) {
-                    const active = cycles.value.find(c => !c.end_date);
-                    if (active) selectedCycleId.value = active.id;
+                    // Find first active cycle that has feed data today
+                    const today = new Date().toISOString().slice(0, 10);
+                    const activeCycles = cycles.value.filter(cl => !cl.end_date);
+                    let best = activeCycles[0] || cycles.value[0];
+
+                    // Check cycles in order of most recent activity: newest first (desc by id)
+                    for (const cl of activeCycles) {
+                        try {
+                            const fl = await API.care.feedHistory(cl.id);
+                            if (Array.isArray(fl) && fl.some(l => l.feed_date === today)) {
+                                best = cl;
+                                break;
+                            }
+                        } catch { /* skip */ }
+                    }
+                    selectedCycleId.value = best.id;
                 }
 
                 if (feedWarehouses.value.length && !feedForm.warehouse_id) {
