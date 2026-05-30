@@ -514,6 +514,7 @@ return {
             simBarnId, simType, simVal, simProdName, simWhName, simQty,
             activeInventoryCount, activeSensorCount,
             filteredInventoryRules,
+            barnMap, warehouseMap, productMap,
             loadSensorAlerts, loadSensorRules, loadInventoryAlerts, loadInventoryRules,
             loadVaccineSchedules, loadPushSubscriptions,
             ackSensorAlert, ackAllSensor, checkNow,
