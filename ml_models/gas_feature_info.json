@@ -1,0 +1,31 @@
+{
+  "feature_cols": [
+    "deviation_14_mq135",
+    "deviation_14_mq137",
+    "deviation_18_mq135",
+    "deviation_18_mq137",
+    "value_14_mq135",
+    "value_14_mq137",
+    "value_18_mq135",
+    "value_18_mq137",
+    "z_score_14_mq135",
+    "z_score_14_mq137",
+    "z_score_18_mq135",
+    "z_score_18_mq137"
+  ],
+  "device_ids": [
+    14,
+    18
+  ],
+  "sensor_types": [
+    "mq137",
+    "mq135"
+  ],
+  "ewma_alpha": 0.03,
+  "z_threshold": 2.5,
+  "training_samples": 341828,
+  "time_range": {
+    "start": "2026-05-16 01:55:03.816253+00:00",
+    "end": "2026-05-23 01:54:59.258846+00:00"
+  }
+}

@@ -1,0 +1,611 @@
+<!DOCTYPE html>
+<html lang="vi">
+<head>
+  <meta charset="UTF-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1.0, user-scalable=no, viewport-fit=cover">
+  <meta name="theme-color" content="#16a34a">
+  <meta name="apple-mobile-web-app-capable" content="yes">
+  <meta name="apple-mobile-web-app-status-bar-style" content="default">
+  <meta name="apple-mobile-web-app-title" content="CFarm">
+  <meta name="description" content="Điều khiển IoT & giám sát trang trại tại chỗ">
+  <link rel="icon" href="data:image/svg+xml,<svg xmlns='http://www.w3.org/2000/svg' viewBox='0 0 100 100'><text y='.9em' font-size='90'>🐔</text></svg>">
+  <link rel="apple-touch-icon" href="/static/icons/icon-192.png">
+  <link rel="manifest" href="/static/manifest.json">
+  <title>CFarm Ops Hub</title>
+  <script src="https://cdn.tailwindcss.com"></script>
+  <script>
+    tailwind.config = {
+      theme: {
+        extend: {
+          colors: {
+            primary: { DEFAULT: '#16a34a', dark: '#15803d' },
+            safe: '#16a34a',
+            warning: '#f59e0b',
+            danger: '#ef4444',
+            info: '#3b82f6'
+          }
+        }
+      }
+    }
+  </script>
+  <style>
+    :root {
+      --bg: #f8fafc;
+      --card: #ffffff;
+      --primary: #16a34a;
+      --primary-dark: #15803d;
+      --text: #111827;
+      --text-secondary: #6b7280;
+      --border: #e5e7eb;
+    }
+    * { box-sizing: border-box; -webkit-tap-highlight-color: transparent; }
+    body {
+      font-family: -apple-system, BlinkMacSystemFont, 'Segoe UI', Roboto, sans-serif;
+      background: var(--bg);
+      color: var(--text);
+      padding-bottom: 5rem;
+      overscroll-behavior-y: contain;
+    }
+    .tab-content { display: none; }
+    .tab-content.active { display: block; }
+    .skeleton {
+      background: linear-gradient(90deg, #e5e7eb 25%, #f3f4f6 50%, #e5e7eb 75%);
+      background-size: 200% 100%;
+      animation: shimmer 1.5s infinite;
+      border-radius: 6px;
+    }
+    @keyframes shimmer { 0% { background-position: 200% 0; } 100% { background-position: -200% 0; } }
+    .sensor-safe { color: #16a34a; }
+    .sensor-warning { color: #f59e0b; }
+    .sensor-danger { color: #ef4444; }
+    .bat-position-bar {
+      height: 6px;
+      border-radius: 3px;
+      background: #e5e7eb;
+      overflow: hidden;
+    }
+    .bat-position-fill {
+      height: 100%;
+      border-radius: 3px;
+      transition: width 0.4s ease, background 0.3s;
+    }
+    .bat-position-high { background: #16a34a; }
+    .bat-position-mid { background: #f59e0b; }
+    .bat-position-low { background: #ef4444; }
+    .toast {
+      position: fixed;
+      bottom: 6rem;
+      left: 50%;
+      transform: translateX(-50%);
+      padding: 10px 20px;
+      border-radius: 8px;
+      font-size: 14px;
+      font-weight: 500;
+      z-index: 1000;
+      animation: slideUpToast 0.3s ease;
+      max-width: 90%;
+      text-align: center;
+    }
+    @keyframes slideUpToast {
+      from { opacity: 0; transform: translateX(-50%) translateY(20px); }
+      to { opacity: 1; transform: translateX(-50%) translateY(0); }
+    }
+    .toast-success { background: #16a34a; color: white; }
+    .toast-error { background: #ef4444; color: white; }
+    .barn-selector::-webkit-scrollbar { display: none; }
+    .barn-selector { -ms-overflow-style: none; scrollbar-width: none; }
+    .filter-pill {
+      padding: 6px 14px;
+      border-radius: 20px;
+      font-size: 13px;
+      font-weight: 500;
+      cursor: pointer;
+      transition: all 0.2s;
+    }
+    .nav-btn { color: #6b7280; }
+    .nav-btn.active { color: #16a34a; }
+  </style>
+</head>
+<body>
+  <!-- Fixed Header -->
+  <header class="fixed top-0 left-0 right-0 z-50 bg-white border-b border-gray-200 px-4 py-3 flex justify-between items-center"
+          style="padding-top: env(safe-area-inset-top, 12px);">
+    <div class="flex items-center gap-2">
+      <div class="w-8 h-8 rounded-lg bg-primary flex items-center justify-center">
+        <span class="text-lg">🐔</span>
+      </div>
+      <h1 class="text-lg font-semibold text-gray-900">CFarm</h1>
+    </div>
+    <div class="flex items-center gap-3">
+      <div id="serverStatus" class="flex items-center gap-1.5">
+        <span class="w-2 h-2 rounded-full bg-gray-300"></span>
+        <span class="text-xs text-gray-500">Connecting...</span>
+      </div>
+      <button onclick="App.toggleNotifications()" id="notification-toggle" class="w-8 h-8 rounded-lg bg-gray-100 flex items-center justify-center hover:bg-gray-200 transition-colors">
+        <span class="text-lg">🔔</span>
+      </button>
+    </div>
+  </header>
+
+  <!-- Scrollable Content -->
+  <main class="pt-16 pb-4 px-4">
+    <!-- Overview Tab -->
+    <div id="tab-overview" class="tab-content active">
+      <!-- Today Focus - Việc cần làm hôm nay -->
+      <div class="mb-4">
+        <h3 class="text-xs font-semibold text-gray-500 uppercase mb-3">Hôm nay</h3>
+        <div id="today-focus" class="space-y-2">
+          <div class="text-center py-4 text-gray-400 text-sm">Đang tải...</div>
+        </div>
+      </div>
+
+      <!-- Alerts - Cảnh báo -->
+      <div onclick="App.goToAlerts()" class="bg-red-50 rounded-xl p-4 border border-red-200 cursor-pointer active:scale-95 transition-transform mb-4">
+        <div class="flex items-center gap-2">
+          <span class="text-xl">🚨</span>
+          <div class="flex-1">
+            <div class="text-sm font-semibold text-red-700">Cảnh báo chưa xử lý</div>
+            <div id="stat-alerts" class="text-2xl font-bold text-red-700">-</div>
+          </div>
+          <span class="text-red-500 text-sm">→</span>
+        </div>
+      </div>
+
+      <!-- Status Cards -->
+      <div class="grid grid-cols-2 gap-3 mb-4">
+        <div onclick="App.goToCycles()" class="bg-white rounded-xl p-4 shadow-sm border border-gray-100 cursor-pointer active:scale-95 transition-transform">
+          <div class="text-xs font-medium text-gray-500 uppercase mb-1">Chu kỳ hoạt động</div>
+          <div id="stat-cycles" class="text-2xl font-bold text-gray-900">-</div>
+        </div>
+        <div onclick="App.goToNotifications()" class="bg-white rounded-xl p-4 shadow-sm border border-gray-100 cursor-pointer active:scale-95 transition-transform">
+          <div class="text-xs font-medium text-gray-500 uppercase mb-1">Thông báo mới</div>
+          <div id="stat-notifications" class="text-2xl font-bold text-gray-900">-</div>
+        </div>
+        <div onclick="App.goToWarehouse()" class="bg-white rounded-xl p-4 shadow-sm border border-gray-100 cursor-pointer active:scale-95 transition-transform">
+          <div class="text-xs font-medium text-gray-500 uppercase mb-1">Kho thấp</div>
+          <div id="stat-lowstock" class="text-2xl font-bold text-orange-500">-</div>
+        </div>
+        <div onclick="App.setTab('care')" class="bg-white rounded-xl p-4 shadow-sm border border-gray-100 cursor-pointer active:scale-95 transition-transform">
+          <div class="text-xs font-medium text-gray-500 uppercase mb-1">Tasks hôm nay</div>
+          <div id="stat-tasks" class="text-2xl font-bold text-gray-900">-</div>
+        </div>
+      </div>
+
+      <!-- Environment Summary - Analytics -->
+      <div onclick="App.setTab('environment')" class="bg-white rounded-xl p-4 shadow-sm border border-gray-100 cursor-pointer active:scale-95 transition-transform mb-4">
+        <div class="flex justify-between items-center mb-3">
+          <div class="text-xs font-medium text-gray-500 uppercase">🌡️ Môi trường trại</div>
+          <span class="text-xs text-primary">Chi tiết →</span>
+        </div>
+        <div id="env-abnormal-summary" class="space-y-1 text-sm">
+          <div class="text-center py-2 text-gray-400">Đang tải...</div>
+        </div>
+      </div>
+
+      <h3 class="text-xs font-semibold text-gray-500 uppercase mb-3">Thông báo gần đây</h3>
+      <div id="recent-notifications" class="space-y-2">
+        <div class="text-center py-6 text-gray-400 text-sm">Đang tải...</div>
+      </div>
+      <button onclick="App.goToNotifications()" class="w-full mt-3 py-2 text-sm text-primary font-medium">Xem tất cả thông báo →</button>
+    </div>
+
+    <!-- Cycles Detail Tab -->
+    <div id="tab-cycles" class="tab-content">
+      <div class="flex items-center justify-between mb-4">
+        <h2 class="text-lg font-semibold text-gray-900">Chu kỳ hoạt động</h2>
+        <button onclick="App.setTab('overview')" class="text-gray-500 text-sm">← Quay lại</button>
+      </div>
+      <div id="cycles-list" class="space-y-2">
+        <div class="text-center py-6 text-gray-400 text-sm">Đang tải...</div>
+      </div>
+    </div>
+
+    <!-- Notifications Detail Tab -->
+    <div id="tab-notifications" class="tab-content">
+      <div class="flex items-center justify-between mb-4">
+        <h2 class="text-lg font-semibold text-gray-900">Thông báo</h2>
+        <button onclick="App.setTab('overview')" class="text-gray-500 text-sm">← Quay lại</button>
+      </div>
+      <div id="all-notifications" class="space-y-2">
+        <div class="text-center py-6 text-gray-400 text-sm">Đang tải...</div>
+      </div>
+    </div>
+
+    <!-- Alerts Detail Tab -->
+    <div id="tab-alerts" class="tab-content">
+      <div class="flex items-center justify-between mb-4">
+        <h2 class="text-lg font-semibold text-gray-900">Cảnh báo</h2>
+        <button onclick="App.setTab('overview')" class="text-gray-500 text-sm">← Quay lại</button>
+      </div>
+      <div id="alerts-list" class="space-y-2">
+        <div class="text-center py-6 text-gray-400 text-sm">Đang tải...</div>
+      </div>
+    </div>
+
+    <!-- Care Tab -->
+    <div id="tab-care" class="tab-content">
+      <!-- Cycle & Date Selector -->
+      <div class="bg-white rounded-xl p-3 shadow-sm border border-gray-100 mb-3">
+        <div class="flex gap-2">
+          <select id="care-cycle-select" onchange="App.Care.setCycle(this.value, Store.state.cycles)" class="flex-1 text-sm border border-gray-200 rounded-lg px-3 py-2 bg-white">
+            <option value="">Chọn chu kỳ...</option>
+          </select>
+          <input type="date" id="care-date-input" onchange="App.Care.setDate(this.value)" class="text-sm border border-gray-200 rounded-lg px-3 py-2 bg-white">
+        </div>
+      </div>
+
+      <!-- Quick Stats -->
+      <div id="care-quick-stats" class="bg-white rounded-xl p-3 shadow-sm border border-gray-100 mb-3">
+        <div class="flex justify-between items-center">
+          <div class="text-xs font-semibold text-gray-500 uppercase">Hôm nay</div>
+          <div class="flex items-center gap-2">
+            <span class="text-xs px-2 py-1 rounded-full bg-green-100 text-green-700" id="care-day-status">⏳ Chưa nhập</span>
+          </div>
+        </div>
+        <div class="flex justify-around mt-2 pt-2 border-t border-gray-100">
+          <div class="text-center">
+            <div class="text-lg font-bold text-primary" id="care-stat-feed">-</div>
+            <div class="text-xs text-gray-400">Feed (kg)</div>
+          </div>
+          <div class="text-center">
+            <div class="text-lg font-bold text-red-500" id="care-stat-dead">-</div>
+            <div class="text-xs text-gray-400">Hao hụt</div>
+          </div>
+          <div class="text-center">
+            <div class="text-lg font-bold text-blue-500" id="care-stat-weight">-</div>
+            <div class="text-xs text-gray-400">Cân (g)</div>
+          </div>
+          <div class="text-center">
+            <div class="text-lg font-bold text-gray-500" id="care-stat-alive">-</div>
+            <div class="text-xs text-gray-400">Sống</div>
+          </div>
+        </div>
+      </div>
+
+      <!-- Vaccine Alert -->
+      <div id="care-vaccine-alert" class="bg-purple-50 rounded-xl p-3 border border-purple-200 mb-3" style="display:none">
+        <div class="flex items-center gap-2">
+          <span class="text-xl">💉</span>
+          <div class="flex-1">
+            <div class="text-sm font-semibold text-purple-700">Vaccine cần tiêm hôm nay!</div>
+            <div class="text-xs text-purple-500" id="care-vaccine-text"></div>
+          </div>
+        </div>
+      </div>
+
+      <!-- Shift Toggle -->
+      <div class="flex items-center justify-between mb-3">
+        <h3 class="text-xs font-semibold text-gray-500 uppercase">Nhập liệu</h3>
+        <div class="flex items-center gap-2">
+          <span class="text-xs text-gray-500">Ca:</span>
+          <button onclick="App.Care.toggleShift()" id="care-shift-btn" class="px-3 py-1.5 rounded-lg text-sm font-medium bg-primary text-white">
+            Sáng
+          </button>
+        </div>
+      </div>
+
+      <!-- Care Tabs -->
+      <div class="flex gap-1 overflow-x-auto pb-2 mb-3 -mx-4 px-4">
+        <button onclick="App.Care.setTab('feed')" class="care-tab flex-shrink-0 px-3 py-2 rounded-lg text-xs font-medium bg-primary text-white" data-tab="feed">🌾 Cho ăn</button>
+        <button onclick="App.Care.setTab('death')" class="care-tab flex-shrink-0 px-3 py-2 rounded-lg text-xs font-medium bg-gray-100 text-gray-600" data-tab="death">💀 Hao hụt</button>
+        <button onclick="App.Care.setTab('med')" class="care-tab flex-shrink-0 px-3 py-2 rounded-lg text-xs font-medium bg-gray-100 text-gray-600" data-tab="med">💊 Thuốc</button>
+        <button onclick="App.Care.setTab('weight')" class="care-tab flex-shrink-0 px-3 py-2 rounded-lg text-xs font-medium bg-gray-100 text-gray-600" data-tab="weight">⚖️ Cân</button>
+        <button onclick="App.Care.setTab('water')" class="care-tab flex-shrink-0 px-3 py-2 rounded-lg text-xs font-medium bg-gray-100 text-gray-600" data-tab="water">💧 Nước</button>
+        <button onclick="App.Care.setTab('health')" class="care-tab flex-shrink-0 px-3 py-2 rounded-lg text-xs font-medium bg-gray-100 text-gray-600" data-tab="health">🩺 Sức khỏe</button>
+      </div>
+
+      <!-- Form Container -->
+      <div id="care-form-container">
+        <!-- Feed Form -->
+        <div id="care-form-feed" class="care-form bg-white rounded-xl p-4 shadow-sm border border-gray-100">
+          <div class="text-xs text-gray-400 mb-3">Số lượng thức ăn</div>
+          <div class="grid grid-cols-2 gap-3 mb-3">
+            <div>
+              <label class="text-xs text-gray-500 mb-1 block">Số bao (25kg)</label>
+              <input type="number" id="care-feed-bags" min="0" placeholder="0" class="w-full border border-gray-200 rounded-lg px-3 py-2 text-sm">
+            </div>
+            <div>
+              <label class="text-xs text-gray-500 mb-1 block">Hoặc kg</label>
+              <input type="number" id="care-feed-kg" min="0" placeholder="0" class="w-full border border-gray-200 rounded-lg px-3 py-2 text-sm">
+            </div>
+          </div>
+          <div class="mb-3">
+            <label class="text-xs text-gray-500 mb-1 block">Kho</label>
+            <select id="care-feed-warehouse" class="w-full border border-gray-200 rounded-lg px-3 py-2 text-sm bg-white">
+              <option value="">Chọn kho...</option>
+            </select>
+          </div>
+          <div class="mb-3">
+            <label class="text-xs text-gray-500 mb-1 block">Ghi chú</label>
+            <input type="text" id="care-feed-notes" placeholder="Tùy chọn" class="w-full border border-gray-200 rounded-lg px-3 py-2 text-sm">
+          </div>
+          <button onclick="App.Care.submitFeed()" class="w-full bg-primary text-white py-3 rounded-xl font-medium text-sm active:scale-95 transition-transform">
+            💾 Lưu
+          </button>
+        </div>
+
+        <!-- Death Form -->
+        <div id="care-form-death" class="care-form bg-white rounded-xl p-4 shadow-sm border border-gray-100" style="display:none">
+          <div class="text-xs text-gray-400 mb-3">Số lượng hao hụt</div>
+          <div class="mb-3">
+            <label class="text-xs text-gray-500 mb-1 block">Số con</label>
+            <input type="number" id="care-death-count" min="0" placeholder="0" class="w-full border border-gray-200 rounded-lg px-3 py-2 text-sm">
+          </div>
+          <div class="mb-3">
+            <label class="text-xs text-gray-500 mb-1 block">Nguyên nhân</label>
+            <select id="care-death-cause" class="w-full border border-gray-200 rounded-lg px-3 py-2 text-sm bg-white">
+              <option value="">Chọn nguyên nhân...</option>
+              <option value="disease">Bệnh</option>
+              <option value="predator">Thú dữ</option>
+              <option value="heat">Nóng</option>
+              <option value="cold">Lạnh</option>
+              <option value="other">Khác</option>
+            </select>
+          </div>
+          <div class="mb-3">
+            <label class="text-xs text-gray-500 mb-1 block">Triệu chứng</label>
+            <input type="text" id="care-death-symptoms" placeholder="Mô tả triệu chứng" class="w-full border border-gray-200 rounded-lg px-3 py-2 text-sm">
+          </div>
+          <div class="mb-3">
+            <label class="text-xs text-gray-500 mb-1 block">Ghi chú</label>
+            <input type="text" id="care-death-notes" placeholder="Tùy chọn" class="w-full border border-gray-200 rounded-lg px-3 py-2 text-sm">
+          </div>
+          <button onclick="App.Care.submitDeath()" class="w-full bg-orange-500 text-white py-3 rounded-xl font-medium text-sm active:scale-95 transition-transform">
+            💾 Lưu
+          </button>
+        </div>
+
+        <!-- Med Form -->
+        <div id="care-form-med" class="care-form bg-white rounded-xl p-4 shadow-sm border border-gray-100" style="display:none">
+          <div class="mb-3">
+            <label class="text-xs text-gray-500 mb-1 block">Loại</label>
+            <select id="care-med-type" class="w-full border border-gray-200 rounded-lg px-3 py-2 text-sm bg-white">
+              <option value="medicine">Thuốc</option>
+              <option value="vaccine">Vaccine</option>
+              <option value="antibiotic">Kháng sinh</option>
+              <option value="vitamin">Vitamin</option>
+              <option value="probiotic">Probiotic</option>
+            </select>
+          </div>
+          <div class="mb-3">
+            <label class="text-xs text-gray-500 mb-1 block">Số lượng</label>
+            <div class="flex gap-2">
+              <input type="number" id="care-med-qty" min="0" placeholder="0" class="flex-1 border border-gray-200 rounded-lg px-3 py-2 text-sm">
+              <select id="care-med-unit" class="w-20 border border-gray-200 rounded-lg px-2 py-2 text-sm bg-white">
+                <option value="g">g</option>
+                <option value="ml">ml</option>
+                <option value="liều">liều</option>
+              </select>
+            </div>
+          </div>
+          <div class="mb-3">
+            <label class="text-xs text-gray-500 mb-1 block">Cách dùng</label>
+            <select id="care-med-method" class="w-full border border-gray-200 rounded-lg px-3 py-2 text-sm bg-white">
+              <option value="water">Pha nước</option>
+              <option value="inject">Tiêm</option>
+              <option value="spray">Xịt</option>
+              <option value="feed">Trộn thức ăn</option>
+            </select>
+          </div>
+          <div class="mb-3">
+            <label class="text-xs text-gray-500 mb-1 block">Ghi chú</label>
+            <input type="text" id="care-med-notes" placeholder="Tùy chọn" class="w-full border border-gray-200 rounded-lg px-3 py-2 text-sm">
+          </div>
+          <button onclick="App.Care.submitMed()" class="w-full bg-blue-500 text-white py-3 rounded-xl font-medium text-sm active:scale-95 transition-transform">
+            💾 Lưu
+          </button>
+        </div>
+
+        <!-- Weight Form -->
+        <div id="care-form-weight" class="care-form bg-white rounded-xl p-4 shadow-sm border border-gray-100" style="display:none">
+          <div class="mb-3">
+            <label class="text-xs text-gray-500 mb-1 block">Chế độ</label>
+            <div class="flex gap-2">
+              <button onclick="App.Care.setWeightMode('aggregate')" id="weight-mode-agg" class="flex-1 py-2 rounded-lg text-sm font-medium bg-primary text-white">Tổng</button>
+              <button onclick="App.Care.setWeightMode('samples')" id="weight-mode-samp" class="flex-1 py-2 rounded-lg text-sm font-medium bg-gray-100 text-gray-600">Mẫu</button>
+            </div>
+          </div>
+          <div id="weight-aggregate">
+            <div class="grid grid-cols-2 gap-3 mb-3">
+              <div>
+                <label class="text-xs text-gray-500 mb-1 block">Số con</label>
+                <input type="number" id="care-weight-count" min="0" placeholder="0" class="w-full border border-gray-200 rounded-lg px-3 py-2 text-sm">
+              </div>
+              <div>
+                <label class="text-xs text-gray-500 mb-1 block">Tổng gram</label>
+                <input type="number" id="care-weight-total" min="0" placeholder="0" class="w-full border border-gray-200 rounded-lg px-3 py-2 text-sm">
+              </div>
+            </div>
+            <div class="text-xs text-gray-400 text-center" id="care-weight-avg">TB: - g/con</div>
+          </div>
+          <button onclick="App.Care.submitWeight()" class="w-full mt-3 bg-blue-500 text-white py-3 rounded-xl font-medium text-sm active:scale-95 transition-transform">
+            💾 Lưu
+          </button>
+        </div>
+
+        <!-- Water Form -->
+        <div id="care-form-water" class="care-form bg-white rounded-xl p-4 shadow-sm border border-gray-100" style="display:none">
+          <div class="mb-3">
+            <label class="text-xs text-gray-500 mb-1 block">Lượng nước (lít)</label>
+            <input type="number" id="care-water-liters" min="0" placeholder="0" class="w-full border border-gray-200 rounded-lg px-3 py-2 text-sm">
+          </div>
+          <div class="mb-3 flex items-center gap-2">
+            <input type="checkbox" id="care-water-medicated" class="w-4 h-4">
+            <label for="care-water-medicated" class="text-sm text-gray-600">Có pha thuốc</label>
+          </div>
+          <div class="mb-3">
+            <label class="text-xs text-gray-500 mb-1 block">Ghi chú</label>
+            <input type="text" id="care-water-notes" placeholder="Tùy chọn" class="w-full border border-gray-200 rounded-lg px-3 py-2 text-sm">
+          </div>
+          <button onclick="App.Care.submitWater()" class="w-full bg-cyan-500 text-white py-3 rounded-xl font-medium text-sm active:scale-95 transition-transform">
+            💾 Lưu
+          </button>
+        </div>
+
+        <!-- Health Form -->
+        <div id="care-form-health" class="care-form bg-white rounded-xl p-4 shadow-sm border border-gray-100" style="display:none">
+          <div class="mb-3">
+            <label class="text-xs text-gray-500 mb-1 block">Mức độ</label>
+            <select id="care-health-severity" class="w-full border border-gray-200 rounded-lg px-3 py-2 text-sm bg-white">
+              <option value="normal">Bình thường</option>
+              <option value="mild">Nhẹ</option>
+              <option value="severe">Nặng</option>
+            </select>
+          </div>
+          <div class="mb-3">
+            <label class="text-xs text-gray-500 mb-1 block">Triệu chứng</label>
+            <div class="flex flex-wrap gap-2">
+              <label class="flex items-center gap-1 px-2 py-1 rounded-lg bg-gray-100 text-xs cursor-pointer">
+                <input type="checkbox" value="cough" class="care-health-flag"> Ho
+              </label>
+              <label class="flex items-center gap-1 px-2 py-1 rounded-lg bg-gray-100 text-xs cursor-pointer">
+                <input type="checkbox" value="diarrhea" class="care-health-flag"> Tiêu chảy
+              </label>
+              <label class="flex items-center gap-1 px-2 py-1 rounded-lg bg-gray-100 text-xs cursor-pointer">
+                <input type="checkbox" value="lethargy" class="care-health-flag"> Uể oải
+              </label>
+              <label class="flex items-center gap-1 px-2 py-1 rounded-lg bg-gray-100 text-xs cursor-pointer">
+                <input type="checkbox" value="respiratory" class="care-health-flag"> Hô hấp
+              </label>
+            </div>
+          </div>
+          <div class="mb-3">
+            <label class="text-xs text-gray-500 mb-1 block">Ghi chú</label>
+            <input type="text" id="care-health-notes" placeholder="Tùy chọn" class="w-full border border-gray-200 rounded-lg px-3 py-2 text-sm">
+          </div>
+          <button onclick="App.Care.submitHealth()" class="w-full bg-purple-500 text-white py-3 rounded-xl font-medium text-sm active:scale-95 transition-transform">
+            💾 Lưu
+          </button>
+        </div>
+      </div>
+
+      <!-- Today's Logs -->
+      <h3 class="text-xs font-semibold text-gray-500 uppercase mt-4 mb-2">Nhật ký hôm nay</h3>
+      <div id="care-today-logs" class="space-y-2">
+        <div class="text-center py-4 text-gray-400 text-sm">Chọn chu kỳ để xem</div>
+      </div>
+    </div>
+
+    <!-- Control Tab -->
+    <div id="tab-control" class="tab-content">
+      <div id="control-barns" class="barn-selector flex gap-2 overflow-x-auto py-2 mb-4 -mx-4 px-4">
+        <!-- Barn tabs injected -->
+      </div>
+      <div id="control-bats" class="space-y-3">
+        <div class="text-center py-6 text-gray-400 text-sm">Chọn chuồng</div>
+      </div>
+    </div>
+
+    <!-- Environment Tab -->
+    <div id="tab-environment" class="tab-content">
+      <div class="flex items-center justify-between mb-4">
+        <h2 class="text-lg font-semibold text-gray-900">Môi trường trại</h2>
+        <button onclick="App.setTab('overview')" class="text-gray-500 text-sm">← Quay lại</button>
+      </div>
+      <div id="env-all-barns" class="space-y-3">
+        <div class="text-center py-6 text-gray-400 text-sm">Đang tải...</div>
+      </div>
+    </div>
+
+    <!-- Camera Tab -->
+    <div id="tab-camera" class="tab-content">
+      <div class="flex items-center justify-between mb-4">
+        <h2 class="text-lg font-semibold text-gray-900">Camera trại</h2>
+        <button onclick="App.setTab('overview')" class="text-gray-500 text-sm">← Quay lại</button>
+      </div>
+      <div id="camera-list" class="grid grid-cols-2 gap-3">
+        <div class="text-center py-6 text-gray-400 text-sm col-span-2">Đang tải...</div>
+      </div>
+    </div>
+
+    <!-- Camera View Tab (single camera full view) -->
+    <div id="tab-camera-view" class="tab-content">
+      <div class="flex items-center justify-between mb-4">
+        <h2 id="camera-view-title" class="text-lg font-semibold text-gray-900">Camera</h2>
+        <button onclick="App.setTab('camera')" class="text-gray-500 text-sm">← Quay lại</button>
+      </div>
+      <div id="camera-view-content" class="space-y-3">
+        <div class="text-center py-6 text-gray-400 text-sm">Chọn camera để xem</div>
+      </div>
+    </div>
+
+    <!-- Warehouse Detail Tab -->
+    <div id="tab-warehouse-detail" class="tab-content">
+      <div class="flex items-center justify-between mb-4">
+        <h2 class="text-lg font-semibold text-gray-900">Kho</h2>
+        <button onclick="App.setTab('overview')" class="text-gray-500 text-sm">← Quay lại</button>
+      </div>
+      <div id="warehouse-detail-list" class="space-y-2">
+        <div class="text-center py-6 text-gray-400 text-sm">Đang tải...</div>
+      </div>
+    </div>
+
+    <!-- Warehouse Tab -->
+    <div id="tab-warehouse" class="tab-content">
+      <div id="warehouse-filters" class="flex gap-2 overflow-x-auto py-2 mb-4 -mx-4 px-4">
+        <button onclick="App.filterWarehouse('all')" class="filter-pill bg-primary text-white">Tất cả</button>
+        <button onclick="App.filterWarehouse('feed')" class="filter-pill bg-gray-100 text-gray-600">Thức ăn</button>
+        <button onclick="App.filterWarehouse('medicine')" class="filter-pill bg-gray-100 text-gray-600">Thuốc</button>
+        <button onclick="App.filterWarehouse('supply')" class="filter-pill bg-gray-100 text-gray-600">Vật tư</button>
+      </div>
+      <div id="warehouse-list" class="space-y-2">
+        <div class="text-center py-6 text-gray-400 text-sm">Đang tải...</div>
+      </div>
+    </div>
+  </main>
+
+  <!-- Fixed Bottom Navigation -->
+  <nav class="fixed bottom-0 left-0 right-0 bg-white border-t border-gray-200 flex justify-around py-2 z-40"
+       style="padding-bottom: env(safe-area-inset-bottom, 8px);">
+    <button onclick="App.setTab('overview')" class="nav-btn active flex flex-col items-center py-1 px-3 min-w-[60px] text-primary" data-tab="overview">
+      <span class="nav-icon text-lg">📊</span>
+      <span class="text-xs mt-0.5">Tổng quan</span>
+    </button>
+    <button onclick="App.setTab('care')" class="nav-btn flex flex-col items-center py-1 px-3 min-w-[60px] text-gray-500" data-tab="care">
+      <span class="nav-icon text-lg">💊</span>
+      <span class="text-xs mt-0.5">Care</span>
+    </button>
+    <button onclick="App.setTab('control')" class="nav-btn flex flex-col items-center py-1 px-3 min-w-[60px] text-gray-500" data-tab="control">
+      <span class="nav-icon text-lg">🎚️</span>
+      <span class="text-xs mt-0.5">Bạt</span>
+    </button>
+    <button onclick="App.setTab('environment')" class="nav-btn flex flex-col items-center py-1 px-3 min-w-[60px] text-gray-500" data-tab="environment">
+      <span class="nav-icon text-lg">🌡️</span>
+      <span class="text-xs mt-0.5">Môi trường</span>
+    </button>
+    <button onclick="App.setTab('camera')" class="nav-btn flex flex-col items-center py-1 px-3 min-w-[60px] text-gray-500" data-tab="camera">
+      <span class="nav-icon text-lg">📹</span>
+      <span class="text-xs mt-0.5">Camera</span>
+    </button>
+    <button onclick="App.setTab('warehouse')" class="nav-btn flex flex-col items-center py-1 px-3 min-w-[60px] text-gray-500" data-tab="warehouse">
+      <span class="nav-icon text-lg">📦</span>
+      <span class="text-xs mt-0.5">Kho</span>
+    </button>
+  </nav>
+
+  <!-- Toast Container -->
+  <div id="toast-container"></div>
+
+  <!-- Service Worker Registration for PWA -->
+  <script>
+    if ('serviceWorker' in navigator) {
+      window.addEventListener('load', () => {
+        navigator.serviceWorker.register('/sw.js')
+          .then(reg => console.log('SW registered:', reg.scope))
+          .catch(err => console.log('SW registration failed:', err));
+      });
+    }
+  </script>
+
+  <script src="/ops-static/js/api.js"></script>
+  <script src="/ops-static/js/utils/format.js"></script>
+  <script src="/ops-static/js/utils/store.js"></script>
+  <script src="/ops-static/js/tabs/overview.js"></script>
+  <script src="/ops-static/js/tabs/care.js"></script>
+  <script src="/ops-static/js/tabs/control.js"></script>
+  <script src="/ops-static/js/tabs/environment.js"></script>
+  <script src="/ops-static/js/tabs/camera.js"></script>
+  <script src="/ops-static/js/tabs/warehouse.js"></script>
+  <script src="/ops-static/js/app.js"></script>
+</body>
+</html>

@@ -1,0 +1,426 @@
+<!DOCTYPE html>
+<html lang="vi">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0, viewport-fit=cover, user-scalable=no">
+    <meta name="apple-mobile-web-app-capable" content="yes">
+    <meta name="apple-mobile-web-app-status-bar-style" content="black-translucent">
+    <meta name="theme-color" content="#16a34a">
+    <meta name="mobile-web-app-capable" content="yes">
+    <link rel="manifest" href="/static/manifest.json">
+    <link rel="apple-touch-icon" href="/static/icons/icon-192.png">
+    <title>CFarm - Hoạt động</title>
+    <script src="/static/vendor/vue.global.prod.js"></script>
+    <script>window.Vue || document.write('<script src="https://unpkg.com/vue@3/dist/vue.global.prod.js"><\/script>')</script>
+    <link href="/static/vendor/tailwind.min.css" rel="stylesheet" onerror="this.onerror=null;this.href='https://cdn.jsdelivr.net/npm/tailwindcss@2.2.19/dist/tailwind.min.css'">
+    <link rel="stylesheet" href="/static/css/app.css">
+    <style>
+        * { -webkit-tap-highlight-color: transparent; -webkit-touch-callout: none; }
+        body { padding-top: env(safe-area-inset-top); padding-bottom: env(safe-area-inset-bottom); }
+        .ops-app { height: 100vh; height: 100dvh; overflow: hidden; display: flex; flex-direction: column; }
+        .ops-content { flex: 1; overflow-y: auto; -webkit-overflow-scrolling: touch; }
+        .ops-content { scrollbar-width: thin; }
+        .ops-content::-webkit-scrollbar { width: 3px; }
+        .ops-content::-webkit-scrollbar-thumb { background: #d1d5db; border-radius: 3px; }
+        .tab-badge { position: absolute; top: 4px; right: 8px; min-width: 18px; height: 18px; border-radius: 9px; background: #ef4444; color: white; font-size: 11px; font-weight: 600; display: flex; align-items: center; justify-content: center; padding: 0 5px; }
+        .tab-btn { position: relative; }
+    </style>
+</head>
+<body class="bg-gray-100">
+<div id="app" class="ops-app">
+
+    <!-- Top Header -->
+    <header class="sticky top-0 z-30 bg-white border-b shadow-sm flex items-center justify-between px-4 py-3" style="padding-top: calc(3px + env(safe-area-inset-top))">
+        <div class="flex items-center gap-2">
+            <div class="w-8 h-8 rounded-lg flex items-center justify-center" style="background:var(--primary)">
+                <svg class="w-4 h-4 text-white" fill="none" stroke="currentColor" stroke-width="2" viewBox="0 0 24 24">
+                    <path stroke-linecap="round" stroke-linejoin="round" d="M3.055 11H5a2 2 0 012 2v1a2 2 0 002 2 2 2 0 012 2v2.945M8 3.935V5.5A2.5 2.5 0 0010.5 8h.5a2 2 0 012 2 2 2 0 104 0 2 2 0 012-2h1.064M15 20.488V18a2 2 0 012-2h3.064M21 12a9 9 0 11-18 0 9 9 0 0118 0z"/>
+                </svg>
+            </div>
+            <div>
+                <div class="font-bold text-base leading-tight" style="color:var(--primary-dark)">CFarm</div>
+                <div class="text-xs text-gray-500 leading-tight">Hoạt động</div>
+            </div>
+        </div>
+        <div class="flex items-center gap-2">
+            <div class="text-xs text-gray-400">
+                <span class="inline-flex items-center gap-1">
+                    <span class="w-1.5 h-1.5 rounded-full" :class="serverStatus.ok ? 'bg-green-500' : 'bg-red-500'"></span>
+                    {{ serverStatus.ok ? 'Online' : 'Offline' }}
+                </span>
+            </div>
+        </div>
+    </header>
+
+    <!-- Main Content -->
+    <div class="ops-content">
+        <div class="ops-hub p-4 pb-20">
+            <!-- Last update -->
+            <div v-if="lastUpdate" class="text-xs text-gray-400 mb-3 text-right">
+                Cập nhật: {{ new Date(lastUpdate).toLocaleTimeString('vi-VN') }}
+            </div>
+
+            <!-- Tổng quan Tab -->
+            <div v-if="currentTab === 'overview'" class="space-y-4">
+                <!-- Active Cycles Summary -->
+                <div class="card">
+                    <div class="card-title">Đợt nuôi đang hoạt động</div>
+                    <div v-if="activeCycles.length === 0" class="text-sm text-gray-500 py-2">Không có đợt nuôi active</div>
+                    <div v-else class="mt-2 space-y-2">
+                        <div v-for="cycle in activeCycles" :key="cycle.id" class="flex items-center justify-between p-3 bg-gray-50 rounded-lg">
+                            <div>
+                                <div class="font-semibold text-sm">{{ cycle.name || cycle.barn_name || 'Đợt #' + cycle.id }}</div>
+                                <div class="text-xs text-gray-500">
+                                    {{ cycle.barn_name }} • Ngày {{ cycle.day_count || 0 }}
+                                </div>
+                            </div>
+                            <div class="text-right">
+                                <div class="text-lg font-bold" style="color:var(--primary)">{{ cycle.day_count || 0 }}</div>
+                                <div class="text-xs text-gray-400">ngày</div>
+                            </div>
+                        </div>
+                    </div>
+                </div>
+
+                <!-- Notifications -->
+                <div class="card">
+                    <div class="card-title">Thông báo gần đây</div>
+                    <div v-if="notifications.length === 0" class="text-sm text-gray-500 py-2">Không có thông báo</div>
+                    <div v-else class="mt-2 space-y-1.5">
+                        <div v-for="n in notifications.slice(0,5)" :key="n.id"
+                             class="flex items-start gap-2.5 p-2.5 rounded-lg"
+                             :class="n.type === 'error' || n.type === 'danger' ? 'bg-red-50' : 'bg-gray-50'">
+                            <span class="text-sm">{{ n.type === 'error' || n.type === 'danger' ? '🔴' : '🔔' }}</span>
+                            <div class="flex-1 min-w-0">
+                                <div class="text-sm font-medium leading-tight">{{ n.title }}</div>
+                                <div class="text-xs text-gray-400 leading-tight mt-0.5">{{ n.message }}</div>
+                            </div>
+                            <div class="text-xs text-gray-400 flex-shrink-0">{{ fmtDate(n.created_at) }}</div>
+                        </div>
+                    </div>
+                </div>
+
+                <!-- Barns Overview -->
+                <div class="card">
+                    <div class="card-title">Chuồng trại</div>
+                    <div class="grid grid-cols-2 gap-2 mt-2">
+                        <div v-for="barn in barns.slice(0,4)" :key="barn.id"
+                             class="p-3 bg-gray-50 rounded-lg text-center">
+                            <div class="text-lg font-bold" style="color:var(--primary)">{{ barn.name || 'B' + barn.id }}</div>
+                            <div class="text-xs text-gray-500">{{ barn.location || 'N/A' }}</div>
+                            <div v-if="sensors[barn.id]" class="mt-1 text-xs">
+                                <span class="font-medium">{{ sensors[barn.id].temperature || '--' }}°C</span>
+                                <span class="text-gray-400"> | {{ sensors[barn.id].humidity || '--' }}%</span>
+                            </div>
+                        </div>
+                    </div>
+                </div>
+            </div>
+
+            <!-- Care Tab -->
+            <div v-if="currentTab === 'care'" class="space-y-4">
+                <div class="card">
+                    <div class="card-title">Chăm sóc hôm nay</div>
+                    <div v-if="todayCare.length === 0" class="text-sm text-gray-500 py-4 text-center">Không có công việc chăm sóc hôm nay</div>
+                    <div v-else class="mt-2 space-y-2">
+                        <div v-for="item in todayCare" :key="item.id"
+                             class="care-today-item flex items-center justify-between">
+                            <div class="flex items-center gap-2">
+                                <span class="text-lg">{{ item.completed ? '✅' : '⬜' }}</span>
+                                <div>
+                                    <div class="text-sm font-medium">{{ item.title }}</div>
+                                    <div class="text-xs text-gray-500">{{ item.category }}</div>
+                                </div>
+                            </div>
+                            <div class="text-xs text-gray-400">{{ fmtDate(item.due_date) }}</div>
+                        </div>
+                    </div>
+                </div>
+
+                <div class="card">
+                    <div class="card-title">Thông báo chăm sóc</div>
+                    <div v-if="careNotifications.length === 0" class="text-sm text-gray-500 py-2 text-center">Không có cảnh báo</div>
+                    <div v-else class="mt-2 space-y-1.5">
+                        <div v-for="n in careNotifications.slice(0,5)" :key="n.id"
+                             class="flex items-start gap-2.5 p-2.5 bg-amber-50 rounded-lg">
+                            <span class="text-lg">🩺</span>
+                            <div class="flex-1 min-w-0">
+                                <div class="text-sm font-medium">{{ n.title }}</div>
+                                <div class="text-xs text-amber-700">{{ n.message }}</div>
+                            </div>
+                        </div>
+                    </div>
+                </div>
+            </div>
+
+            <!-- Bạt Tab -->
+            <div v-if="currentTab === 'control'" class="space-y-4">
+                <div class="card">
+                    <div class="card-title">Điều khiển Bạt</div>
+                    <div v-if="bats.length === 0" class="text-sm text-gray-500 py-4 text-center">Không có bạt nào</div>
+                    <div v-else class="mt-2 space-y-2">
+                        <div v-for="bat in bats" :key="bat.id" class="bat-control-item">
+                            <div class="flex items-center justify-between mb-2">
+                                <div class="font-medium text-sm">{{ bat.name }}</div>
+                                <span class="text-xs px-2 py-0.5 rounded-full"
+                                      :class="bat.status === 'open' ? 'bg-green-100 text-green-700' : bat.status === 'closed' ? 'bg-gray-100 text-gray-600' : 'bg-amber-100 text-amber-700'">
+                                    {{ bat.status === 'open' ? 'Mở' : bat.status === 'closed' ? 'Đóng' : bat.status }}
+                                </span>
+                            </div>
+                            <div class="flex gap-2">
+                                <button @click="toggleBat(bat, 'open')" class="btn btn-sm btn-primary flex-1">Mở</button>
+                                <button @click="toggleBat(bat, 'closed')" class="btn btn-sm btn-secondary flex-1">Đóng</button>
+                            </div>
+                        </div>
+                    </div>
+                </div>
+            </div>
+
+            <!-- Môi trường Tab -->
+            <div v-if="currentTab === 'environment'" class="space-y-4">
+                <div class="card">
+                    <div class="card-title">Cảm biến môi trường</div>
+                    <div class="sensor-grid mt-2">
+                        <div v-for="(sensor, barnId) in sensors" :key="barnId" class="sensor-card">
+                            <div class="text-xs text-gray-500 mb-1">{{ getBarnName(barnId) }}</div>
+                            <div class="text-2xl font-bold" style="color:var(--primary)">{{ sensor.temperature || '--' }}°</div>
+                            <div class="text-xs text-gray-500">Nhiệt độ</div>
+                            <div class="text-lg font-semibold mt-1">{{ sensor.humidity || '--' }}%</div>
+                            <div class="text-xs text-gray-400">Độ ẩm</div>
+                        </div>
+                    </div>
+                    <div v-if="Object.keys(sensors).length === 0" class="text-sm text-gray-500 py-4 text-center">
+                        Không có dữ liệu cảm biến
+                    </div>
+                </div>
+            </div>
+
+            <!-- Kho Tab -->
+            <div v-if="currentTab === 'warehouse'" class="space-y-4">
+                <div class="card">
+                    <div class="card-title">Kho - Vật tư</div>
+                    <div v-if="inventory.length === 0" class="text-sm text-gray-500 py-4 text-center">Kho trống</div>
+                    <div v-else class="mt-2">
+                        <div v-for="item in inventory" :key="item.id"
+                             class="flex items-center justify-between p-3 border-b border-gray-100 last:border-0">
+                            <div>
+                                <div class="text-sm font-medium">{{ item.name }}</div>
+                                <div class="text-xs text-gray-400">{{ item.category || 'Vật tư' }}</div>
+                            </div>
+                            <div class="text-right">
+                                <div class="text-sm font-bold" :class="(item.quantity || 0) < (item.min_quantity || 0) ? 'text-red-500' : 'text-gray-700'">
+                                    {{ item.quantity || 0 }}
+                                </div>
+                                <div class="text-xs text-gray-400">{{ item.unit || 'pcs' }}</div>
+                            </div>
+                        </div>
+                    </div>
+                </div>
+
+                <div class="card">
+                    <div class="card-title">Thức ăn</div>
+                    <div v-if="feeds.length === 0" class="text-sm text-gray-500 py-2 text-center">Không có thức ăn</div>
+                    <div v-else class="mt-2 space-y-1.5">
+                        <div v-for="f in feeds" :key="f.id" class="flex items-center justify-between p-2.5 bg-gray-50 rounded-lg">
+                            <div class="text-sm font-medium">{{ f.name }}</div>
+                            <div class="text-xs text-gray-500">{{ f.quantity || 0 }} {{ f.unit || 'kg' }}</div>
+                        </div>
+                    </div>
+                </div>
+            </div>
+        </div>
+    </div>
+
+    <!-- Bottom Tab Navigation -->
+    <nav class="bottom-tab-nav">
+        <button @click="currentTab = 'overview'" class="tab-btn" :class="{ active: currentTab === 'overview' }">
+            <span class="tab-icon">📊</span>
+            <span class="tab-label">Tổng quan</span>
+        </button>
+        <button @click="currentTab = 'care'" class="tab-btn" :class="{ active: currentTab === 'care' }">
+            <span class="tab-icon">🩺</span>
+            <span class="tab-label">Care</span>
+        </button>
+        <button @click="currentTab = 'control'" class="tab-btn" :class="{ active: currentTab === 'control' }">
+            <span class="tab-icon">🪟</span>
+            <span class="tab-label">Bạt</span>
+        </button>
+        <button @click="currentTab = 'environment'" class="tab-btn" :class="{ active: currentTab === 'environment' }">
+            <span class="tab-icon">🌡️</span>
+            <span class="tab-label">Môi trường</span>
+        </button>
+        <button @click="currentTab = 'warehouse'" class="tab-btn" :class="{ active: currentTab === 'warehouse' }">
+            <span class="tab-icon">📦</span>
+            <span class="tab-label">Kho</span>
+            <span v-if="lowStockCount > 0" class="tab-badge">{{ lowStockCount }}</span>
+        </button>
+    </nav>
+
+    <!-- Toast -->
+    <div v-if="toast.show" :class="['fixed bottom-20 left-4 right-4 sm:left-auto sm:right-6 sm:w-80 z-50', 'flex items-center gap-2 px-4 py-3 rounded-xl shadow-lg text-sm font-medium toast-in',
+        toast.type === 'error' ? 'bg-red-500 text-white' : 'bg-emerald-500 text-white']">
+        <i :class="toast.type === 'error' ? 'fas fa-circle-exclamation' : 'fas fa-check-circle'"></i>
+        <span>{{ toast.msg }}</span>
+    </div>
+</div>
+
+<script src="/static/js/api.js"></script>
+<script>
+const { createApp, ref, reactive, onMounted, computed, watch } = Vue;
+
+// ── Toast notification system ──
+const toast = reactive({ show: false, msg: '', type: 'success', timer: null });
+function showToast(msg, type = 'success') {
+    toast.msg = msg;
+    toast.type = type;
+    toast.show = true;
+    clearTimeout(toast.timer);
+    toast.timer = setTimeout(() => toast.show = false, 3000);
+}
+
+// ── Utility ──
+function fmtDate(d) {
+    if (!d) return '-';
+    return new Date(d).toLocaleDateString('vi-VN');
+}
+function fmtNum(n, dec = 0) {
+    if (n === null || n === undefined) return '-';
+    return Number(n).toLocaleString('vi-VN', { minimumFractionDigits: dec, maximumFractionDigits: dec });
+}
+
+const app = createApp({
+    setup() {
+        // State
+        const serverStatus = reactive({ ok: false, mqtt: false, devices: 0, online: 0 });
+        const currentTab = ref('overview');
+        const lowStockCount = ref(0);
+
+        // Data
+        const barns = ref([]);
+        const activeCycles = ref([]);
+        const todayCare = ref([]);
+        const notifications = ref([]);
+        const sensors = ref({});
+        const bats = ref([]);
+        const inventory = ref([]);
+        const feeds = ref([]);
+
+        const loading = reactive({});
+        const lastUpdate = ref(null);
+
+        // Computed
+        const careNotifications = computed(() =>
+            notifications.value.filter(n => n.category === 'care' || n.type === 'care')
+        );
+
+        // Get barn name helper
+        function getBarnName(barnId) {
+            const barn = barns.value.find(b => b.id == barnId || b.id === barnId);
+            return barn ? barn.name || 'B' + barn.id : 'B' + barnId;
+        }
+
+        // API health check
+        async function checkHealth() {
+            try {
+                const h = await API.health();
+                serverStatus.ok = h.status === 'healthy';
+                serverStatus.mqtt = h.mqtt?.connected;
+                serverStatus.devices = h.devices?.total || 0;
+                serverStatus.online = h.devices?.online || 0;
+            } catch { serverStatus.ok = false; }
+        }
+
+        // Toggle bat
+        function toggleBat(bat, direction) {
+            if (direction === 'open') {
+                API.bats.moveUp(bat.id)
+                    .then(() => showToast('Đang mở bạt'))
+                    .catch(e => showToast('Lỗi: ' + (e.message || 'Không thể mở bạt'), 'error'));
+            } else {
+                API.bats.moveDown(bat.id)
+                    .then(() => showToast('Đang đóng bạt'))
+                    .catch(e => showToast('Lỗi: ' + (e.message || 'Không thể đóng bạt'), 'error'));
+            }
+        }
+
+        // Load all data
+        async function loadData() {
+            loading.all = true;
+            try {
+                // Load barns first
+                const barnsData = await API.barns.list().catch(() => []);
+                barns.value = barnsData;
+
+                // Load cycles
+                const cyclesData = await API.cycles.list().catch(() => []);
+                activeCycles.value = cyclesData.filter(c => c.status === 'active');
+
+                // Load notifications
+                const notifData = await API.notifications.list().catch(() => []);
+                notifications.value = notifData.slice(0, 10);
+
+                // Load care daily status
+                const careData = await API.care.dailyStatus().catch(() => ({ items: [] }));
+                todayCare.value = careData?.items || [];
+
+                // Load inventory
+                const invData = await API.inventory.list().catch(() => []);
+                inventory.value = invData;
+                lowStockCount.value = invData.filter(i => (i.quantity || 0) < (i.min_quantity || 0)).length;
+
+                // Load feeds (feedBrands)
+                const feedsData = await API.feedBrands.list().catch(() => []);
+                feeds.value = feedsData;
+
+                // Load bats per barn
+                const allBats = [];
+                for (const barn of barnsData) {
+                    try {
+                        const barnBats = await API.bats.listByBarn(barn.id);
+                        allBats.push(...barnBats);
+                    } catch { /* skip failing barn */ }
+                }
+                bats.value = allBats;
+
+                // Load sensors per barn
+                const sensorMap = {};
+                for (const barn of barnsData.slice(0, 4)) {
+                    try {
+                        const s = await API.sensors.latestByBarn(barn.id);
+                        if (s && s.length > 0) {
+                            sensorMap[barn.id] = s[0];
+                        }
+                    } catch { /* skip */ }
+                }
+                sensors.value = sensorMap;
+
+                lastUpdate.value = new Date();
+            } catch (e) {
+                console.error('Load data error:', e);
+            } finally {
+                loading.all = false;
+            }
+        }
+
+        onMounted(() => {
+            checkHealth();
+            loadData();
+            setInterval(() => {
+                checkHealth();
+                loadData();
+            }, 30000);
+        });
+
+        return {
+            serverStatus, currentTab, lowStockCount,
+            barns, activeCycles, todayCare, notifications, sensors, bats, inventory, feeds,
+            loading, lastUpdate, careNotifications,
+            toggleBat, getBarnName, fmtDate, fmtNum, toast
+        };
+    }
+});
+
+app.mount('#app');
+</script>
+</body>
+</html>

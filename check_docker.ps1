@@ -1,0 +1,1 @@
+Get-Process | Where-Object {$_.ProcessName -like '*docker*'} | Format-Table Name, Id -AutoSize
