@@ -102,7 +102,8 @@ return {
         }
 
         function fmtVal(v, dec = 1) {
-            return v !== null ? v.toFixed(dec) : '--';
+            if (v == null || isNaN(v)) return '--';
+            return Number(v).toFixed(dec);
         }
 
         function tempClass(v) {
