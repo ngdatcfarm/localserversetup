@@ -131,27 +131,33 @@ class ProductRequest(BaseModel):
 class ImportStockRequest(BaseModel):
     warehouse_id: int = Field(..., gt=0)
     product_id: int = Field(..., gt=0)
-    quantity: float = Field(..., gt=0)
+    quantity: Optional[float] = Field(None, ge=0)  # Optional when unit_size_type='bag'
     supplier: Optional[str] = Field(None, max_length=200)
     unit_price: Optional[float] = Field(None, ge=0)
     batch_number: Optional[str] = Field(None, max_length=100)
     expiry_date: Optional[date] = None
     notes: Optional[str] = Field(None, max_length=500)
+    unit_size: Optional[float] = None  # Số bao (nếu nhập bằng bao)
+    unit_size_type: Optional[str] = 'kg'  # 'bag' hoặc 'kg'
 
 
 class ExportStockRequest(BaseModel):
     warehouse_id: int = Field(..., gt=0)
     product_id: int = Field(..., gt=0)
-    quantity: float = Field(..., gt=0)
+    quantity: Optional[float] = Field(None, ge=0)  # Optional when unit_size_type='bag'
     notes: Optional[str] = Field(None, max_length=500)
+    unit_size: Optional[float] = None  # Số bao (nếu xuất bằng bao)
+    unit_size_type: Optional[str] = 'kg'  # 'bag' hoặc 'kg'
 
 
 class TransferStockRequest(BaseModel):
     from_warehouse_id: int = Field(..., gt=0)
     to_warehouse_id: int = Field(..., gt=0)
     product_id: int = Field(..., gt=0)
-    quantity: float = Field(..., gt=0)
+    quantity: Optional[float] = Field(None, ge=0)  # Optional when unit_size_type='bag'
     notes: Optional[str] = Field(None, max_length=500)
+    unit_size: Optional[float] = None  # Số bao (nếu chuyển bằng bao)
+    unit_size_type: Optional[str] = 'kg'  # 'bag' hoặc 'kg'
 
 
 class FeedLogRequest(BaseModel):

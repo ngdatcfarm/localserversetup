@@ -215,21 +215,54 @@ class InventoryService:
 
     # ── Import (Nhập kho) ─────────────────────────────
 
+    async def _get_kg_per_bag(self, product_id: int) -> Optional[float]:
+        """Lấy kg_per_bag từ feed_brands hoặc product."""
+        # Thử feed_brands trước (qua product_id link)
+        kg = await db.fetchval(
+            "SELECT kg_per_bag FROM feed_brands WHERE product_id = $1", product_id
+        )
+        if kg:
+            return float(kg)
+        # Thử products.unit (nếu là feed thì có thể lưu kg_per_bag)
+        return None
+
+    async def _convert_to_kg(self, product_id: int, quantity: float, unit_size: float, unit_size_type: str) -> float:
+        """Convert bao sang kg nếu cần."""
+        if unit_size_type == 'bag' and unit_size and unit_size > 0:
+            kg_per_bag = await self._get_kg_per_bag(product_id)
+            if kg_per_bag:
+                return unit_size * kg_per_bag
+            # Nếu không tìm thấy kg_per_bag, giả định 25kg/bao
+            return unit_size * 25.0
+        return quantity
+
     async def import_stock(self, data: dict) -> dict:
         """Import goods into warehouse."""
-        quantity = abs(data["quantity"])
+        unit_size = data.get("unit_size")
+        unit_size_type = data.get("unit_size_type", 'kg')
+        product_id = data["product_id"]
+
+        # Nếu nhập bằng bao và có unit_size, tính quantity từ unit_size
+        if unit_size_type == 'bag' and unit_size and unit_size > 0:
+            quantity_kg = await self._convert_to_kg(product_id, 0, unit_size, unit_size_type)
+        else:
+            quantity_kg = await self._convert_to_kg(
+                product_id, abs(data.get("quantity") or 0), unit_size or abs(data.get("quantity") or 0), unit_size_type
+            )
 
         # Create transaction
+        # unit_size must be stored as string since the column is VARCHAR
         await db.execute(
             """INSERT INTO inventory_transactions
             (warehouse_id, product_id, transaction_type, quantity,
              reference_type, supplier, unit_price, batch_number,
-             expiry_date, notes, created_by)
-            VALUES ($1, $2, 'import', $3, 'purchase', $4, $5, $6, $7, $8, $9)""",
-            data["warehouse_id"], data["product_id"], quantity,
+             expiry_date, notes, created_by, unit_size, unit_size_type)
+            VALUES ($1, $2, 'import', $3, 'purchase', $4, $5, $6, $7, $8, $9, $10, $11)""",
+            data["warehouse_id"], data["product_id"], quantity_kg,
             data.get("supplier"), data.get("unit_price"),
             data.get("batch_number"), data.get("expiry_date"),
             data.get("notes"), data.get("created_by"),
+            str(unit_size) if unit_size is not None else None, unit_size_type,
         )
 
         # Update inventory
@@ -238,7 +271,7 @@ class InventoryService:
             VALUES ($1, $2, $3, NOW())
             ON CONFLICT (warehouse_id, product_id)
             DO UPDATE SET quantity = inventory.quantity + $3, updated_at = NOW()""",
-            data["warehouse_id"], data["product_id"], quantity,
+            data["warehouse_id"], data["product_id"], quantity_kg,
         )
 
         # Queue sync to cloud
@@ -246,48 +279,62 @@ class InventoryService:
             "warehouse_id": data["warehouse_id"],
             "product_id": data["product_id"],
             "transaction_type": "import",
-            "quantity": quantity,
+            "quantity": quantity_kg,
+            "unit_size": unit_size,
+            "unit_size_type": unit_size_type,
             "supplier": data.get("supplier"),
             "unit_price": data.get("unit_price"),
             "batch_number": data.get("batch_number"),
             "expiry_date": data.get("expiry_date"),
             "notes": data.get("notes"),
         }
-        await sync_service.queue_change("inventory_transactions", f"{data['warehouse_id']}-{data['product_id']}-{quantity}", "import", payload)
+        await sync_service.queue_change("inventory_transactions", f"{data['warehouse_id']}-{data['product_id']}-{quantity_kg}", "import", payload)
 
         return {"ok": True, "warehouse_id": data["warehouse_id"],
-                "product_id": data["product_id"], "imported": quantity}
+                "product_id": data["product_id"], "imported": quantity_kg, "bags": unit_size if unit_size_type == 'bag' else None}
 
     # ── Export (Xuất kho) ─────────────────────────────
 
     async def export_stock(self, data: dict) -> dict:
         """Export goods from warehouse. Returns error if insufficient stock."""
-        quantity = abs(data["quantity"])
+        unit_size = data.get("unit_size")
+        unit_size_type = data.get("unit_size_type", 'kg')
+        product_id = data["product_id"]
+
+        # Nếu xuất bằng bao và có unit_size, tính quantity từ unit_size
+        if unit_size_type == 'bag' and unit_size and unit_size > 0:
+            quantity_kg = await self._convert_to_kg(product_id, 0, unit_size, unit_size_type)
+        else:
+            quantity_kg = await self._convert_to_kg(
+                product_id, abs(data.get("quantity") or 0), unit_size or abs(data.get("quantity") or 0), unit_size_type
+            )
 
         # Check stock
         current = await db.fetchval(
             "SELECT quantity FROM inventory WHERE warehouse_id = $1 AND product_id = $2",
             data["warehouse_id"], data["product_id"],
         )
-        if current is None or current < quantity:
-            return {"ok": False, "message": f"Không đủ tồn kho (hiện có: {current or 0})"}
+        if current is None or current < quantity_kg:
+            return {"ok": False, "message": f"Không đủ tồn kho (hiện có: {current or 0} kg)"}
 
         # Create transaction
+        # unit_size must be stored as string since the column is VARCHAR
         await db.execute(
             """INSERT INTO inventory_transactions
             (warehouse_id, product_id, transaction_type, quantity,
-             reference_type, reference_id, notes, created_by)
-            VALUES ($1, $2, 'export', $3, $4, $5, $6, $7)""",
-            data["warehouse_id"], data["product_id"], -quantity,
+             reference_type, reference_id, notes, created_by, unit_size, unit_size_type)
+            VALUES ($1, $2, 'export', $3, $4, $5, $6, $7, $8, $9)""",
+            data["warehouse_id"], data["product_id"], -quantity_kg,
             data.get("reference_type", "manual"), data.get("reference_id"),
             data.get("notes"), data.get("created_by"),
+            str(unit_size) if unit_size is not None else None, unit_size_type,
         )
 
         # Update inventory
         await db.execute(
             """UPDATE inventory SET quantity = quantity - $3, updated_at = NOW()
             WHERE warehouse_id = $1 AND product_id = $2""",
-            data["warehouse_id"], data["product_id"], quantity,
+            data["warehouse_id"], data["product_id"], quantity_kg,
         )
 
         # Queue sync to cloud
@@ -295,58 +342,73 @@ class InventoryService:
             "warehouse_id": data["warehouse_id"],
             "product_id": data["product_id"],
             "transaction_type": "export",
-            "quantity": -quantity,
+            "quantity": -quantity_kg,
+            "unit_size": unit_size,
+            "unit_size_type": unit_size_type,
             "reference_type": data.get("reference_type", "manual"),
             "reference_id": data.get("reference_id"),
             "notes": data.get("notes"),
         }
-        await sync_service.queue_change("inventory_transactions", f"{data['warehouse_id']}-{data['product_id']}-{-quantity}", "export", payload)
+        await sync_service.queue_change("inventory_transactions", f"{data['warehouse_id']}-{data['product_id']}-{-quantity_kg}", "export", payload)
 
-        return {"ok": True, "exported": quantity}
+        return {"ok": True, "exported": quantity_kg, "bags": unit_size if unit_size_type == 'bag' else None}
 
     # ── Transfer (Chuyển kho) ─────────────────────────
 
     async def transfer_stock(self, data: dict) -> dict:
         """Transfer goods between warehouses."""
-        quantity = abs(data["quantity"])
+        unit_size = data.get("unit_size")
+        unit_size_type = data.get("unit_size_type", 'kg')
+        product_id = data["product_id"]
+
+        # Nếu chuyển bằng bao và có unit_size, tính quantity từ unit_size
+        if unit_size_type == 'bag' and unit_size and unit_size > 0:
+            quantity_kg = await self._convert_to_kg(product_id, 0, unit_size, unit_size_type)
+        else:
+            quantity_kg = await self._convert_to_kg(
+                product_id, abs(data.get("quantity") or 0), unit_size or abs(data.get("quantity") or 0), unit_size_type
+            )
 
         # Check source stock
         current = await db.fetchval(
             "SELECT quantity FROM inventory WHERE warehouse_id = $1 AND product_id = $2",
             data["from_warehouse_id"], data["product_id"],
         )
-        if current is None or current < quantity:
-            return {"ok": False, "message": f"Không đủ tồn kho nguồn (hiện có: {current or 0})"}
+        if current is None or current < quantity_kg:
+            return {"ok": False, "message": f"Không đủ tồn kho nguồn (hiện có: {current or 0} kg)"}
 
         # Export from source
+        # unit_size must be stored as string since the column is VARCHAR
         await db.execute(
             """INSERT INTO inventory_transactions
             (warehouse_id, product_id, transaction_type, quantity,
-             reference_type, from_warehouse_id, notes, created_by)
-            VALUES ($1, $2, 'export', $3, 'transfer', $4, $5, $6)""",
-            data["from_warehouse_id"], data["product_id"], -quantity,
+             reference_type, from_warehouse_id, notes, created_by, unit_size, unit_size_type)
+            VALUES ($1, $2, 'export', $3, 'transfer', $4, $5, $6, $7, $8)""",
+            data["from_warehouse_id"], data["product_id"], -quantity_kg,
             data["from_warehouse_id"], data.get("notes"), data.get("created_by"),
+            str(unit_size) if unit_size is not None else None, unit_size_type,
         )
         await db.execute(
             "UPDATE inventory SET quantity = quantity - $3, updated_at = NOW() WHERE warehouse_id = $1 AND product_id = $2",
-            data["from_warehouse_id"], data["product_id"], quantity,
+            data["from_warehouse_id"], data["product_id"], quantity_kg,
         )
 
         # Import to destination
         await db.execute(
             """INSERT INTO inventory_transactions
             (warehouse_id, product_id, transaction_type, quantity,
-             reference_type, from_warehouse_id, notes, created_by)
-            VALUES ($1, $2, 'import', $3, 'transfer', $4, $5, $6)""",
-            data["to_warehouse_id"], data["product_id"], quantity,
+             reference_type, from_warehouse_id, notes, created_by, unit_size, unit_size_type)
+            VALUES ($1, $2, 'import', $3, 'transfer', $4, $5, $6, $7, $8)""",
+            data["to_warehouse_id"], data["product_id"], quantity_kg,
             data["from_warehouse_id"], data.get("notes"), data.get("created_by"),
+            str(unit_size) if unit_size is not None else None, unit_size_type,
         )
         await db.execute(
             """INSERT INTO inventory (warehouse_id, product_id, quantity, updated_at)
             VALUES ($1, $2, $3, NOW())
             ON CONFLICT (warehouse_id, product_id)
             DO UPDATE SET quantity = inventory.quantity + $3, updated_at = NOW()""",
-            data["to_warehouse_id"], data["product_id"], quantity,
+            data["to_warehouse_id"], data["product_id"], quantity_kg,
         )
 
         # Queue sync to cloud (2 transactions: export + import)
@@ -354,7 +416,9 @@ class InventoryService:
             "warehouse_id": data["from_warehouse_id"],
             "product_id": data["product_id"],
             "transaction_type": "export",
-            "quantity": -quantity,
+            "quantity": -quantity_kg,
+            "unit_size": unit_size,
+            "unit_size_type": unit_size_type,
             "reference_type": "transfer",
             "from_warehouse_id": data["from_warehouse_id"],
             "notes": data.get("notes"),
@@ -363,13 +427,17 @@ class InventoryService:
             "warehouse_id": data["to_warehouse_id"],
             "product_id": data["product_id"],
             "transaction_type": "import",
-            "quantity": quantity,
+            "quantity": quantity_kg,
+            "unit_size": unit_size,
+            "unit_size_type": unit_size_type,
             "reference_type": "transfer",
             "from_warehouse_id": data["from_warehouse_id"],
             "notes": data.get("notes"),
         }
-        await sync_service.queue_change("inventory_transactions", f"transfer-{data['from_warehouse_id']}-{data['product_id']}-{-quantity}", "export", export_payload)
-        await sync_service.queue_change("inventory_transactions", f"transfer-{data['to_warehouse_id']}-{data['product_id']}-{quantity}", "import", import_payload)
+        await sync_service.queue_change("inventory_transactions", f"transfer-{data['from_warehouse_id']}-{data['product_id']}-{-quantity_kg}", "export", export_payload)
+        await sync_service.queue_change("inventory_transactions", f"transfer-{data['to_warehouse_id']}-{data['product_id']}-{quantity_kg}", "import", import_payload)
+
+        return {"ok": True, "transferred": quantity_kg, "bags": unit_size if unit_size_type == 'bag' else None}
 
         return {"ok": True, "transferred": quantity}
 

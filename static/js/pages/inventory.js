@@ -36,9 +36,10 @@ return {
         const alertsPanelOpen = ref(false);
         const setDefaultWhType = ref('');
         const setDefaultWhId = ref('');
-        const importForm = ref({ warehouse_id: '', product_id: '', quantity: 0, note: '' });
-        const exportForm = ref({ warehouse_id: '', product_id: '', quantity: 0, note: '' });
-        const transferForm = ref({ from_warehouse_id: '', to_warehouse_id: '', product_id: '', quantity: 0 });
+        const importForm = ref({ warehouse_id: '', product_id: '', quantity: 0, note: '', unit_size: null, unit_size_type: 'kg' });
+        const exportForm = ref({ warehouse_id: '', product_id: '', quantity: 0, note: '', unit_size: null, unit_size_type: 'kg' });
+        const transferForm = ref({ from_warehouse_id: '', to_warehouse_id: '', product_id: '', quantity: 0, unit_size: null, unit_size_type: 'kg' });
+        const feedBrands = ref([]);
         const alertRules = ref([]);
         const showAlertRuleModal = ref(false);
         const alertRuleForm = ref({
@@ -68,6 +69,38 @@ return {
 
         const activeAlertCount = computed(() => alerts.value.length);
 
+        // Kiểm tra sản phẩm có phải là feed không
+        function isFeedProduct(productId) {
+            const p = products.value.find(x => x.id === productId);
+            return p && p.product_type === 'feed';
+        }
+
+        // Lấy kg_per_bag cho sản phẩm feed
+        function getKgPerBag(productId) {
+            const brand = feedBrands.value.find(b => b.product_id === productId);
+            return brand ? brand.kg_per_bag : 25; // default 25kg
+        }
+
+        // Cập nhật unit_size_type khi chọn sản phẩm
+        function onProductChange(form) {
+            if (isFeedProduct(form.product_id)) {
+                form.unit_size_type = 'bag';
+                form.unit_size = form.quantity;
+                form.quantity = 0;
+            } else {
+                form.unit_size_type = 'kg';
+                form.unit_size = null;
+            }
+        }
+
+        // Tính kg từ số bao khi nhập
+        function onBagChange(form) {
+            if (form.unit_size_type === 'bag' && form.unit_size) {
+                const kgPerBag = getKgPerBag(form.product_id);
+                form.quantity = form.unit_size * kgPerBag;
+            }
+        }
+
         watch(() => tab.value, (newTab) => {
             if (newTab === 'alerts') loadAlertRules();
         });
@@ -75,10 +108,11 @@ return {
         // ── API ────────────────────────────────────────
         async function load() {
             try {
-                [warehouses.value, products.value, barns.value] = await Promise.all([
+                [warehouses.value, products.value, barns.value, feedBrands.value] = await Promise.all([
                     API.warehouses.list().catch(() => []),
                     API.products.list().catch(() => []),
                     API.barns.list().catch(() => []),
+                    API.feedBrands.list().catch(() => []),
                 ]);
             } catch (e) { console.error('Load error:', e); }
         }
@@ -343,7 +377,8 @@ return {
             closeWhModal, closeProdModal, closeWhDetail, closeSetDefaultWhModal, closeAlertRuleModal, closeTxModal,
             saveWh, saveProd, saveDefaultWh, removeDefaultWh, removeWh, removeProd,
             doImport, doExport, doTransfer, ackAlert, delAlert, toggleAlertRule, deleteAlertRule,
-            fmtNum, fmtDate
+            fmtNum, fmtDate,
+            isFeedProduct, getKgPerBag, onProductChange, onBagChange, feedBrands
         };
     },
 
@@ -632,13 +667,17 @@ return {
                 </div>
                 <div class="cf-form-group">
                     <label class="cf-label">Sản phẩm</label>
-                    <select v-model="importForm.product_id" class="cf-input">
+                    <select v-model="importForm.product_id" @change="onProductChange(importForm)" class="cf-input">
                         <option value="">--</option>
-                        <option v-for="p in products" :key="p.id" :value="p.id">{{ p.name }}</option>
+                        <option v-for="p in products" :key="p.id" :value="p.id">{{ p.name }} ({{ p.product_type }})</option>
                     </select>
                 </div>
+                <div class="cf-form-group" v-if="importForm.unit_size_type === 'bag'">
+                    <label class="cf-label">Số bao ({{ getKgPerBag(importForm.product_id) }}kg/bao)</label>
+                    <input v-model.number="importForm.unit_size" @input="onBagChange(importForm)" type="number" step="1" min="1" class="cf-input">
+                </div>
                 <div class="cf-form-group">
-                    <label class="cf-label">Số lượng</label>
+                    <label class="cf-label">{{ importForm.unit_size_type === 'bag' ? 'Tương đương (kg)' : 'Số lượng (kg)' }}</label>
                     <input v-model.number="importForm.quantity" type="number" step="0.1" class="cf-input">
                 </div>
                 <div class="cf-form-group">
@@ -660,13 +699,17 @@ return {
                 </div>
                 <div class="cf-form-group">
                     <label class="cf-label">Sản phẩm</label>
-                    <select v-model="exportForm.product_id" class="cf-input">
+                    <select v-model="exportForm.product_id" @change="onProductChange(exportForm)" class="cf-input">
                         <option value="">--</option>
-                        <option v-for="p in products" :key="p.id" :value="p.id">{{ p.name }}</option>
+                        <option v-for="p in products" :key="p.id" :value="p.id">{{ p.name }} ({{ p.product_type }})</option>
                     </select>
                 </div>
+                <div class="cf-form-group" v-if="exportForm.unit_size_type === 'bag'">
+                    <label class="cf-label">Số bao ({{ getKgPerBag(exportForm.product_id) }}kg/bao)</label>
+                    <input v-model.number="exportForm.unit_size" @input="onBagChange(exportForm)" type="number" step="1" min="1" class="cf-input">
+                </div>
                 <div class="cf-form-group">
-                    <label class="cf-label">Số lượng</label>
+                    <label class="cf-label">{{ exportForm.unit_size_type === 'bag' ? 'Tương đương (kg)' : 'Số lượng (kg)' }}</label>
                     <input v-model.number="exportForm.quantity" type="number" step="0.1" class="cf-input">
                 </div>
                 <div class="cf-form-group">
@@ -695,13 +738,17 @@ return {
                 </div>
                 <div class="cf-form-group">
                     <label class="cf-label">Sản phẩm</label>
-                    <select v-model="transferForm.product_id" class="cf-input">
+                    <select v-model="transferForm.product_id" @change="onProductChange(transferForm)" class="cf-input">
                         <option value="">--</option>
-                        <option v-for="p in products" :key="p.id" :value="p.id">{{ p.name }}</option>
+                        <option v-for="p in products" :key="p.id" :value="p.id">{{ p.name }} ({{ p.product_type }})</option>
                     </select>
                 </div>
+                <div class="cf-form-group" v-if="transferForm.unit_size_type === 'bag'">
+                    <label class="cf-label">Số bao ({{ getKgPerBag(transferForm.product_id) }}kg/bao)</label>
+                    <input v-model.number="transferForm.unit_size" @input="onBagChange(transferForm)" type="number" step="1" min="1" class="cf-input">
+                </div>
                 <div class="cf-form-group">
-                    <label class="cf-label">Số lượng</label>
+                    <label class="cf-label">{{ transferForm.unit_size_type === 'bag' ? 'Tương đương (kg)' : 'Số lượng (kg)' }}</label>
                     <input v-model.number="transferForm.quantity" type="number" step="0.1" class="cf-input">
                 </div>
                 <button @click="doTransfer" class="cf-btn-primary" style="background-color: #d97706; width: 100%;">Chuyển kho</button>
