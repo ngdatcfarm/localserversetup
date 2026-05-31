@@ -7,7 +7,7 @@ const { ref, computed, onMounted, onUnmounted } = Vue;
 return {
     setup() {
         // ── State ──────────────────────────────────────
-        const activeTab = ref('all'); // 'all' hoặc barn_id
+        const activeTab = ref(''); // '' = mặc định tab đầu tiên, 'all' = tất cả
         const timeRange = ref('24');
         const currentSim = ref('normal');
 
@@ -23,16 +23,24 @@ return {
             return devices.value.filter(d => d.type_code === 'sensor' || d.device_type_id === 3);
         });
 
+        // Tab active thực sự (nếu empty thì lấy barn đầu tiên có sensor)
+        const effectiveTab = computed(() => {
+            if (activeTab.value && activeTab.value !== 'all') return activeTab.value;
+            // Tìm barn đầu tiên có sensor
+            const firstBarnWithSensor = sensorDevices.value.find(d => d.barn_id)?.barn_id;
+            return firstBarnWithSensor || 'all';
+        });
+
         // Lọc devices theo tab đang active
         const filteredDevices = computed(() => {
-            if (activeTab.value === 'all') return sensorDevices.value;
-            return sensorDevices.value.filter(d => d.barn_id === activeTab.value);
+            if (effectiveTab.value === 'all') return sensorDevices.value;
+            return sensorDevices.value.filter(d => d.barn_id === effectiveTab.value);
         });
 
         // Lọc readings theo tab đang active
         const filteredReadings = computed(() => {
-            if (activeTab.value === 'all') return latestReadings.value;
-            return latestReadings.value.filter(r => r.barn_id === activeTab.value);
+            if (effectiveTab.value === 'all') return latestReadings.value;
+            return latestReadings.value.filter(r => r.barn_id === effectiveTab.value);
         });
 
         const metrics = computed(() => {
@@ -152,8 +160,9 @@ return {
 
         async function loadReadings() {
             try {
-                if (activeTab.value === 'all') {
-                    // Tất cả barns - dùng barns-temperature (chậm hơn)
+                const tab = effectiveTab.value;
+                if (tab === 'all') {
+                    // Tất cả barns - dùng barns-temperature (chậm)
                     const data = await API.get('/api/sensors/barns-temperature');
                     const transformed = [];
                     if (Array.isArray(data)) {
@@ -172,8 +181,8 @@ return {
                     }
                     latestReadings.value = transformed;
                 } else {
-                    // Tab riêng - dùng latest với barn_id (nhanh hơn)
-                    latestReadings.value = await API.sensors.latest(`?barn_id=${activeTab.value}`);
+                    // Tab riêng - dùng latest với barn_id (Nhanh!)
+                    latestReadings.value = await API.sensors.latest(`?barn_id=${tab}`);
                 }
             } catch (e) {
                 latestReadings.value = [];
@@ -209,7 +218,7 @@ return {
 
         // ── Return ──────────────────────────────────────
         return {
-            activeTab, timeRange, currentSim,
+            activeTab, effectiveTab, timeRange, currentSim,
             barns, devices, latestReadings, sensorDevices, filteredDevices, filteredReadings,
             metrics, chartLabels, tempData, humidData, mq135Data, mq137Data,
             getDeviceReadings, isRecent, signalBars, fmtTime, fmtVal,
@@ -239,7 +248,7 @@ return {
             <button
                 @click="switchTab('all')"
                 class="px-5 py-2.5 rounded-lg font-medium text-sm whitespace-nowrap transition-colors"
-                :class="activeTab === 'all' ? 'bg-green-500 text-white shadow-md' : 'bg-gray-100 text-gray-600 hover:bg-gray-200'"
+                :class="effectiveTab === 'all' ? 'bg-green-500 text-white shadow-md' : 'bg-gray-100 text-gray-600 hover:bg-gray-200'"
             >
                 📊 Tất cả
             </button>
@@ -248,7 +257,7 @@ return {
                 :key="b.id"
                 @click="switchTab(b.id)"
                 class="px-5 py-2.5 rounded-lg font-medium text-sm whitespace-nowrap transition-colors"
-                :class="activeTab === b.id ? 'bg-green-500 text-white shadow-md' : 'bg-gray-100 text-gray-600 hover:bg-gray-200'"
+                :class="effectiveTab === b.id ? 'bg-green-500 text-white shadow-md' : 'bg-gray-100 text-gray-600 hover:bg-gray-200'"
             >
                 {{ b.name || b.id }}
             </button>
