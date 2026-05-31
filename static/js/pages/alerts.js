@@ -208,7 +208,7 @@ return {
 
         async function saveSensorRule() {
             if (!sensorForm.name?.trim()) {
-                showToast('Ten quy dinh khong duoc trong', 'error');
+                showToast('Tên quy tắc không được trùng', 'error');
                 return;
             }
             try {
@@ -224,10 +224,10 @@ return {
                 };
                 if (sensorForm.id) {
                     await API.sensorAlerts.rules.update(sensorForm.id, payload);
-                    showToast('Cap nhat quy tac cam bien thanh cong', 'success');
+                    showToast('Cập nhật quy tắc cảm biến thành công', 'success');
                 } else {
                     await API.sensorAlerts.rules.create(payload);
-                    showToast('Tao moi quy tac cam bien', 'success');
+                    showToast('Tạo mới quy tắc cảm biến', 'success');
                 }
                 showSensorModal.value = false;
                 await loadSensorRules();
@@ -237,11 +237,11 @@ return {
         }
 
         async function delSensorRule(r) {
-            if (!confirm('Xoa quy tac nay?')) return;
+            if (!confirm('Xóa quy tắt này?')) return;
             try {
                 await API.sensorAlerts.rules.delete(r.id);
                 sensorRules.value = sensorRules.value.filter(x => x.id !== r.id);
-                showToast('Da xoa quy tac');
+                showToast('Đã xóa quy tắc');
             } catch (e) {
                 showToast(e.message, 'error');
             }
@@ -252,7 +252,7 @@ return {
                 await API.sensorAlerts.ack(a.id);
                 sensorAlerts.value = sensorAlerts.value.filter(x => x.id !== a.id);
                 sensorHistory.value.unshift({ ...a, acknowledged: true, acknowledged_at: new Date().toISOString() });
-                showToast('Da tat canh bao cam bien');
+                showToast('Đã tắt cảnh báo cảm biến');
             } catch (e) {
                 showToast(e.message, 'error');
             }
@@ -262,7 +262,7 @@ return {
             try {
                 await API.sensorAlerts.ackAll();
                 sensorAlerts.value = [];
-                showToast('Da phep duyet tat ca canh bao cam bien');
+                showToast('Đã phê duyệt tất cả cảnh báo cảm biến');
             } catch (e) {
                 showToast(e.message, 'error');
             }
@@ -289,7 +289,7 @@ return {
 
         async function saveInventoryRule() {
             if (!inventoryForm.warehouse_id || !inventoryForm.product_id) {
-                showToast('Chon kho va san pham', 'error');
+                showToast('Chọn kho và sản phẩm', 'error');
                 return;
             }
             try {
