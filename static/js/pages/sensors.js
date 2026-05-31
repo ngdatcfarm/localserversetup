@@ -141,8 +141,30 @@ return {
 
         async function loadReadings() {
             try {
-                const params = selectedBarn.value ? `?barn_id=${selectedBarn.value}` : '';
-                latestReadings.value = await API.sensors.latest(params);
+                if (selectedBarn.value) {
+                    const params = `?barn_id=${selectedBarn.value}`;
+                    latestReadings.value = await API.sensors.latest(params);
+                } else {
+                    // No barn_id param = use /api/sensors/barns-temperature instead
+                    const data = await API.get('/api/sensors/barns-temperature');
+                    // Transform to same format as /api/sensors/latest
+                    const transformed = [];
+                    if (Array.isArray(data)) {
+                        data.forEach(barn => {
+                            if (barn.temperature != null) transformed.push({
+                                device_id: barn.device_id, device_name: barn.device_name || barn.barn_name,
+                                barn_id: barn.barn_id, sensor_type: 'temperature',
+                                value: barn.temperature, unit: '°C', time: barn.time
+                            });
+                            if (barn.humidity != null) transformed.push({
+                                device_id: barn.device_id, device_name: barn.device_name || barn.barn_name,
+                                barn_id: barn.barn_id, sensor_type: 'humidity',
+                                value: barn.humidity, unit: '%', time: barn.time
+                            });
+                        });
+                    }
+                    latestReadings.value = transformed;
+                }
             } catch (e) {
                 latestReadings.value = [];
             }
