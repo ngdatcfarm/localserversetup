@@ -14,7 +14,7 @@ class SensorService:
 
     async def get_latest(self, device_id: int = None, barn_id: str = None,
                          sensor_type: str = None) -> list[dict]:
-        """Get latest reading per device+sensor_type."""
+        """Get latest reading per device+sensor_type from sensor_latest table."""
         conditions = []
         params = []
         idx = 1
@@ -35,13 +35,12 @@ class SensorService:
         where = f"WHERE {' AND '.join(conditions)}" if conditions else ""
 
         rows = await db.fetch(
-            f"""SELECT DISTINCT ON (s.device_id, s.sensor_type)
-                s.device_id, d.name as device_name, d.barn_id,
+            f"""SELECT s.device_id, d.name as device_name, d.barn_id,
                 s.sensor_type, s.value, s.unit, s.time
-            FROM sensor_data s
+            FROM sensor_latest s
             JOIN devices d ON s.device_id = d.id
             {where}
-            ORDER BY s.device_id, s.sensor_type, s.time DESC""",
+            ORDER BY s.device_id, s.sensor_type""",
             *params,
         )
         return [dict(r) for r in rows]
