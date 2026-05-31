@@ -235,11 +235,11 @@ return {
         </div>
 
         <!-- Tab Navigation -->
-        <div class="flex gap-1 mb-6 overflow-x-auto pb-2" style="border-bottom: 2px solid #e2e8f0;">
+        <div class="flex flex-wrap gap-2 mb-6" style="border-bottom: 2px solid #e2e8f0; padding-bottom: 8px;">
             <button
                 @click="switchTab('all')"
-                class="px-4 py-2 rounded-t font-medium text-sm whitespace-nowrap"
-                :class="activeTab === 'all' ? 'bg-primary text-white' : 'bg-gray-100 text-gray-600 hover:bg-gray-200'"
+                class="px-5 py-2.5 rounded-lg font-medium text-sm whitespace-nowrap transition-colors"
+                :class="activeTab === 'all' ? 'bg-green-500 text-white shadow-md' : 'bg-gray-100 text-gray-600 hover:bg-gray-200'"
             >
                 📊 Tất cả
             </button>
@@ -247,8 +247,8 @@ return {
                 v-for="b in barns"
                 :key="b.id"
                 @click="switchTab(b.id)"
-                class="px-4 py-2 rounded-t font-medium text-sm whitespace-nowrap"
-                :class="activeTab === b.id ? 'bg-primary text-white' : 'bg-gray-100 text-gray-600 hover:bg-gray-200'"
+                class="px-5 py-2.5 rounded-lg font-medium text-sm whitespace-nowrap transition-colors"
+                :class="activeTab === b.id ? 'bg-green-500 text-white shadow-md' : 'bg-gray-100 text-gray-600 hover:bg-gray-200'"
             >
                 {{ b.name || b.id }}
             </button>
