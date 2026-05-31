@@ -170,7 +170,20 @@ class InventoryService:
             rows = await db.fetch(
                 "SELECT * FROM products WHERE active = TRUE ORDER BY product_type, name"
             )
-        return [dict(r) for r in rows]
+        result = [dict(r) for r in rows]
+
+        # Attach medication_unit_specs for medication/medicine products
+        for p in result:
+            if p.get('product_type') in ('medication', 'medicine'):
+                specs = await db.fetch(
+                    """SELECT * FROM medication_unit_specs
+                    WHERE product_id = $1 AND active = TRUE
+                    ORDER BY package_unit""",
+                    p['id']
+                )
+                p['medication_unit_specs'] = [dict(s) for s in specs] if specs else []
+
+        return result
 
     async def create_product(self, data: dict) -> dict:
         row = await db.fetchrow(
@@ -236,15 +249,38 @@ class InventoryService:
             return unit_size * 25.0
         return quantity
 
+    async def _get_medication_unit_specs(self, product_id: int) -> Optional[dict]:
+        """Lấy medication unit specs từ bảng medication_unit_specs."""
+        row = await db.fetchrow(
+            """SELECT * FROM medication_unit_specs
+            WHERE product_id = $1 AND active = TRUE
+            LIMIT 1""",
+            product_id
+        )
+        return dict(row) if row else None
+
+    async def _convert_to_base_unit(self, product_id: int, quantity: float, unit_size: float, unit_size_type: str) -> float:
+        """Convert package (chai/lo) sang base_unit (ml/gram) nếu cần."""
+        if unit_size_type == 'package' and unit_size and unit_size > 0:
+            specs = await self._get_medication_unit_specs(product_id)
+            if specs and specs.get('package_size'):
+                return unit_size * float(specs['package_size'])
+            # Nếu không có specs, giả định 1:1
+            return unit_size
+        return quantity
+
     async def import_stock(self, data: dict) -> dict:
         """Import goods into warehouse."""
         unit_size = data.get("unit_size")
         unit_size_type = data.get("unit_size_type", 'kg')
         product_id = data["product_id"]
 
-        # Nếu nhập bằng bao và có unit_size, tính quantity từ unit_size
+        # Nếu nhập bằng bao (feed) và có unit_size, tính quantity từ unit_size
         if unit_size_type == 'bag' and unit_size and unit_size > 0:
             quantity_kg = await self._convert_to_kg(product_id, 0, unit_size, unit_size_type)
+        # Nếu nhập bằng chai/lọ (medication) và có unit_size, tính quantity từ unit_size
+        elif unit_size_type == 'package' and unit_size and unit_size > 0:
+            quantity_kg = await self._convert_to_base_unit(product_id, 0, unit_size, unit_size_type)
         else:
             quantity_kg = await self._convert_to_kg(
                 product_id, abs(data.get("quantity") or 0), unit_size or abs(data.get("quantity") or 0), unit_size_type
@@ -291,7 +327,9 @@ class InventoryService:
         await sync_service.queue_change("inventory_transactions", f"{data['warehouse_id']}-{data['product_id']}-{quantity_kg}", "import", payload)
 
         return {"ok": True, "warehouse_id": data["warehouse_id"],
-                "product_id": data["product_id"], "imported": quantity_kg, "bags": unit_size if unit_size_type == 'bag' else None}
+                "product_id": data["product_id"], "imported": quantity_kg,
+                "packages": unit_size if unit_size_type == 'package' else None,
+                "bags": unit_size if unit_size_type == 'bag' else None}
 
     # ── Export (Xuất kho) ─────────────────────────────
 
@@ -301,9 +339,12 @@ class InventoryService:
         unit_size_type = data.get("unit_size_type", 'kg')
         product_id = data["product_id"]
 
-        # Nếu xuất bằng bao và có unit_size, tính quantity từ unit_size
+        # Nếu xuất bằng bao (feed) và có unit_size, tính quantity từ unit_size
         if unit_size_type == 'bag' and unit_size and unit_size > 0:
             quantity_kg = await self._convert_to_kg(product_id, 0, unit_size, unit_size_type)
+        # Nếu xuất bằng chai/lọ (medication) và có unit_size, tính quantity từ unit_size
+        elif unit_size_type == 'package' and unit_size and unit_size > 0:
+            quantity_kg = await self._convert_to_base_unit(product_id, 0, unit_size, unit_size_type)
         else:
             quantity_kg = await self._convert_to_kg(
                 product_id, abs(data.get("quantity") or 0), unit_size or abs(data.get("quantity") or 0), unit_size_type
@@ -361,9 +402,12 @@ class InventoryService:
         unit_size_type = data.get("unit_size_type", 'kg')
         product_id = data["product_id"]
 
-        # Nếu chuyển bằng bao và có unit_size, tính quantity từ unit_size
+        # Nếu chuyển bằng bao (feed) và có unit_size, tính quantity từ unit_size
         if unit_size_type == 'bag' and unit_size and unit_size > 0:
             quantity_kg = await self._convert_to_kg(product_id, 0, unit_size, unit_size_type)
+        # Nếu chuyển bằng chai/lọ (medication) và có unit_size, tính quantity từ unit_size
+        elif unit_size_type == 'package' and unit_size and unit_size > 0:
+            quantity_kg = await self._convert_to_base_unit(product_id, 0, unit_size, unit_size_type)
         else:
             quantity_kg = await self._convert_to_kg(
                 product_id, abs(data.get("quantity") or 0), unit_size or abs(data.get("quantity") or 0), unit_size_type

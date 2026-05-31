@@ -75,10 +75,23 @@ return {
             return p && p.product_type === 'feed';
         }
 
+        // Kiểm tra sản phẩm thuốc
+        function isMedProduct(productId) {
+            const p = products.value.find(x => x.id === productId);
+            return p && (p.product_type === 'medication' || p.product_type === 'medicine');
+        }
+
         // Lấy kg_per_bag cho sản phẩm feed
         function getKgPerBag(productId) {
             const brand = feedBrands.value.find(b => b.product_id === productId);
             return brand ? brand.kg_per_bag : 25; // default 25kg
+        }
+
+        // Lấy medication unit specs cho sản phẩm thuốc
+        function getMedicationSpecs(productId) {
+            const p = products.value.find(x => x.id === productId);
+            if (!p || !p.medication_unit_specs) return null;
+            return p.medication_unit_specs;
         }
 
         // Cập nhật unit_size_type khi chọn sản phẩm
@@ -87,6 +100,16 @@ return {
                 form.unit_size_type = 'bag';
                 form.unit_size = form.quantity;
                 form.quantity = 0;
+            } else if (isMedProduct(form.product_id)) {
+                const specs = getMedicationSpecs(form.product_id);
+                form.unit_size_type = 'package';
+                form.unit_size = form.quantity;
+                form.quantity = 0;
+                // Set default package_unit from specs
+                if (specs && specs.length > 0) {
+                    form.package_unit = specs[0].package_unit;
+                    form.base_unit = specs[0].base_unit;
+                }
             } else {
                 form.unit_size_type = 'kg';
                 form.unit_size = null;
@@ -98,6 +121,10 @@ return {
             if (form.unit_size_type === 'bag' && form.unit_size) {
                 const kgPerBag = getKgPerBag(form.product_id);
                 form.quantity = form.unit_size * kgPerBag;
+            } else if (form.unit_size_type === 'package' && form.unit_size) {
+                const specs = getMedicationSpecs(form.product_id);
+                const packageSize = specs && specs.length > 0 ? specs[0].package_size : 1;
+                form.quantity = form.unit_size * packageSize;
             }
         }
 
@@ -378,7 +405,8 @@ return {
             saveWh, saveProd, saveDefaultWh, removeDefaultWh, removeWh, removeProd,
             doImport, doExport, doTransfer, ackAlert, delAlert, toggleAlertRule, deleteAlertRule,
             fmtNum, fmtDate,
-            isFeedProduct, getKgPerBag, onProductChange, onBagChange, feedBrands
+            isFeedProduct, isMedProduct, getKgPerBag, getMedicationSpecs,
+            onProductChange, onBagChange, feedBrands
         };
     },
 
@@ -676,8 +704,12 @@ return {
                     <label class="cf-label">Số bao ({{ getKgPerBag(importForm.product_id) }}kg/bao)</label>
                     <input v-model.number="importForm.unit_size" @input="onBagChange(importForm)" type="number" step="1" min="1" class="cf-input">
                 </div>
+                <div class="cf-form-group" v-if="importForm.unit_size_type === 'package'">
+                    <label class="cf-label">Số chai/lọ ({{ getMedicationSpecs(importForm.product_id)?.[0]?.package_size || '?' }}{{ getMedicationSpecs(importForm.product_id)?.[0]?.base_unit || '' }}/{{ getMedicationSpecs(importForm.product_id)?.[0]?.package_unit || 'chai' }})</label>
+                    <input v-model.number="importForm.unit_size" @input="onBagChange(importForm)" type="number" step="1" min="1" class="cf-input">
+                </div>
                 <div class="cf-form-group">
-                    <label class="cf-label">{{ importForm.unit_size_type === 'bag' ? 'Tương đương (kg)' : 'Số lượng (kg)' }}</label>
+                    <label class="cf-label">{{ importForm.unit_size_type !== 'kg' ? 'Tương đương (' + (importForm.unit_size_type === 'package' ? getMedicationSpecs(importForm.product_id)?.[0]?.base_unit || 'ml' : 'kg') + ')' : 'Số lượng (kg)' }}</label>
                     <input v-model.number="importForm.quantity" type="number" step="0.1" class="cf-input">
                 </div>
                 <div class="cf-form-group">
@@ -708,8 +740,12 @@ return {
                     <label class="cf-label">Số bao ({{ getKgPerBag(exportForm.product_id) }}kg/bao)</label>
                     <input v-model.number="exportForm.unit_size" @input="onBagChange(exportForm)" type="number" step="1" min="1" class="cf-input">
                 </div>
+                <div class="cf-form-group" v-if="exportForm.unit_size_type === 'package'">
+                    <label class="cf-label">Số chai/lọ ({{ getMedicationSpecs(exportForm.product_id)?.[0]?.package_size || '?' }}{{ getMedicationSpecs(exportForm.product_id)?.[0]?.base_unit || '' }}/{{ getMedicationSpecs(exportForm.product_id)?.[0]?.package_unit || 'chai' }})</label>
+                    <input v-model.number="exportForm.unit_size" @input="onBagChange(exportForm)" type="number" step="1" min="1" class="cf-input">
+                </div>
                 <div class="cf-form-group">
-                    <label class="cf-label">{{ exportForm.unit_size_type === 'bag' ? 'Tương đương (kg)' : 'Số lượng (kg)' }}</label>
+                    <label class="cf-label">{{ exportForm.unit_size_type !== 'kg' ? 'Tương đương (' + (exportForm.unit_size_type === 'package' ? getMedicationSpecs(exportForm.product_id)?.[0]?.base_unit || 'ml' : 'kg') + ')' : 'Số lượng (kg)' }}</label>
                     <input v-model.number="exportForm.quantity" type="number" step="0.1" class="cf-input">
                 </div>
                 <div class="cf-form-group">
@@ -747,8 +783,12 @@ return {
                     <label class="cf-label">Số bao ({{ getKgPerBag(transferForm.product_id) }}kg/bao)</label>
                     <input v-model.number="transferForm.unit_size" @input="onBagChange(transferForm)" type="number" step="1" min="1" class="cf-input">
                 </div>
+                <div class="cf-form-group" v-if="transferForm.unit_size_type === 'package'">
+                    <label class="cf-label">Số chai/lọ ({{ getMedicationSpecs(transferForm.product_id)?.[0]?.package_size || '?' }}{{ getMedicationSpecs(transferForm.product_id)?.[0]?.base_unit || '' }}/{{ getMedicationSpecs(transferForm.product_id)?.[0]?.package_unit || 'chai' }})</label>
+                    <input v-model.number="transferForm.unit_size" @input="onBagChange(transferForm)" type="number" step="1" min="1" class="cf-input">
+                </div>
                 <div class="cf-form-group">
-                    <label class="cf-label">{{ transferForm.unit_size_type === 'bag' ? 'Tương đương (kg)' : 'Số lượng (kg)' }}</label>
+                    <label class="cf-label">{{ transferForm.unit_size_type !== 'kg' ? 'Tương đương (' + (transferForm.unit_size_type === 'package' ? getMedicationSpecs(transferForm.product_id)?.[0]?.base_unit || 'ml' : 'kg') + ')' : 'Số lượng (kg)' }}</label>
                     <input v-model.number="transferForm.quantity" type="number" step="0.1" class="cf-input">
                 </div>
                 <button @click="doTransfer" class="cf-btn-primary" style="background-color: #d97706; width: 100%;">Chuyển kho</button>

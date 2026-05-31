@@ -67,12 +67,25 @@ return {
 
         const feedProducts = computed(() => products.value.filter(p => p.product_type === 'feed'));
         const medProducts = computed(() => products.value.filter(p => p.product_type === 'medication' || p.product_type === 'medicine'));
+        // Only show medications that are in the current barn's medication warehouse
+        const medProductsInBarn = computed(() => {
+            if (!barnMedWarehouse.value?.warehouse_id) return medProducts.value;
+            const stockProductIds = new Set(medWarehouses.value.map(w => w.product_id));
+            return medProducts.value.filter(p => stockProductIds.has(p.id));
+        });
 
         // Barn-specific warehouses (fetched when cycle changes via suggested-warehouses)
         const barnFeedWarehouse = ref(null);   // { id, name, stock }
         const barnMedWarehouse = ref(null);    // { id, name, stock }
         const feedWarehouses = computed(() => barnFeedWarehouse.value?.stock || []);
-        const medWarehouses = computed(() => barnMedWarehouse.value?.stock || []);
+        // Filter medWarehouses to only show products actually in this barn's medication warehouse
+        const medWarehouses = computed(() => {
+            const stock = barnMedWarehouse.value?.stock || [];
+            return stock.filter(item => {
+                const prod = products.value.find(p => p.id === item.product_id);
+                return prod && (prod.product_type === 'medication' || prod.product_type === 'medicine');
+            });
+        });
 
         // Filter logs by cycle + date
         const currentFeedLogs = computed(() =>
@@ -135,7 +148,12 @@ return {
         watch(() => medForm.product_id, (newId) => {
             const prod = medProducts.value.find(p => p.id === newId);
             if (prod) {
-                medForm.unit = prod.unit || 'g';
+                // Use base_unit from medication_unit_specs if available, else fall back to product.unit
+                if (prod.medication_unit_specs && prod.medication_unit_specs.length > 0) {
+                    medForm.unit = prod.medication_unit_specs[0].base_unit || prod.unit || 'g';
+                } else {
+                    medForm.unit = prod.base_unit || prod.unit || 'g';
+                }
             }
         });
 
@@ -327,7 +345,7 @@ return {
             selectedCycleId, selectedDate, currentShift, activeTab,
             feedForm, medForm,
             selectedCycle, dayAge,
-            feedProducts, medProducts, feedWarehouses, medWarehouses,
+            feedProducts, medProducts, medProductsInBarn, feedWarehouses, medWarehouses,
             barnFeedWarehouse, barnMedWarehouse,
             currentFeedLogs, currentMedLogs, shiftFeedLogs, shiftMedLogs,
             totalKgToday, totalMedToday,
@@ -559,14 +577,14 @@ return {
                     <div class="cf-care-product-section">
                         <div class="cf-care-product-label">Chọn thuốc thú y</div>
                         <div class="cf-care-product-grid">
-                            <button v-for="p in medProducts" :key="p.id"
+                            <button v-for="p in medProductsInBarn" :key="p.id"
                                 @click="medForm.product_id = p.id; medForm.custom_name = ''"
                                 :class="['cf-care-product-btn', medForm.product_id === p.id && !medForm.custom_name ? 'selected' : '']">
                                 <span class="cf-care-product-name">{{ p.name }}</span>
                                 <span class="cf-care-product-type">{{ p.product_type }}</span>
                             </button>
                         </div>
-                        <div v-if="!medProducts.length" class="cf-care-empty-list">
+                        <div v-if="!medProductsInBarn.length" class="cf-care-empty-list">
                             Chưa có thuốc nào trong danh mục
                         </div>
                     </div>
