@@ -102,13 +102,19 @@ return {
 
         function closeModal() { showModal.value = false; }
 
+        function fmtNum(n, dec = 0) {
+            if (n === null || n === undefined) return '-';
+            return Number(n).toLocaleString('vi-VN', { minimumFractionDigits: dec, maximumFractionDigits: dec });
+        }
+
         onMounted(() => { loadBrands(); loadTypes(); });
 
         return {
             tab, brands, types, showModal, modalType, editingId,
             brandForm, typeForm, stages,
             openBrandModal, openTypeModal, closeModal,
-            saveBrand, saveType, deleteBrand, deleteType
+            saveBrand, saveType, deleteBrand, deleteType,
+            fmtNum
         };
     },
 
