@@ -317,13 +317,16 @@ return {
             if (!confirm('Xóa dòng ghi nhận này?')) return;
             try {
                 if (type === 'feed') {
+                    await API.care.delFeed(id);
                     feedLogs.value = feedLogs.value.filter(x => x.id !== id);
+                    if (typeof showToast === 'function') showToast('Đã xóa feed log', 'success');
                 } else {
+                    await API.care.delMedication(id);
                     medLogs.value = medLogs.value.filter(x => x.id !== id);
+                    if (typeof showToast === 'function') showToast('Đã xóa medication log', 'success');
                 }
-                if (typeof showToast === 'function') showToast('Đã xóa', 'success');
             } catch (e) {
-                if (typeof showToast === 'function') showToast(e.message, 'error');
+                if (typeof showToast === 'function') showToast('Xóa thất bại: ' + e.message, 'error');
             }
         }
 

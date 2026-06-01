@@ -204,6 +204,11 @@ const API = {
         healthHistory(cycleId) { return API.get(`/api/farm/care/health/${cycleId}`); },
         resolveHealth(noteId) { return API.post(`/api/farm/care/health/${noteId}/resolve`); },
         // DELETE methods (using API.del)
+        delFeed(id) { return API.del(`/api/farm/care/feed/${id}`); },
+        delMedication(id) { return API.del(`/api/farm/care/medication/${id}`); },
+        delDeath(id) { return API.del(`/api/farm/care/death/${id}`); },
+        delWeight(id) { return API.del(`/api/farm/care/weight/${id}`); },
+        delSale(id) { return API.del(`/api/farm/care/sale/${id}`); },
     },
 
     // Sensors
