@@ -429,14 +429,17 @@ return {
                 try {
                     const subs = await API.notifications.subscriptions();
                     for (const s of subs) {
-                        await API.notifications.unsubscribe(s.endpoint);
+                        try {
+                            await API.notifications.unsubscribe(s.endpoint);
+                        } catch { /* skip individual failures */ }
                     }
-                    subscribed.value = false;
-                    pushSubs.value = [];
-                    showToast('Da tat thong bao push');
                 } catch (e) {
-                    showToast(e.message, 'error');
+                    // ignore subscription list fetch error
                 }
+                // Always reset state regardless of errors
+                subscribed.value = false;
+                pushSubs.value = [];
+                showToast('Da tat thong bao push');
             }
         }
 
