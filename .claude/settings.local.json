@@ -113,7 +113,9 @@
       "WebFetch(domain:localhost)",
       "Bash(curl -s \"http://localhost:8002/\" 2>&1 | head -20)",
       "Bash(wmic process:*)",
-      "Bash(sleep 3 && netstat -ano 2>/dev/null | grep \":5434.*LISTEN\")"
+      "Bash(sleep 3 && netstat -ano 2>/dev/null | grep \":5434.*LISTEN\")",
+      "Bash(curl -s http://localhost:8002/api/feeds 2>/dev/null | head -c 500)",
+      "Bash(curl -s http://localhost:8002/api/farm/feeds/brands 2>/dev/null | head -c 500)"
     ]
   }
 }
