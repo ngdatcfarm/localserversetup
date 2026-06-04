@@ -508,7 +508,7 @@ return {
             activeSensorAlerts, activeInventoryAlerts,
             barnMap, warehouseMap, productMap,
             openSensorRule, saveSensorRule, delSensorRule, ackSensorAlert, ackAllSensor,
-            openInventoryRule, saveInventoryRule, deleteInventoryRule, ackInventoryAlert,
+            openInventoryRule, saveInventoryRule, deleteInventoryRule, ackInventoryAlert, ackAllInventory,
             markVaccineDone, skipVaccine, changeVaccineDays,
             simulateSensorAlert, simulateInventoryAlert,
             togglePush, sendTestPush, removeSub, downloadCert, checkAlertsNow,
@@ -533,6 +533,8 @@ return {
             <div class="flex items-center gap-2 mb-3">
                 <span class="text-lg">⚠️</span>
                 <h3 class="font-semibold text-sm" style="color:#be123c;">RUI RO DANG BAO DONG</h3>
+                <button v-if="activeSensorAlerts.length" @click="ackAllSensor" class="btn btn-xs" style="background:#e11d48;color:white;border:none;">Xử lý tất cả cảm biến</button>
+                <button v-if="activeInventoryAlerts.length" @click="ackAllInventory" class="btn btn-xs" style="background:#b45309;color:white;border:none;">Xử lý tất cả kho</button>
                 <button @click="() => { sensorAlerts = []; inventoryAlerts = []; }" class="ml-auto text-xs btn btn-ghost btn-sm">✕ Dong</button>
             </div>
             <div class="flex flex-wrap gap-3">
