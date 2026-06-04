@@ -3,7 +3,7 @@ server:
   port: 8002
 mqtt:
   host: 192.168.1.9
-  port: 1883
+  port: 1884
   username: ''
   password: ''
   client_id: cfarm_local_server
