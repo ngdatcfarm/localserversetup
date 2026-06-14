@@ -9,7 +9,7 @@ services:
     container_name: cfarm-mqtt
     restart: unless-stopped
     ports:
-      - "1883:1883"   # MQTT
+      - "1884:1884"   # MQTT (local devices)
       - "9001:9001"   # WebSocket (cho webapp)
     volumes:
       - ./docker/mosquitto/config:/mosquitto/config

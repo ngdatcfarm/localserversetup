@@ -53,8 +53,8 @@ from typing import Optional
 # Configuration (from environment)
 # ══════════════════════════════════════════════════════════════════════════════
 
-APP_DIR = os.environ.get("APP_DIR", r"C:\Users\nguye")
-LOG_DIR = os.environ.get("LOG_DIR", r"C:\Local server\logs")
+APP_DIR = os.environ.get("APP_DIR", r"E:\Cfarm")
+LOG_DIR = os.environ.get("LOG_DIR", r"E:\Cfarm\logs")
 CLOUDFLARED_PATH = os.environ.get("CLOUDFLARED_PATH", os.path.join(APP_DIR, "cloudflared.exe"))
 TUNNEL_TOKEN = os.environ.get("CLOUDFLARE_TUNNEL_TOKEN", "")
 
@@ -151,7 +151,7 @@ SERVICES = [
         port=8002,
         check_type="http",
         command=[sys.executable, "-m", "uvicorn", "src.server.main:app", "--host", "0.0.0.0", "--port", "8002"],
-        cwd=r"C:\Local server",
+        cwd=r"E:\CFarm",
     ),
     Service(
         name="app_8003",
@@ -159,7 +159,7 @@ SERVICES = [
         port=8003,
         check_type="http",
         command=[sys.executable, "-m", "uvicorn", "src.server.main:app", "--host", "0.0.0.0", "--port", "8003"],
-        cwd=r"C:\Local server",
+        cwd=r"E:\CFarm",
     ),
     Service(
         name="cloudflared",
@@ -251,9 +251,8 @@ def check_cloudflared_metrics(timeout: float = 5.0) -> tuple[bool, str]:
 def check_service_health(svc: Service) -> tuple[bool, str]:
     """Perform health check based on service type. Returns (success, message)."""
     if svc.check_type == "http" and svc.port:
-        if svc.port == 8003:
-            return check_http(svc.port, f"http://localhost:{svc.port}/")
-        return check_http(svc.port)
+        # Use /health endpoint consistently for all HTTP services (lightweight)
+        return check_http(svc.port, f"http://localhost:{svc.port}/health")
     elif svc.check_type == "tunnel":
         # Skip tunnel check if token not configured
         if not TUNNEL_TOKEN:
@@ -470,9 +469,22 @@ def restart_service(svc: Service) -> bool:
             # Phase 2: Force kill after small delay
             log.warning(f"  Graceful failed, force killing...")
             time.sleep(FORCE_KILL_DELAY)
-            success = force_kill(svc.name, svc.exe)
-            if not success:
-                log.error(f"  Force kill failed for {svc.name}")
+            if svc.check_type == "http" and svc.port:
+                # HTTP service: kill the actual OS process holding the port
+                # (taskkill by name won't work for python.exe running uvicorn)
+                pid = get_process_by_port(svc.port)
+                if pid:
+                    log.info(f"  Killing HTTP service PID {pid} on port {svc.port}")
+                    if force_kill_by_pid(pid):
+                        log.info(f"  Killed PID {pid}")
+                    else:
+                        log.error(f"  Failed to kill PID {pid}")
+                else:
+                    log.warning(f"  No process found on port {svc.port}")
+            else:
+                success = force_kill(svc.name, svc.exe)
+                if not success:
+                    log.error(f"  Force kill failed for {svc.name}")
 
     # Clean up proc reference
     svc.proc = None
@@ -616,6 +628,16 @@ def write_pid():
         log.warning(f"Could not write PID file: {e}")
 
 
+def cleanup_pid_file():
+    """Cleanup PID file (registered with atexit to handle crashes)."""
+    try:
+        if os.path.exists(PID_FILE):
+            os.remove(PID_FILE)
+            log.info(f"Removed PID file {PID_FILE}")
+    except Exception as e:
+        log.warning(f"Could not remove PID file: {e}")
+
+
 def is_guardian_running() -> bool:
     """Check if another guardian instance is already running."""
     if not os.path.exists(PID_FILE):
@@ -703,6 +725,9 @@ def main():
         sys.exit(1)
 
     write_pid()
+    # Register atexit to ensure PID file is cleaned up on any exit (normal, exception, signal)
+    import atexit
+    atexit.register(cleanup_pid_file)
 
     # Cleanup on exit
     def cleanup(signum, frame):
@@ -723,6 +748,20 @@ def main():
         check_start = time.time()
 
         for svc in SERVICES:
+            # Boot/crash recovery: if process is dead, start it immediately
+            # (don't wait 60s grace period - that was only for transient failures)
+            if not svc.is_running():
+                if is_development_mode():
+                    log.info(f"  Development mode active, not starting {svc.name}")
+                    continue
+                if not svc.should_restart():
+                    log.error(f"Restart limit reached for {svc.name}, manual intervention required")
+                    continue
+                log.warning(f"{svc.name} not running, starting immediately...")
+                if start_service(svc):
+                    log.info(f"{svc.name} start initiated, waiting {STARTUP_DELAY}s for readiness")
+                continue
+
             # Skip health check if service is still in startup phase
             if svc.startup_time is not None and (time.time() - svc.startup_time) < STARTUP_DELAY:
                 elapsed = time.time() - svc.startup_time

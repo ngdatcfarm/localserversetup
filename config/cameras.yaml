@@ -2,10 +2,10 @@ server:
   host: 0.0.0.0
   port: 8002
 mqtt:
-  host: 192.168.1.9
+  host: localhost
   port: 1884
-  username: ''
-  password: ''
+  username: cfarm_device
+  password: cfarm_device_2026
   client_id: cfarm_local_server
 database:
   host: localhost
