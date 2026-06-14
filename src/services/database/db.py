@@ -1,6 +1,7 @@
 """Database connection manager using asyncpg."""
 
 import logging
+from contextlib import asynccontextmanager
 from typing import Optional
 import asyncpg
 
@@ -82,6 +83,24 @@ class Database:
             return None
         async with self.pool.acquire() as conn:
             return await conn.fetchval(query, *args)
+
+    @asynccontextmanager
+    async def transaction(self):
+        """Atomic transaction context manager.
+
+        Yields a single connection. All queries inside run in one transaction;
+        rolls back on exception, commits on clean exit.
+
+        Usage:
+            async with db.transaction() as conn:
+                await conn.execute("INSERT ...", ...)
+                await conn.execute("UPDATE ...", ...)
+        """
+        if not self.pool:
+            raise RuntimeError("DB not connected")
+        async with self.pool.acquire() as conn:
+            async with conn.transaction():
+                yield conn
 
 
 # Module-level singleton
