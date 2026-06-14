@@ -1,11 +1,12 @@
 """Training Routes - Manage YOLOv8 model training with progress tracking."""
 
-from fastapi import APIRouter, HTTPException
+from fastapi import APIRouter, HTTPException, Depends
 from pydantic import BaseModel
 
 from src.ai.training_service import training_service
+from src.server.auth import require_auth
 
-router = APIRouter(prefix="/api/ml/training", tags=["ml-training"])
+router = APIRouter(prefix="/api/ml/training", tags=["ml-training"], dependencies=[Depends(require_auth)])
 
 
 class TrainRequest(BaseModel):

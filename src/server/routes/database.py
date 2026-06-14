@@ -2,15 +2,16 @@
 
 import logging
 from pathlib import Path
-from fastapi import APIRouter, HTTPException, Query
+from fastapi import APIRouter, HTTPException, Query, Depends
 from pydantic import BaseModel
 from typing import Optional, Any
 
 from src.services.database.db import db
 from src.services.storage.config_service import ConfigService
+from src.server.auth import require_auth
 
 logger = logging.getLogger(__name__)
-router = APIRouter(prefix="/api/db", tags=["database"])
+router = APIRouter(prefix="/api/db", tags=["database"], dependencies=[Depends(require_auth)])
 
 
 # Table groupings by functionality

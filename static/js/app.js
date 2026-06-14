@@ -24,10 +24,42 @@ function fmtNum(n, dec = 0) {
     return Number(n).toLocaleString('vi-VN', { minimumFractionDigits: dec, maximumFractionDigits: dec });
 }
 
+// ── App-wide state (used by router guard + sidebar user box) ──
+const appState = reactive({
+    currentUser: null,   // {id, username, role, must_change_password}
+    authChecked: false,  // true after first /api/auth/me call
+});
+
+async function refreshCurrentUser() {
+    try {
+        appState.currentUser = await API.auth.me();
+    } catch {
+        appState.currentUser = null;
+    }
+    appState.authChecked = true;
+    return appState.currentUser;
+}
+
+async function doLogout() {
+    try { await API.auth.logout(); } catch {}
+    appState.currentUser = null;
+    router.push('/login');
+}
+
+// Global 401 handler: any API call that returns 401 (except /api/auth/*)
+// will trigger a redirect to /login. Defined in api.js, fired here.
+window.addEventListener('auth:unauthorized', () => {
+    appState.currentUser = null;
+    if (router.currentRoute.value.path !== '/login') {
+        showToast('Phiên đăng nhập đã hết, vui lòng đăng nhập lại', 'error');
+        router.push('/login');
+    }
+});
 // ── Router ──
 const router = createRouter({
     history: createWebHashHistory(),
     routes: [
+        { path: '/login', component: () => loadPage('login'), meta: { public: true } },
         { path: '/', component: () => loadPage('dashboard') },
         { path: '/barns', component: () => loadPage('barns') },
         { path: '/cycles', component: () => loadPage('cycles') },
@@ -35,9 +67,11 @@ const router = createRouter({
         { path: '/devices', component: () => loadPage('devices') },
         { path: '/relays', component: () => loadPage('relays') },
         { path: '/bats', component: () => loadPage('bats') },
+        { path: '/bats/:barnId', component: () => loadPage('bats-detail'), props: true },
         { path: '/equipment', component: () => loadPage('equipment') },
         { path: '/sensors', component: () => loadPage('sensors') },
         { path: '/inventory', component: () => loadPage('inventory') },
+        { path: '/inventory/:warehouseId', component: () => loadPage('inventory-detail'), props: true },
         { path: '/care', component: () => loadPage('care') },
         { path: '/care-daily', component: () => loadPage('care-daily') },
         { path: '/feeds', component: () => loadPage('feeds') },
@@ -54,21 +88,44 @@ const router = createRouter({
     ],
 });
 
-// Dynamic component loader
+// ── Auth navigation guard ──
+// Public routes (/login) are accessible without a session.
+// All other routes require `currentUser` to be loaded and valid.
+// A 401 from any API call dispatches `auth:unauthorized` and the user
+// is bounced back to /login.
+router.beforeEach(async (to) => {
+    if (to.meta?.public) return true;
+    if (!appState.currentUser) {
+        try {
+            appState.currentUser = await API.auth.me();
+        } catch {
+            appState.currentUser = null;
+        }
+    }
+    if (!appState.currentUser) {
+        return { path: '/login' };
+    }
+    return true;
+});
+
+// Dynamic component loader — uses native ES module dynamic import().
+// Earlier version used `new Function(code)` to evaluate page scripts, but that
+// approach threw "Invalid or unexpected token" intermittently on the *first*
+// call during initial route resolution (subsequent calls worked, suggesting
+// a V8 parser timing/race condition). import() uses V8's module pipeline
+// which is rock-solid and shared with the rest of the app.
 const pageCache = {};
-function loadPage(name) {
-    if (pageCache[name]) return Promise.resolve(pageCache[name]);
+async function loadPage(name) {
+    if (pageCache[name]) return pageCache[name];
     // Cache-bust: append timestamp to force fresh fetch
     const t = Date.now();
-    return fetch(`/static/js/pages/${name}.js?_=${t}`)
-        .then(r => r.text())
-        .then(code => {
-            const component = new Function('Vue', 'API', 'showToast', 'fmtDate', 'fmtNum', code)(
-                Vue, API, showToast, fmtDate, fmtNum
-            );
-            pageCache[name] = component;
-            return component;
-        });
+    const mod = await import(`/static/js/pages/${name}.js?_=${t}`);
+    const component = mod.default;
+    if (!component) {
+        throw new Error(`Page module ${name}.js has no default export`);
+    }
+    pageCache[name] = component;
+    return component;
 }
 
 // ── App ──
@@ -124,6 +181,9 @@ const app = createApp({
         }
 
         onMounted(() => {
+            // Pre-fetch current user so the sidebar shows username/role
+            // on first render. The router guard does its own check too.
+            refreshCurrentUser();
             checkHealth();
             setInterval(checkHealth, 30000);
 
@@ -144,7 +204,8 @@ const app = createApp({
             }
         });
 
-        return { sidebarOpen, serverStatus, viewMode, setView, navItems, externalLinks, toast };
+        return { sidebarOpen, serverStatus, viewMode, setView, navItems, externalLinks, toast,
+                 appState, doLogout };
     }
 });
 

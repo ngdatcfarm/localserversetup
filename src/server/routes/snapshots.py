@@ -1,11 +1,12 @@
 """Snapshot Routes - Configure snapshot storage and cleanup."""
 
-from fastapi import APIRouter
+from fastapi import APIRouter, Depends
 from pydantic import BaseModel
 from src.services.storage.snapshot_service import snapshot_service
 from src.services.storage.config_service import ConfigService
+from src.server.auth import require_auth
 
-router = APIRouter(prefix="/api/snapshots", tags=["snapshots"])
+router = APIRouter(prefix="/api/snapshots", tags=["snapshots"], dependencies=[Depends(require_auth)])
 
 config_service = ConfigService()
 

@@ -1,14 +1,25 @@
 /**
  * CFarm API Client
+ *
+ * All requests include `credentials: 'same-origin'` so the cfarm_session
+ * cookie is sent with every API call. On 401, an `auth:unauthorized`
+ * CustomEvent is dispatched on window so the SPA can show the login screen.
  */
 const API = {
     async request(method, url, data = null) {
         const opts = {
             method,
             headers: { 'Content-Type': 'application/json' },
+            credentials: 'same-origin',
         };
         if (data) opts.body = JSON.stringify(data);
         const res = await fetch(url, opts);
+        if (res.status === 401 && !url.startsWith('/api/auth/')) {
+            // Not logged in or session expired — notify the app
+            window.dispatchEvent(new CustomEvent('auth:unauthorized', { detail: { url } }));
+            const err = await res.json().catch(() => ({ detail: 'Chưa đăng nhập' }));
+            throw new Error(err.detail || 'Chưa đăng nhập');
+        }
         if (!res.ok) {
             const err = await res.json().catch(() => ({ detail: res.statusText }));
             throw new Error(err.detail || 'Request failed');
@@ -23,6 +34,34 @@ const API = {
 
     // Health
     health() { return this.get('/health'); },
+
+    // Auth
+    auth: {
+        login(username, password) {
+            // Use fetch directly so the 401 path doesn't trigger the
+            // global 'auth:unauthorized' redirect (user is on login page)
+            return fetch('/api/auth/login', {
+                method: 'POST',
+                headers: { 'Content-Type': 'application/json' },
+                credentials: 'same-origin',
+                body: JSON.stringify({ username, password }),
+            }).then(async res => {
+                if (!res.ok) {
+                    const err = await res.json().catch(() => ({ detail: res.statusText }));
+                    throw new Error(err.detail || 'Đăng nhập thất bại');
+                }
+                return res.json();
+            });
+        },
+        logout() { return API.post('/api/auth/logout'); },
+        me() { return API.get('/api/auth/me'); },
+        changePassword(oldPassword, newPassword) {
+            return API.post('/api/auth/change-password', {
+                old_password: oldPassword,
+                new_password: newPassword,
+            });
+        },
+    },
 
     // Farms
     farms: {
@@ -84,6 +123,19 @@ const API = {
         stop(batId) { return API.post(`/api/bats/${batId}/stop`); },
         logs(batId, limit) { return API.get(`/api/bats/${batId}/logs${limit ? '?limit=' + limit : ''}`); },
         logsByBarn(barnId, limit) { return API.get(`/api/bats/barns/${barnId}/logs${limit ? '?limit=' + limit : ''}`); },
+    },
+
+    // MQ Tare (R0 baseline calibration for MQ135/MQ137)
+    mqTare: {
+        start(data) { return API.post('/api/mq-tare/start', data); },
+        cancel(data) { return API.post('/api/mq-tare/cancel', data); },
+        status(deviceId) { return API.get(`/api/mq-tare/status/${deviceId}`); },
+        history(deviceId, sensorType, limit = 20) {
+            return API.get(`/api/mq-tare/history/${deviceId}/${sensorType}?limit=${limit}`);
+        },
+        ratio(deviceId, sensorType, hours = 24) {
+            return API.get(`/api/mq-tare/ratio/${deviceId}/${sensorType}?hours=${hours}`);
+        },
     },
 
     // Equipment
@@ -217,6 +269,12 @@ const API = {
         history(deviceId, type, hours) { return API.get(`/api/sensors/history/${deviceId}/${type}?hours=${hours || 24}`); },
         hourly(deviceId, type, hours) { return API.get(`/api/sensors/hourly/${deviceId}/${type}?hours=${hours || 24}`); },
         barnSummary(barnId) { return API.get(`/api/sensors/barn/${barnId}`); },
+        barnsTemperature() { return API.get('/api/sensors/barns-temperature'); },
+        series(sensorType, range, barnId) {
+            const params = new URLSearchParams({ sensor_type: sensorType, range: range || 'day' });
+            if (barnId && barnId !== 'all') params.set('barn_id', barnId);
+            return API.get('/api/sensors/series?' + params.toString());
+        },
     },
 
     // Alerts

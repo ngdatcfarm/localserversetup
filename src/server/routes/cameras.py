@@ -1,13 +1,14 @@
 """Camera management API routes."""
 
 from typing import List
-from fastapi import APIRouter, HTTPException, status
+from fastapi import APIRouter, HTTPException, status, Depends
 from src.models.camera import CameraConfig
 from src.services.storage.config_service import ConfigService
 from src.cameras.capture.camera_manager import camera_manager
+from src.server.auth import require_auth
 
 
-router = APIRouter(prefix="/api/cameras", tags=["cameras"])
+router = APIRouter(prefix="/api/cameras", tags=["cameras"], dependencies=[Depends(require_auth)])
 config_service = ConfigService()
 
 

@@ -1,11 +1,12 @@
 """Sensor data API routes."""
 
-from fastapi import APIRouter
+from fastapi import APIRouter, Depends
 from typing import Optional
 
 from src.iot.sensor_service import sensor_service
+from src.server.auth import require_auth
 
-router = APIRouter(prefix="/api/sensors", tags=["sensors"])
+router = APIRouter(prefix="/api/sensors", tags=["sensors"], dependencies=[Depends(require_auth)])
 
 
 @router.get("/latest")
@@ -41,3 +42,15 @@ async def get_barns_temperature():
     Optimized for dashboard quick-view - returns minimal data.
     """
     return await sensor_service.get_barns_temperature_summary()
+
+
+@router.get("/series")
+async def get_series_aggregate(sensor_type: str, range: str = 'day',
+                                barn_id: str = None):
+    """Time-bucketed series aggregated across devices for one sensor type.
+
+    Drives the chart on the sensors page. range picks the bucket size:
+    day | week | month | year. barn_id is optional; pass 'all' or omit to
+    aggregate across every device.
+    """
+    return await sensor_service.get_series_aggregate(sensor_type, range, barn_id)

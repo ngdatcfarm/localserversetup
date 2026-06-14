@@ -11,6 +11,7 @@ from fastapi.templating import Jinja2Templates
 
 from src.server.routes import cameras_router, ptz_router, recording_router
 from src.server.routes.preset_automation import router as preset_automation_router
+from src.server.routes.auth import router as auth_router
 from src.server.routes.iot import router as iot_router
 from src.server.routes.snapshots import router as snapshots_router
 from src.server.routes.devices import router as devices_router
@@ -22,6 +23,8 @@ from src.server.routes.farm_extended import router as farm_extended_router
 from src.server.routes.notifications import router as notifications_router
 from src.server.routes.bats import router as bats_router
 from src.server.routes.equipment import router as equipment_router
+from src.server.routes.mq_tare import router as mq_tare_router
+from src.iot.mq_tare_service import mq_tare_service
 from src.server.routes.sync import router as sync_router
 from src.server.routes.database import router as database_router
 from src.sync.sync_service import sync_service
@@ -134,6 +137,12 @@ async def startup_event():
         notification_service.configure(push_config)
         logger.info("Push notifications configured")
 
+    # 4d. Reconcile MQ tare sessions from previous server lifetime
+    try:
+        await mq_tare_service.reconcile_on_startup()
+    except Exception as e:
+        logger.error("MQ tare reconcile failed: %s", e)
+
     # 5. Load curtains from config
     from src.iot.curtain_service import curtain_service
     curtains_config = config.get("curtains", [])
@@ -197,10 +206,29 @@ async def shutdown_event():
 # Setup templates
 templates = Jinja2Templates(directory=str(BASE_DIR / "src" / "server" / "templates"))
 
+# Custom StaticFiles with no-cache headers — prevents browser from caching old JS
+# (we hit this when fixing bugs: the page would show stale code with syntax errors)
+class NoCacheStaticFiles(StaticFiles):
+    async def __call__(self, scope, receive, send):
+        async def send_wrapper(message):
+            if message["type"] == "http.response.start":
+                headers = list(message.get("headers", []))
+                # Strip any existing cache headers, force fresh
+                headers = [(k, v) for (k, v) in headers
+                           if k.lower() not in (b"cache-control", b"expires", b"pragma")]
+                headers.extend([
+                    (b"cache-control", b"no-store, no-cache, must-revalidate, max-age=0"),
+                    (b"pragma", b"no-cache"),
+                ])
+                message["headers"] = headers
+            await send(message)
+        await super().__call__(scope, receive, send_wrapper)
+
+
 # Mount static files
 static_dir = BASE_DIR / "static"
 if static_dir.exists():
-    app.mount("/static", StaticFiles(directory=str(static_dir)), name="static")
+    app.mount("/static", NoCacheStaticFiles(directory=str(static_dir)), name="static")
 
 # Mount snapshot folder for debug images
 snapshot_dir = Path("E:/AI/Snapshots")
@@ -232,6 +260,7 @@ async def serve_cert():
     raise HTTPException(status_code=404, detail="Certificate not found")
 
 # Include routers
+app.include_router(auth_router)
 app.include_router(cameras_router)
 app.include_router(preset_automation_router)
 app.include_router(ptz_router)
@@ -249,6 +278,7 @@ app.include_router(notifications_router)
 app.include_router(database_router)
 app.include_router(bats_router)
 app.include_router(equipment_router)
+app.include_router(mq_tare_router)
 app.include_router(snapshots_router)
 app.include_router(ai_logic_router)
 app.include_router(ml_router)

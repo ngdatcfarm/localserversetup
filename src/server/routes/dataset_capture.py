@@ -5,13 +5,14 @@ import cv2
 from datetime import datetime
 from pathlib import Path
 
-from fastapi import APIRouter, HTTPException
+from fastapi import APIRouter, HTTPException, Depends
 from pydantic import BaseModel
 
 from src.services.storage.config_service import ConfigService
 from src.services.database.db import db
+from src.server.auth import require_auth
 
-router = APIRouter(prefix="/api/ml/dataset", tags=["dataset-capture"])
+router = APIRouter(prefix="/api/ml/dataset", tags=["dataset-capture"], dependencies=[Depends(require_auth)])
 
 DATASET_DIR = Path("E:/AI/Dataset")
 DATASET_DIR.mkdir(parents=True, exist_ok=True)

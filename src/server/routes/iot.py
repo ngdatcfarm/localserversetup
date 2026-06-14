@@ -1,7 +1,7 @@
 """IoT control API routes - MQTT, curtains, relay commands."""
 
 import json
-from fastapi import APIRouter, HTTPException
+from fastapi import APIRouter, HTTPException, Depends
 from pydantic import BaseModel
 from typing import Optional
 
@@ -9,8 +9,9 @@ from src.iot.mqtt_client import mqtt_client
 from src.iot.curtain_service import curtain_service
 from src.services.storage.config_service import ConfigService
 from src.services.database.db import db
+from src.server.auth import require_auth
 
-router = APIRouter(prefix="/api/iot", tags=["iot"])
+router = APIRouter(prefix="/api/iot", tags=["iot"], dependencies=[Depends(require_auth)])
 config_service = ConfigService()
 
 

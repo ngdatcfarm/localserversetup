@@ -1,11 +1,12 @@
 """Density Routes - HSV-based density analysis without ML."""
 
-from fastapi import APIRouter
+from fastapi import APIRouter, Depends
 from pydantic import BaseModel
 from typing import Optional, List
 from pathlib import Path
+from src.server.auth import require_auth
 
-router = APIRouter(prefix="/api/density", tags=["density"])
+router = APIRouter(prefix="/api/density", tags=["density"], dependencies=[Depends(require_auth)])
 
 
 class DensityCountModel(BaseModel):

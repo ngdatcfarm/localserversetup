@@ -1,14 +1,15 @@
 """ML Gas Anomaly Detection API routes."""
 
 import logging
-from fastapi import APIRouter, HTTPException
+from fastapi import APIRouter, HTTPException, Depends
 from pydantic import BaseModel
 from typing import Optional
 
 from src.services.ml.ml_service import get_ml_service, detect_gas_anomaly
+from src.server.auth import require_auth
 
 logger = logging.getLogger(__name__)
-router = APIRouter(prefix="/api/ml", tags=["ml"])
+router = APIRouter(prefix="/api/ml", tags=["ml"], dependencies=[Depends(require_auth)])
 
 
 class AnomalyDetectRequest(BaseModel):

@@ -2,15 +2,16 @@
 
 import os
 from pathlib import Path
-from fastapi import APIRouter, HTTPException, Query
+from fastapi import APIRouter, HTTPException, Query, Depends
 from fastapi.responses import FileResponse
 from pydantic import BaseModel
 from typing import Optional, List
 
 from src.services.storage.recording_service import recording_service
 from src.services.storage.config_service import ConfigService
+from src.server.auth import require_auth
 
-router = APIRouter(prefix="/api/recording", tags=["recording"])
+router = APIRouter(prefix="/api/recording", tags=["recording"], dependencies=[Depends(require_auth)])
 
 
 class RecordingSettingsUpdate(BaseModel):

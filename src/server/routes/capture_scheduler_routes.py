@@ -1,12 +1,13 @@
 """Capture Scheduler Routes - Automated dataset collection on schedule."""
 
-from fastapi import APIRouter, HTTPException
+from fastapi import APIRouter, HTTPException, Depends
 from pydantic import BaseModel
 from typing import Optional
 
 from src.server.routes.capture_scheduler import capture_scheduler
+from src.server.auth import require_auth
 
-router = APIRouter(prefix="/api/ml/capture-scheduler", tags=["capture-scheduler"])
+router = APIRouter(prefix="/api/ml/capture-scheduler", tags=["capture-scheduler"], dependencies=[Depends(require_auth)])
 
 
 class CreateScheduleRequest(BaseModel):

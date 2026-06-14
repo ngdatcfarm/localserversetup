@@ -1,12 +1,13 @@
 """Bat control API routes - for barn ventilation curtains/bats."""
 
-from fastapi import APIRouter, HTTPException
+from fastapi import APIRouter, HTTPException, Depends
 from pydantic import BaseModel
 from typing import Optional
 
 from src.iot.bat_service import bat_service
+from src.server.auth import require_auth
 
-router = APIRouter(prefix="/api/bats", tags=["bats"])
+router = APIRouter(prefix="/api/bats", tags=["bats"], dependencies=[Depends(require_auth)])
 
 
 # ── Request Models ──────────────────────────────────

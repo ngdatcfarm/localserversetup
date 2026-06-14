@@ -2,15 +2,16 @@
 
 import logging
 from datetime import datetime, timedelta
-from fastapi import APIRouter, HTTPException, Query
+from fastapi import APIRouter, HTTPException, Query, Depends
 from pydantic import BaseModel
 from typing import Optional
 
 from src.iot.cycle_snapshot_service import get_snapshot_service, run_snapshot
 from src.services.database.db import db
+from src.server.auth import require_auth
 
 logger = logging.getLogger(__name__)
-router = APIRouter(prefix="/api/cycle-snapshots", tags=["cycle-snapshots"])
+router = APIRouter(prefix="/api/cycle-snapshots", tags=["cycle-snapshots"], dependencies=[Depends(require_auth)])
 
 
 class SnapshotResponse(BaseModel):

@@ -8,13 +8,14 @@ from pathlib import Path
 from datetime import datetime
 from typing import Optional
 
-from fastapi import APIRouter, UploadFile, File, HTTPException
+from fastapi import APIRouter, UploadFile, File, HTTPException, Depends
 from fastapi.responses import StreamingResponse
 from pydantic import BaseModel
 
 from src.services.database.db import db
+from src.server.auth import require_auth
 
-router = APIRouter(prefix="/api/ml/dataset", tags=["ml-dataset"])
+router = APIRouter(prefix="/api/ml/dataset", tags=["ml-dataset"], dependencies=[Depends(require_auth)])
 
 DATASET_DIR = Path("E:/AI/Dataset")
 DATASET_DIR.mkdir(parents=True, exist_ok=True)

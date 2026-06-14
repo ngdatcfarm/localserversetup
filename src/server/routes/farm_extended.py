@@ -1,7 +1,7 @@
 """Extended farm routes - feeds, medications, vaccines, suppliers, health."""
 
 from datetime import date
-from fastapi import APIRouter, HTTPException
+from fastapi import APIRouter, HTTPException, Depends
 from pydantic import BaseModel, Field
 from typing import Optional
 
@@ -10,8 +10,9 @@ from src.farm.medication_service import medication_service
 from src.farm.vaccine_service import vaccine_service
 from src.farm.supplier_service import supplier_service
 from src.farm.health_service import health_service
+from src.server.auth import require_auth
 
-router = APIRouter(prefix="/api/farm", tags=["farm-extended"])
+router = APIRouter(prefix="/api/farm", tags=["farm-extended"], dependencies=[Depends(require_auth)])
 
 
 # ── Request Models ──────────────────────────────────

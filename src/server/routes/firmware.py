@@ -1,17 +1,35 @@
-"""Firmware OTA API routes."""
+"""Firmware OTA API routes.
 
-from fastapi import APIRouter, HTTPException, UploadFile, File, Form
+Public (no auth — used by ESP32 firmware):
+  - GET /api/firmware/latest/{code}
+  - GET /api/firmware/download/{id}
+  - GET /api/firmware/mother/{code}
+
+Admin-only (require_auth applied per-route):
+  - POST   /api/firmware/upload
+  - POST   /api/firmware/set-mother/{id}
+  - POST   /api/firmware/ota/{device_id}
+  - DELETE /api/firmware/{id}
+  - GET    /api/firmware/generate/{device_id}
+  - GET    /api/firmware/default/{code}
+  - GET    /api/firmware/mother-sources
+  - GET    /api/firmware/mother-source/{folder}
+  - GET    /api/firmware (list)
+"""
+
+from fastapi import APIRouter, HTTPException, UploadFile, File, Form, Depends
 from fastapi.responses import FileResponse
 from typing import Optional
 
 from src.iot.firmware_service import firmware_service
+from src.server.auth import require_auth
 
 router = APIRouter(prefix="/api/firmware", tags=["firmware"])
 
 
-@router.get("")
+@router.get("", dependencies=[Depends(require_auth)])
 async def list_firmwares(device_type_code: str = None):
-    """List all firmware versions."""
+    """List all firmware versions (admin)."""
     return await firmware_service.list_firmwares(device_type_code)
 
 
@@ -24,7 +42,7 @@ async def get_latest_firmware(device_type_code: str):
     return fw
 
 
-@router.get("/default/{device_type_code}")
+@router.get("/default/{device_type_code}", dependencies=[Depends(require_auth)])
 async def get_default_firmware(device_type_code: str):
     """Get default firmware for a device type (mother preferred, fallback to latest)."""
     fw = await firmware_service.get_default(device_type_code)
@@ -42,7 +60,7 @@ async def get_mother_firmware(device_type_code: str):
     return fw
 
 
-@router.get("/mother-sources")
+@router.get("/mother-sources", dependencies=[Depends(require_auth)])
 async def list_mother_firmware_sources():
     """List all mother firmware source files (read-only, for viewing only).
 
@@ -81,7 +99,7 @@ async def list_mother_firmware_sources():
     return sources
 
 
-@router.get("/mother-source/{folder_name}")
+@router.get("/mother-source/{folder_name}", dependencies=[Depends(require_auth)])
 async def get_mother_firmware_source(folder_name: str):
     """Get full content of a mother firmware source file (read-only)."""
     from pathlib import Path
@@ -111,7 +129,7 @@ async def get_mother_firmware_source(folder_name: str):
     }
 
 
-@router.post("/set-mother/{firmware_id}")
+@router.post("/set-mother/{firmware_id}", dependencies=[Depends(require_auth)])
 async def set_mother_firmware(firmware_id: int):
     """Set a firmware as mother (default) for its device type."""
     result = await firmware_service.set_mother(firmware_id)
@@ -120,7 +138,7 @@ async def set_mother_firmware(firmware_id: int):
     return result
 
 
-@router.post("/upload")
+@router.post("/upload", dependencies=[Depends(require_auth)])
 async def upload_firmware(
     device_type_code: str = Form(...),
     version: str = Form(...),
@@ -164,7 +182,7 @@ async def download_firmware(firmware_id: int):
     )
 
 
-@router.post("/ota/{device_id}")
+@router.post("/ota/{device_id}", dependencies=[Depends(require_auth)])
 async def trigger_ota(device_id: int):
     """Trigger OTA update on a device."""
     result = await firmware_service.trigger_ota(device_id)
@@ -173,7 +191,7 @@ async def trigger_ota(device_id: int):
     return result
 
 
-@router.delete("/{firmware_id}")
+@router.delete("/{firmware_id}", dependencies=[Depends(require_auth)])
 async def delete_firmware(firmware_id: int):
     """Delete a firmware version."""
     deleted = await firmware_service.delete(firmware_id)
@@ -182,7 +200,7 @@ async def delete_firmware(firmware_id: int):
     return {"ok": True}
 
 
-@router.get("/generate/{device_id}")
+@router.get("/generate/{device_id}", dependencies=[Depends(require_auth)])
 async def generate_device_firmware(device_id: int):
     """Generate customized firmware source code for a device.
 

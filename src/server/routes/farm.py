@@ -2,7 +2,7 @@
 
 import asyncio
 from datetime import date
-from fastapi import APIRouter, HTTPException
+from fastapi import APIRouter, HTTPException, Depends
 from pydantic import BaseModel, Field
 from typing import Optional
 from enum import Enum
@@ -16,8 +16,9 @@ from src.farm.care_service import care_service
 from src.farm.feed_service import feed_service
 from src.services.database.db import db
 from src.sync.sync_service import sync_service
+from src.server.auth import require_auth
 
-router = APIRouter(prefix="/api/farm", tags=["farm"])
+router = APIRouter(prefix="/api/farm", tags=["farm"], dependencies=[Depends(require_auth)])
 
 
 # ── Enums ──────────────────────────────────────────

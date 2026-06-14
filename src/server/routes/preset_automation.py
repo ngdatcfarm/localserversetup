@@ -1,14 +1,15 @@
 """Camera Preset Automation API routes - Config-based presets (System 1)."""
 
-from fastapi import APIRouter, HTTPException, status
+from fastapi import APIRouter, HTTPException, status, Depends
 from pydantic import BaseModel
 from typing import Dict, Any, List, Optional
 
 from src.cameras.preset_service import preset_service
 from src.cameras.ptz.ptz_controller import get_ptz_controller
 from src.services.storage.config_service import ConfigService
+from src.server.auth import require_auth
 
-router = APIRouter(prefix="/api/cameras", tags=["camera-presets"])
+router = APIRouter(prefix="/api/cameras", tags=["camera-presets"], dependencies=[Depends(require_auth)])
 config_service = ConfigService()
 
 

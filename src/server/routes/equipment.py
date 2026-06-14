@@ -1,12 +1,13 @@
 """Equipment API routes - CRUD for equipment types and equipment instances."""
 
-from fastapi import APIRouter, HTTPException
+from fastapi import APIRouter, HTTPException, Depends
 from pydantic import BaseModel
 from typing import Optional
 
 from src.iot.equipment_service import equipment_service
+from src.server.auth import require_auth
 
-router = APIRouter(prefix="/api/equipment", tags=["equipment"])
+router = APIRouter(prefix="/api/equipment", tags=["equipment"], dependencies=[Depends(require_auth)])
 
 
 # ── Request Models ──────────────────────────────────

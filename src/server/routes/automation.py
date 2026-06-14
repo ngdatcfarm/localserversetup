@@ -1,14 +1,15 @@
 """Automation and alert API routes."""
 
-from fastapi import APIRouter, HTTPException
+from fastapi import APIRouter, HTTPException, Depends
 from pydantic import BaseModel
 from typing import Optional
 
 from src.iot.automation_service import automation_service
 from src.iot.alert_service import alert_service
 from src.services.database.db import db
+from src.server.auth import require_auth
 
-router = APIRouter(prefix="/api", tags=["automation"])
+router = APIRouter(prefix="/api", tags=["automation"], dependencies=[Depends(require_auth)])
 
 
 # ── Request Models ──────────────────────────────────

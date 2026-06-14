@@ -7,12 +7,13 @@ Supports Context Injection to provide real system data to AI.
 import os
 import logging
 from datetime import datetime
-from fastapi import APIRouter, HTTPException
+from fastapi import APIRouter, HTTPException, Depends
 from pydantic import BaseModel
 from typing import Optional
+from src.server.auth import require_auth
 
 logger = logging.getLogger(__name__)
-router = APIRouter(prefix="/api/chat", tags=["chat"])
+router = APIRouter(prefix="/api/chat", tags=["chat"], dependencies=[Depends(require_auth)])
 
 
 class ChatQueryRequest(BaseModel):

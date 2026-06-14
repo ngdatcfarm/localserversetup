@@ -1,13 +1,14 @@
 """AI Logic Routes - CRUD + execute endpoints."""
 
 from pathlib import Path
-from fastapi import APIRouter, HTTPException
+from fastapi import APIRouter, HTTPException, Depends
 from pydantic import BaseModel
 from typing import Optional
 
 from src.iot.ai_logic_service import ai_logic_service
+from src.server.auth import require_auth
 
-router = APIRouter(prefix="/api/ai-logic", tags=["ai-logic"])
+router = APIRouter(prefix="/api/ai-logic", tags=["ai-logic"], dependencies=[Depends(require_auth)])
 
 
 # ── Request models ─────────────────────────────────────

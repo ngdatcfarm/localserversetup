@@ -1,12 +1,13 @@
 """PTZ control API routes."""
 
-from fastapi import APIRouter, HTTPException, status
+from fastapi import APIRouter, HTTPException, status, Depends
 from pydantic import BaseModel
 from typing import Optional
 from src.services.storage.config_service import ConfigService
 from src.cameras.ptz.ptz_controller import get_ptz_controller, PTZ_DIRECTIONS
+from src.server.auth import require_auth
 
-router = APIRouter(prefix="/api/cameras", tags=["ptz"])
+router = APIRouter(prefix="/api/cameras", tags=["ptz"], dependencies=[Depends(require_auth)])
 config_service = ConfigService()
 
 

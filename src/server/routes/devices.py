@@ -1,14 +1,15 @@
 """Device management API routes."""
 
 import asyncio
-from fastapi import APIRouter, HTTPException
+from fastapi import APIRouter, HTTPException, Depends
 from pydantic import BaseModel
 from typing import Optional
 
 from src.iot.device_service import device_service
 from src.sync.sync_service import sync_service
+from src.server.auth import require_auth
 
-router = APIRouter(prefix="/api/devices", tags=["devices"])
+router = APIRouter(prefix="/api/devices", tags=["devices"], dependencies=[Depends(require_auth)])
 
 
 # ── Request Models ──────────────────────────────────

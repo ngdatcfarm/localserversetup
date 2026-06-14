@@ -5,15 +5,16 @@ import cv2
 from datetime import datetime
 from pathlib import Path
 
-from fastapi import APIRouter, HTTPException
+from fastapi import APIRouter, HTTPException, Depends
 from pydantic import BaseModel
 
 from src.services.storage.config_service import ConfigService
 from src.cameras.ptz.ptz_controller import get_ptz_controller
 from src.ai.chicken_detect_service import chicken_detect_service
 from src.ai.heatmap_service import heatmap_service
+from src.server.auth import require_auth
 
-router = APIRouter(prefix="/api/ai", tags=["ai-detection"])
+router = APIRouter(prefix="/api/ai", tags=["ai-detection"], dependencies=[Depends(require_auth)])
 
 
 class DetectRequest(BaseModel):
