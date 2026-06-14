@@ -5,9 +5,9 @@
  * - Tự động sinh Firmware ESP32 (.ino C++) trực tuyến
  * - Semantic .cf-* CSS classes
  */
-const { ref, reactive, computed, onMounted } = Vue;
+const { ref, reactive, computed, onMounted, onUnmounted } = Vue;
 
-return {
+export default{
     setup() {
         // ── State ──────────────────────────────────────
         const devices = ref([]);
@@ -25,6 +25,17 @@ return {
         const firmwareCode = ref('');
         const firmwareLoading = ref(false);
         const firmwareError = ref('');
+
+        // MQ Tare state
+        const showTareModal = ref(false);
+        const tareDevice = ref(null);
+        const tareStatuses = ref([]);         // result of /status/{id}
+        const tareCountdown = ref(0);          // seconds remaining
+        const tarePoller = ref(null);
+        const tareLoading = ref(false);
+
+        // Health-flag tooltip state (per device)
+        const healthTipDevice = ref(null);
 
         // ── Computed ───────────────────────────────────
         const barnsWithDevices = computed(() => {
@@ -259,10 +270,125 @@ return {
             }
         }
 
+        // ── MQ Tare ──────────────────────────────────────
+        function canTare(d) {
+            if (!d) return false;
+            if (d.type_code !== 'sensor' && d.device_type_id !== 3) return false;
+            const ref = d.first_heartbeat_at || d.created_at;
+            if (!ref) return false;
+            const refMs = new Date(ref).getTime();
+            if (Number.isNaN(refMs)) return false;
+            return (Date.now() - refMs) >= 24 * 60 * 60 * 1000;
+        }
+
+        async function openTareModal(d) {
+            tareDevice.value = d;
+            tareLoading.value = true;
+            showTareModal.value = true;
+            tareCountdown.value = 0;
+            try {
+                tareStatuses.value = await API.mqTare.status(d.id);
+            } catch (e) {
+                if (typeof showToast === 'function') showToast(e.message || 'Lỗi tải trạng thái tare', 'error');
+                tareStatuses.value = [];
+            } finally {
+                tareLoading.value = false;
+            }
+            refreshTareCountdown();
+        }
+
+        function refreshTareCountdown() {
+            const inProgress = tareStatuses.value.find(s => s.in_progress);
+            if (inProgress) {
+                tareCountdown.value = inProgress.seconds_remaining || 0;
+            } else {
+                tareCountdown.value = 0;
+            }
+        }
+
+        function fmtTareCountdown(secs) {
+            const m = Math.floor(secs / 60);
+            const s = secs % 60;
+            return `${m}:${s.toString().padStart(2, '0')}`;
+        }
+
+        function fmtOhms(v) {
+            if (v == null) return '—';
+            if (v >= 1000) return `${(v / 1000).toFixed(2)} kΩ`;
+            return `${v.toFixed(0)} Ω`;
+        }
+
+        async function startTare(sensorType) {
+            if (!tareDevice.value) return;
+            tareLoading.value = true;
+            try {
+                await API.mqTare.start({
+                    device_id: tareDevice.value.id,
+                    sensor_type: sensorType,
+                    load_resistor: 10000.0,
+                });
+                if (typeof showToast === 'function') showToast(`Đã bắt đầu tare ${sensorType} (10 phút)`, 'success');
+                // Reload status
+                tareStatuses.value = await API.mqTare.status(tareDevice.value.id);
+                refreshTareCountdown();
+                // Poll every 5s for status updates
+                if (tarePoller.value) clearInterval(tarePoller.value);
+                tarePoller.value = setInterval(async () => {
+                    if (!showTareModal.value) {
+                        clearInterval(tarePoller.value);
+                        tarePoller.value = null;
+                        return;
+                    }
+                    try {
+                        tareStatuses.value = await API.mqTare.status(tareDevice.value.id);
+                        refreshTareCountdown();
+                    } catch (e) {
+                        // ignore transient errors
+                    }
+                }, 5000);
+            } catch (e) {
+                if (typeof showToast === 'function') showToast(e.message || 'Lỗi bắt đầu tare', 'error');
+            } finally {
+                tareLoading.value = false;
+            }
+        }
+
+        async function cancelTare(sensorType) {
+            if (!tareDevice.value) return;
+            if (!confirm(`Hủy tare ${sensorType} đang chạy?`)) return;
+            try {
+                await API.mqTare.cancel({
+                    device_id: tareDevice.value.id,
+                    sensor_type: sensorType,
+                });
+                if (typeof showToast === 'function') showToast(`Đã hủy tare ${sensorType}`, 'success');
+                tareStatuses.value = await API.mqTare.status(tareDevice.value.id);
+                refreshTareCountdown();
+            } catch (e) {
+                if (typeof showToast === 'function') showToast(e.message || 'Lỗi hủy tare', 'error');
+            }
+        }
+
+        function closeTareModal() {
+            showTareModal.value = false;
+            if (tarePoller.value) {
+                clearInterval(tarePoller.value);
+                tarePoller.value = null;
+            }
+        }
+
         let poller = null;
         onMounted(async () => {
             await load();
             poller = setInterval(load, 15000);
+        });
+
+        onUnmounted(() => {
+            if (poller) clearInterval(poller);
+            if (tarePoller.value) {
+                clearInterval(tarePoller.value);
+                tarePoller.value = null;
+            }
         });
 
         return {
@@ -274,7 +400,13 @@ return {
             openFirmwareModal, downloadFirmware,
             firmwareDevice, firmwareCode, firmwareLoading, firmwareError,
             openForm, closeModal, save, removeDevice, testDevice,
-            openTypeForm, closeTypeModal, saveType, removeType
+            openTypeForm, closeTypeModal, saveType, removeType,
+            // MQ Tare
+            showTareModal, tareDevice, tareStatuses, tareCountdown, tareLoading,
+            canTare, openTareModal, startTare, cancelTare, closeTareModal,
+            fmtTareCountdown, fmtOhms,
+            // Health flag
+            healthTipDevice
         };
     },
 
@@ -341,9 +473,23 @@ return {
                                 <div class="cf-dev-card-title-row">
                                     <span :class="['cf-dev-online-dot', d.is_online ? 'online' : 'offline']"></span>
                                     <span class="cf-primary-text">{{ d.name }}</span>
+                                    <div v-if="d.needs_check"
+                                         class="cf-dev-check-wrap"
+                                         @mouseenter="healthTipDevice = d.id"
+                                         @mouseleave="healthTipDevice = null"
+                                         :title="(d.check_reasons || []).join('\\n')">
+                                        <span class="cf-dev-check-flag">🚩 Cần kiểm tra</span>
+                                        <div v-if="healthTipDevice === d.id" class="cf-dev-check-tooltip">
+                                            <div class="cf-dev-check-tooltip-title">Phát hiện bất thường</div>
+                                            <ul>
+                                                <li v-for="r in d.check_reasons" :key="r">{{ r }}</li>
+                                            </ul>
+                                        </div>
+                                    </div>
                                 </div>
                                 <div v-if="activeDropdown === d.id" class="cf-dev-dropdown">
                                     <button @click.stop="openFirmwareModal(d); activeDropdown = null">💾 Lấy code ESP32</button>
+                                    <button v-if="d.type_code === 'sensor' || d.device_type_id === 3" @click.stop="openTareModal(d); activeDropdown = null" :disabled="!canTare(d)" :title="canTare(d) ? 'Hiệu chỉnh baseline R0' : 'Cần online 24h+ để tare'">🧪 Tare MQ135 / MQ137</button>
                                     <button @click.stop="openForm(d); activeDropdown = null">✏️ Sửa cấu hình</button>
                                     <button @click.stop="testDevice(d); activeDropdown = null">⚡ Test mạng</button>
                                     <button @click.stop="removeDevice(d); activeDropdown = null" class="danger">🗑️ Thu hồi xóa</button>
@@ -415,6 +561,19 @@ return {
                                         <span :class="d.is_online ? 'text-emerald' : 'text-slate'">
                                             {{ d.is_online ? 'Online' : 'Offline' }}
                                         </span>
+                                        <div v-if="d.needs_check"
+                                             class="cf-dev-check-wrap cf-dev-check-wrap--inline"
+                                             @mouseenter="healthTipDevice = d.id"
+                                             @mouseleave="healthTipDevice = null"
+                                             :title="(d.check_reasons || []).join('\\n')">
+                                            <span class="cf-dev-check-flag">🚩</span>
+                                            <div v-if="healthTipDevice === d.id" class="cf-dev-check-tooltip">
+                                                <div class="cf-dev-check-tooltip-title">Phát hiện bất thường</div>
+                                                <ul>
+                                                    <li v-for="r in d.check_reasons" :key="r">{{ r }}</li>
+                                                </ul>
+                                            </div>
+                                        </div>
                                     </div>
                                 </td>
                                 <td><span class="cf-dev-code-sm">{{ d.device_code }}</span></td>
@@ -643,6 +802,78 @@ return {
                             <button type="submit" class="cf-btn-primary" style="background-color: #16a34a;">Thiết lập loại</button>
                         </div>
                     </form>
+                </div>
+            </div>
+        </teleport>
+
+        <!-- ── MODAL: MQ TARE (R0 CALIBRATION) ── -->
+        <teleport to="body">
+            <div v-if="showTareModal" class="cf-modal-overlay" @click.self="closeTareModal">
+                <div class="cf-modal-box" style="max-width: 36rem;">
+                    <div class="cf-modal-header">
+                        <div class="cf-modal-header-left">
+                            <div class="cf-modal-header-icon" style="background-color: #e0f2fe; color: #0369a1;">🧪</div>
+                            <div>
+                                <h3 class="cf-modal-title">Hiệu chuẩn Tare (R0 baseline)</h3>
+                                <p class="cf-modal-subtitle">
+                                    {{ tareDevice ? tareDevice.name : '' }}
+                                    <span v-if="tareDevice" class="cf-dev-code-sm">({{ tareDevice.device_code }})</span>
+                                </p>
+                            </div>
+                        </div>
+                        <button @click="closeTareModal" class="cf-modal-close-btn">✕</button>
+                    </div>
+
+                    <div class="cf-modal-body">
+                        <div v-if="tareLoading" class="text-center py-4 text-muted">Đang tải trạng thái…</div>
+
+                        <div v-else>
+                            <div v-for="s in tareStatuses" :key="s.sensor_type"
+                                 class="cf-card mb-3" style="padding: 1rem; border: 1px solid #e2e8f0;">
+                                <div class="flex items-center justify-between mb-2">
+                                    <div>
+                                        <div class="font-semibold text-base">
+                                            {{ s.sensor_type === 'mq135_raw' ? '🧪 MQ135 (Amoniac)' : '💨 MQ137 (H₂S)' }}
+                                        </div>
+                                        <div class="text-xs text-muted">
+                                            R0 hiện tại: <span class="font-mono">{{ fmtOhms(s.active_r0_ohms) }}</span>
+                                            <span v-if="s.completed_at"> · lúc {{ new Date(s.completed_at).toLocaleString('vi-VN') }}</span>
+                                        </div>
+                                    </div>
+                                    <div v-if="s.in_progress" class="text-right">
+                                        <div class="text-amber-600 font-semibold text-sm">⏱️ Đang thu thập</div>
+                                        <div class="text-2xl font-mono font-bold">{{ fmtTareCountdown(s.seconds_remaining) }}</div>
+                                        <div class="text-xs text-muted">{{ s.sample_count || 0 }} mẫu</div>
+                                    </div>
+                                </div>
+
+                                <div class="flex gap-2 mt-3">
+                                    <button v-if="!s.in_progress"
+                                            @click="startTare(s.sensor_type)"
+                                            class="cf-btn-primary flex-1"
+                                            style="background-color:#0284c7; font-size:12px; padding:0.5rem 0.75rem;">
+                                        🚀 Bắt đầu tare (10 phút)
+                                    </button>
+                                    <button v-else
+                                            @click="cancelTare(s.sensor_type)"
+                                            class="cf-btn-secondary flex-1"
+                                            style="font-size:12px; padding:0.5rem 0.75rem; border-color:#ef4444; color:#ef4444;">
+                                        ⏹️ Hủy tare
+                                    </button>
+                                </div>
+                            </div>
+
+                            <div class="text-xs text-muted mt-2" style="line-height:1.5;">
+                                💡 <b>Tare</b> thu thập 10 phút ADC khi không khí sạch để tính baseline <span class="font-mono">R0</span>.
+                                Hệ thống sẽ lấy median của Rs làm R0, sau đó dùng để tính <span class="font-mono">Rs/R0</span>
+                                theo thời gian thực và lưu aggregate 5 phút để phân tích trend.
+                            </div>
+                        </div>
+                    </div>
+
+                    <div class="cf-modal-footer">
+                        <button @click="closeTareModal" class="cf-btn-secondary">Đóng lại</button>
+                    </div>
                 </div>
             </div>
         </teleport>

@@ -59,7 +59,11 @@ class DeviceService:
             WHERE d.id = $1""",
             device_id,
         )
-        return dict(row) if row else None
+        if not row:
+            return None
+        device = dict(row)
+        await self._attach_health_flags([device])
+        return device
 
     async def get_by_code(self, device_code: str) -> Optional[dict]:
         """Get device by device_code."""
@@ -86,7 +90,9 @@ class DeviceService:
                 LEFT JOIN device_types dt ON d.device_type_id = dt.id
                 ORDER BY d.name""",
             )
-        return [dict(r) for r in rows]
+        devices = [dict(r) for r in rows]
+        await self._attach_health_flags(devices)
+        return devices
 
     async def update(self, device_id: int, data: dict) -> dict:
         """Update device info."""
@@ -180,6 +186,105 @@ class DeviceService:
             device_id,
         )
         return {"ok": True, "device_code": device["device_code"], "topic": topic}
+
+    # ── Health flags (computed from MQ telemetry) ─────
+
+    async def _attach_health_flags(self, devices: list[dict]) -> None:
+        """Compute `needs_check` + `check_reasons` for Sensor-Only devices in place.
+
+        Rules per (device, sensor_type in {mq135_raw, mq137_raw}):
+          1. Sensor dead:    raw_min <= 1 AND raw_avg < 30  (24h window)
+          2. Low variation:  stddev(rs_r0_ratio) < 0.05 with n >= 100
+          3. Never tared:    no completed calibration AND online >= 24h
+        Non-sensor devices always get needs_check=False.
+        """
+        SENSOR_TYPE_ID = 3
+        sensor_ids = [d["id"] for d in devices if d.get("device_type_id") == SENSOR_TYPE_ID]
+        if not sensor_ids:
+            for d in devices:
+                d.setdefault("needs_check", False)
+                d.setdefault("check_reasons", [])
+            return
+
+        # 24h MQ health summary (one row per device+sensor)
+        health_rows = await db.fetch(
+            """SELECT device_id, sensor_type,
+                      COUNT(*)             AS n,
+                      MIN(raw_adc)         AS raw_min,
+                      AVG(raw_adc)::float  AS raw_avg,
+                      STDDEV_POP(rs_r0_ratio)::float AS ratio_stddev
+                 FROM mq_ratio_samples
+                WHERE device_id = ANY($1)
+                  AND time > NOW() - INTERVAL '24 hours'
+                GROUP BY device_id, sensor_type""",
+            sensor_ids,
+        )
+        health_map: dict[tuple[int, str], dict] = {
+            (r["device_id"], r["sensor_type"]): dict(r) for r in health_rows
+        }
+
+        # Calibration status
+        cal_rows = await db.fetch(
+            """SELECT device_id, sensor_type, MAX(completed_at) AS last_completed
+                 FROM mq_calibrations
+                WHERE device_id = ANY($1) AND status = 'completed'
+                GROUP BY device_id, sensor_type""",
+            sensor_ids,
+        )
+        cal_map: dict[tuple[int, str], "datetime"] = {
+            (r["device_id"], r["sensor_type"]): r["last_completed"] for r in cal_rows
+        }
+
+        now_utc = datetime.now(timezone.utc)
+        for d in devices:
+            if d.get("device_type_id") != SENSOR_TYPE_ID:
+                d["needs_check"] = False
+                d["check_reasons"] = []
+                continue
+
+            reasons: list[str] = []
+            for stype in ("mq135_raw", "mq137_raw"):
+                short = "MQ135" if stype == "mq135_raw" else "MQ137"
+                h = health_map.get((d["id"], stype))
+                if h is None:
+                    # No recent samples — only flag if online and old enough
+                    fb = d.get("first_heartbeat_at") or d.get("created_at")
+                    if fb and (now_utc - fb.replace(tzinfo=timezone.utc)).total_seconds() >= 24 * 3600:
+                        reasons.append(f"{short}: Không có dữ liệu 24h gần nhất")
+                    continue
+
+                n = h["n"]
+                raw_min = float(h["raw_min"] or 0)
+                raw_avg = float(h["raw_avg"] or 0)
+                ratio_stddev = float(h["ratio_stddev"] or 0)
+
+                # Rule 1: sensor dead
+                if raw_min <= 1 and raw_avg < 30:
+                    reasons.append(
+                        f"{short}: Sensor chết — raw ADC={int(raw_min)} (avg {raw_avg:.0f})"
+                    )
+                    continue  # No point checking variation if it's dead
+
+                # Rule 2: low variation (suspected stuck/dirty)
+                if n >= 100 and ratio_stddev < 0.05:
+                    reasons.append(
+                        f"{short}: Biến thiên thấp (σ={ratio_stddev:.3f}) — kiểm tra sensor"
+                    )
+
+            # Rule 3: never tared (any sensor type)
+            for stype in ("mq135_raw", "mq137_raw"):
+                short = "MQ135" if stype == "mq135_raw" else "MQ137"
+                if (d["id"], stype) not in cal_map:
+                    fb = d.get("first_heartbeat_at") or d.get("created_at")
+                    if fb:
+                        age_h = (now_utc - fb.replace(tzinfo=timezone.utc)).total_seconds() / 3600
+                        if age_h >= 24:
+                            reasons.append(
+                                f"{short}: Chưa tare (online {age_h:.0f}h)"
+                            )
+
+            d["needs_check"] = bool(reasons)
+            d["check_reasons"] = reasons
 
     # ── Channels ──────────────────────────────────────
 
