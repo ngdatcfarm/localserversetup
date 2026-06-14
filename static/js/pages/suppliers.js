@@ -3,7 +3,7 @@
  */
 const { ref, reactive, onMounted } = Vue;
 
-return {
+export default{
     setup() {
         const suppliers = ref([]);
         const showModal = ref(false);

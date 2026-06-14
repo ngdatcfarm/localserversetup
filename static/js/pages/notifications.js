@@ -6,7 +6,7 @@
  */
 const { ref, reactive, onMounted } = Vue;
 
-return {
+export default{
     setup() {
         const _showToast = (msg, type = 'info') => {
             if (window.showToast) {

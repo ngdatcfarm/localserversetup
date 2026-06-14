@@ -3,7 +3,7 @@
  */
 const { ref, onMounted, computed } = Vue;
 
-return {
+export default{
     props: ['id'],
 
     setup(props) {

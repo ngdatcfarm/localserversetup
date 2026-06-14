@@ -15,7 +15,7 @@ function showToast(message, type = 'success') {
     window.dispatchEvent(event);
 }
 
-return {
+export default{
     setup() {
         // ── State ──────────────────────────────────────
         const cycles = ref([]);

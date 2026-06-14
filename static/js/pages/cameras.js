@@ -348,4 +348,4 @@ const component = {
     }
 };
 
-return component;
+export default component;

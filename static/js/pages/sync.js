@@ -3,7 +3,7 @@
  */
 const { ref, reactive, onMounted, onUnmounted } = Vue;
 
-return {
+export default{
     setup() {
         const status = ref(null);
         const config = reactive({

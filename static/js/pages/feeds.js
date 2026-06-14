@@ -6,7 +6,7 @@
  */
 const { ref, reactive, onMounted } = Vue;
 
-return {
+export default{
     setup() {
         // ── State ──────────────────────────────────────
         const tab = ref('brands');

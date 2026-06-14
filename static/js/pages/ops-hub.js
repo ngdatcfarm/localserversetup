@@ -4,7 +4,7 @@
  */
 const { ref, reactive, computed, onMounted, onUnmounted } = Vue;
 
-return {
+export default{
     setup() {
         const loading = ref(false);
         const refreshing = ref(false);

@@ -7,7 +7,7 @@
  */
 const { ref, reactive, onMounted, computed } = Vue;
 
-return {
+export default{
     setup() {
         // ── State ──────────────────────────────────────
         const meds = ref([]);

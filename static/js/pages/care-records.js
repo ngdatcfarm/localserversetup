@@ -4,7 +4,7 @@
  */
 const { ref, reactive, computed, watch, onMounted } = Vue;
 
-return {
+export default{
     setup() {
         // ── Data Store ──────────────────────────────
         const cycles = ref([]);

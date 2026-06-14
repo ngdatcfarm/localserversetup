@@ -6,7 +6,7 @@
  */
 const { ref, computed, onMounted } = Vue;
 
-return {
+export default{
     setup() {
         // ── State ──────────────────────────────────────
         const devices = ref([]);

@@ -7,7 +7,7 @@
  */
 const { ref, reactive, computed, watch, onMounted } = Vue;
 
-return {
+export default{
     setup() {
         // ── State ──────────────────────────────────────
         const cycles = ref([]);

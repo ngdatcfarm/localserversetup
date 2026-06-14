@@ -4,7 +4,7 @@
  */
 const { ref, reactive, onMounted, nextTick } = Vue;
 
-return {
+export default{
     setup() {
         const messages = ref([]);
         const inputMessage = ref('');

@@ -636,4 +636,4 @@ setup() {
 }
 };
 
-return component;
+export default component;
