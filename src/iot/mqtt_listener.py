@@ -7,6 +7,7 @@ from datetime import datetime, timezone
 from typing import Any
 
 from src.iot.mqtt_client import mqtt_client
+from src.iot.mq_tare_service import mq_tare_service, MQ_SENSOR_TYPES
 from src.services.database.db import db
 
 logger = logging.getLogger(__name__)
@@ -103,6 +104,7 @@ class MqttListener:
             """UPDATE devices SET
                 is_online = TRUE,
                 last_heartbeat_at = $1,
+                first_heartbeat_at = COALESCE(first_heartbeat_at, $1),
                 wifi_rssi = COALESCE($2, wifi_rssi),
                 ip_address = COALESCE($3, ip_address),
                 uptime_seconds = COALESCE($4, uptime_seconds),
@@ -141,9 +143,9 @@ class MqttListener:
             try:
                 await db.execute(
                     """INSERT INTO devices (device_code, name, device_type_id, barn_id, mqtt_topic, is_online,
-                        last_heartbeat_at, wifi_rssi, ip_address, uptime_seconds, free_heap_bytes,
+                        last_heartbeat_at, first_heartbeat_at, wifi_rssi, ip_address, uptime_seconds, free_heap_bytes,
                         firmware_version, created_at, updated_at)
-                    VALUES ($1, $2, $3, $4, $5, TRUE, $6, $7, $8, $9, $10, $11, $6, $6)""",
+                    VALUES ($1, $2, $3, $4, $5, TRUE, $6, $6, $7, $8, $9, $10, $11, $6, $6)""",
                     device_code, device_name, device_type_id, barn_id, device_topic,
                     now, wifi_rssi, ip_address, uptime, free_heap, firmware,
                 )
@@ -223,6 +225,15 @@ class MqttListener:
 
         self._queue_work("_store_sensor_data", device_topic, payload)
 
+    async def _maybe_handle_mq_tare(self, device_id: int, stype: str, value, ts) -> None:
+        """Single hook for mq_tare on both sensor-list and flat payloads.
+
+        `mq_tare_service.on_sensor_reading` is internally exception-safe,
+        so we don't need a defensive try/except here.
+        """
+        if stype in MQ_SENSOR_TYPES and isinstance(value, (int, float)):
+            await mq_tare_service.on_sensor_reading(device_id, stype, int(value), ts)
+
     async def _store_sensor_data(self, device_topic: str, payload: dict):
         """Store sensor reading to TimescaleDB. Auto-creates device if not exists."""
         if not db.pool:
@@ -248,11 +259,14 @@ class MqttListener:
         sensors = payload.get("sensors")
         if sensors and isinstance(sensors, list):
             for s in sensors:
+                stype = s.get("type", "unknown")
+                sval = s.get("value", 0)
                 await self._insert_sensor_reading(
-                    now, device_id, s.get("type", "unknown"),
-                    s.get("value", 0), s.get("unit", ""),
+                    now, device_id, stype,
+                    sval, s.get("unit", ""),
                     barn_id, payload.get("cycle_id"),
                 )
+                await self._maybe_handle_mq_tare(device_id, stype, sval, now)
         else:
             # Flat format - iterate known sensor keys
             sensor_map = {
@@ -275,6 +289,7 @@ class MqttListener:
                             now, device_id, key, value, unit,
                             barn_id, payload.get("cycle_id"),
                         )
+                        await self._maybe_handle_mq_tare(device_id, key, value, now)
 
     async def _insert_sensor_reading(
         self, time, device_id, sensor_type, value, unit, barn_id, cycle_id

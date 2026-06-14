@@ -43,6 +43,9 @@ SCRIPTS = [
     "029_create_equipment_types.sql",
     "030_expand_sync_queue.sql",
     "031_add_version_columns.sql",
+    "053_mq_tare.sql",
+    "054_users.sql",
+    "055_transfer_to_warehouse.sql",
 ]
 
 SCRIPTS_DIR = Path(__file__).parent / "scripts"
