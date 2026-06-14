@@ -7,7 +7,7 @@ const { ref, reactive, computed, onMounted, onUnmounted } = Vue;
 const CACHE_KEY = 'cfarm_dashboard_cache';
 const CACHE_EXPIRY = 5 * 60 * 1000;
 
-return {
+export default{
     setup() {
         const stats = reactive({
             farms: 0, activeCycles: 0, totalBirds: 0,
@@ -19,14 +19,36 @@ return {
         const syncStatus = ref({ enabled: false, running: false });
         const loadingState = ref('idle');
         const isFirstLoad = ref(true);
+        const barnsTempMap = ref({});  // { barn_id: { temperature: {value,unit,time,device_name}, humidity: {...} } }
         let refreshInterval = null;
+
+        function buildBarnsTempMap(rows) {
+            const map = {};
+            for (const r of rows || []) {
+                if (!map[r.barn_id]) map[r.barn_id] = {};
+                map[r.barn_id][r.sensor_type] = r;
+            }
+            return map;
+        }
+
+        function fmtSensor(s) {
+            if (!s || s.value === null || s.value === undefined) return '—';
+            const v = Number(s.value);
+            if (Number.isNaN(v)) return '—';
+            return v.toFixed(1) + (s.unit ? ' ' + s.unit : '');
+        }
 
         const activeCyclesWithInfo = computed(() => {
             return cycles.value.slice(0, 6).map(c => {
                 const dayAge = c.start_date
                     ? Math.floor((new Date() - new Date(c.start_date)) / (1000 * 60 * 60 * 24))
                     : '-';
-                return { ...c, dayAge };
+                const sensors = barnsTempMap.value[c.barn_id] || {};
+                return {
+                    ...c, dayAge,
+                    temperature: sensors.temperature || null,
+                    humidity: sensors.humidity || null,
+                };
             });
         });
 
@@ -47,6 +69,7 @@ return {
                 vaccines.value = data.vaccines || [];
                 alerts.value = data.alerts || [];
                 syncStatus.value = data.syncStatus || { enabled: false, running: false };
+                barnsTempMap.value = data.barnsTempMap || {};
                 isFirstLoad.value = false;
                 return true;
             } catch (e) { return false; }
@@ -56,7 +79,8 @@ return {
             const cacheData = {
                 timestamp: Date.now(), stats: { ...stats },
                 cycles: cycles.value, vaccines: vaccines.value,
-                alerts: alerts.value, syncStatus: syncStatus.value
+                alerts: alerts.value, syncStatus: syncStatus.value,
+                barnsTempMap: barnsTempMap.value
             };
             try { sessionStorage.setItem(CACHE_KEY, JSON.stringify(cacheData)); } catch (e) {}
         }
@@ -84,15 +108,17 @@ return {
 
         async function loadSecondaryData() {
             try {
-                const [alertList, vaccinesList, sync] = await Promise.all([
+                const [alertList, vaccinesList, sync, barnsTemp] = await Promise.all([
                     API.alerts.list(false).catch(() => []),
                     API.vaccines.schedules.upcoming(7).catch(() => []),
-                    API.sync.status().catch(() => ({ enabled: false }))
+                    API.sync.status().catch(() => ({ enabled: false })),
+                    API.sensors.barnsTemperature().catch(() => []),
                 ]);
                 stats.alerts = alertList.length || 0;
                 alerts.value = alertList.slice(0, 5);
                 vaccines.value = (vaccinesList || []).slice(0, 5);
                 syncStatus.value = sync;
+                barnsTempMap.value = buildBarnsTempMap(barnsTemp);
             } catch (e) {
                 console.error('Secondary data load error:', e);
             }
@@ -129,7 +155,7 @@ return {
         return {
             stats, cycles: activeCyclesWithInfo, alerts, vaccines,
             syncStatus, loadingState, showKpiSkeleton, showContentSkeleton,
-            refresh, fmtDate, fmtNum
+            refresh, fmtDate, fmtNum, fmtSensor
         };
     },
 
@@ -247,8 +273,19 @@ return {
                             <div class="text-sm text-gray-500 mb-3">
                                 {{ c.barn_name || 'Chuồng ' + c.barn_id }} • Ngày {{ c.dayAge }}
                             </div>
-                            <div class="flex items-center gap-4 text-sm">
-                                <div class="flex items-center gap-1"><span>🐔</span><span class="font-medium">{{ fmtNum(c.current_count || 0) }}</span></div>
+                            <div class="flex items-center gap-4 text-sm flex-wrap">
+                                <div class="flex items-center gap-1">
+                                    <span>🐔</span>
+                                    <span class="font-medium">{{ fmtNum(c.current_count || 0) }}</span>
+                                </div>
+                                <div class="flex items-center gap-1" :class="c.temperature ? 'text-orange-600' : 'text-gray-300'">
+                                    <span>🌡️</span>
+                                    <span class="font-medium">{{ fmtSensor(c.temperature) }}</span>
+                                </div>
+                                <div class="flex items-center gap-1" :class="c.humidity ? 'text-blue-600' : 'text-gray-300'">
+                                    <span>💧</span>
+                                    <span class="font-medium">{{ fmtSensor(c.humidity) }}</span>
+                                </div>
                             </div>
                         </router-link>
                     </div>

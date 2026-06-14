@@ -98,21 +98,79 @@ class SensorService:
         """Get latest sensor summary for a barn (all devices, all types)."""
         return await self.get_latest(barn_id=barn_id)
 
+    async def get_series_aggregate(
+        self, sensor_type: str, range: str = 'day', barn_id: str = None,
+    ) -> list[dict]:
+        """Time-bucketed series aggregated across devices for one sensor type.
+
+        Used by the chart on the sensors page. Bucket size adapts to the range
+        so the response stays small (≤ 365 points) and the renderer stays fast
+        even when scanning 90 days of raw data.
+
+        range: day   → 5-min buckets,  last 24h   (~288 points)
+               week  → 30-min buckets, last 7d    (~336 points)
+               month → 2-hour buckets, last 30d   (~360 points)
+               year  → 1-day buckets,  last 365d  (~365 points)
+        """
+        if range == 'week':
+            bucket, since = '30 minutes', datetime.now(timezone.utc) - timedelta(days=7)
+        elif range == 'month':
+            bucket, since = '2 hours', datetime.now(timezone.utc) - timedelta(days=30)
+        elif range == 'year':
+            bucket, since = '1 day', datetime.now(timezone.utc) - timedelta(days=365)
+        else:
+            bucket, since = '5 minutes', datetime.now(timezone.utc) - timedelta(hours=24)
+
+        if barn_id and barn_id != 'all':
+            rows = await db.fetch(
+                f"""SELECT time_bucket('{bucket}', time) AS bucket,
+                           AVG(value)::float AS avg_value,
+                           MIN(value)::float AS min_value,
+                           MAX(value)::float AS max_value,
+                           COUNT(*) AS sample_count
+                      FROM sensor_data
+                     WHERE sensor_type = $1
+                       AND time > $2
+                       AND barn_id = $3
+                     GROUP BY bucket
+                     ORDER BY bucket""",
+                sensor_type, since, barn_id,
+            )
+        else:
+            rows = await db.fetch(
+                f"""SELECT time_bucket('{bucket}', time) AS bucket,
+                           AVG(value)::float AS avg_value,
+                           MIN(value)::float AS min_value,
+                           MAX(value)::float AS max_value,
+                           COUNT(*) AS sample_count
+                      FROM sensor_data
+                     WHERE sensor_type = $1
+                       AND time > $2
+                     GROUP BY bucket
+                     ORDER BY bucket""",
+                sensor_type, since,
+            )
+        return [dict(r) for r in rows]
+
     async def get_barns_temperature_summary(self) -> list[dict]:
-        """Get latest temperature and humidity for all barns. Optimized for dashboard quick-view."""
+        """Get latest temperature and humidity for all barns. Optimized for dashboard quick-view.
+
+        Reads from sensor_latest (snapshot, indexed) instead of sensor_data (hypertable).
+        sensor_latest denormalizes barn_id from devices on every MQTT ingest.
+        """
         rows = await db.fetch(
-            """SELECT DISTINCT ON (d.barn_id, s.sensor_type)
-                d.barn_id,
+            """SELECT DISTINCT ON (s.barn_id, s.sensor_type)
+                s.barn_id,
                 s.sensor_type,
                 s.value,
                 s.unit,
                 s.time,
                 d.name as device_name
-            FROM sensor_data s
+            FROM sensor_latest s
             JOIN devices d ON s.device_id = d.id
             WHERE s.sensor_type IN ('temperature', 'humidity')
-              AND d.barn_id IS NOT NULL
-            ORDER BY d.barn_id, s.sensor_type, s.time DESC""",
+              AND s.barn_id IS NOT NULL
+            ORDER BY s.barn_id, s.sensor_type, s.time DESC""",
         )
         return [dict(r) for r in rows]
 
