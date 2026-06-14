@@ -1,521 +1,368 @@
 /**
- * Bats Control Page - Điều khiển bạt thông minh
- * Giao diện tối ưu: Grid 2x2, nút to, trạng thái rõ ràng
+ * Bats Dashboard - Tổng quan bạt điều khiển
+ * - One card per barn showing bat status at a glance
+ * - Click card → navigate to /bats/:barnId (bats-detail.js)
  */
-const { ref, reactive, onMounted, computed, onUnmounted } = Vue;
+const { ref, computed, onMounted, onUnmounted, watch } = Vue;
+const { useRouter } = VueRouter;
 
-return {
+export default {
     setup() {
+        const router = useRouter();
+
+        // ── State ──────────────────────────────────────
         const barns = ref([]);
-        const selectedBarnId = ref('');
-        const bats = ref([]);
-        const logs = ref([]);
-        const devices = ref([]);  // Relay devices for selected barn
-        const loading = ref({});
-        const showSettings = ref(false);
-        let refreshInterval = null;
+        // { barnId: { bats: [...], loading: bool, error: string|null } }
+        const barnBatData = ref({});
+        const loading = ref(true);
+        const filterMode = ref('all'); // 'all' | 'moving' | 'issue'
 
         // ── Computed ───────────────────────────────────
-        const selectedBarn = computed(() => 
-            barns.value.find(b => b.id == selectedBarnId.value)
-        );
-
-        const anyMoving = computed(() =>
-            bats.value.some(b => b.moving_state !== 'stopped')
-        );
-
-        // Device chung cho tất cả bạt (nếu cùng device)
-        const sharedDeviceId = computed(() => {
-            const ids = bats.value.map(b => b.device_id).filter(id => id != null);
-            if (ids.length === 0) return null;
-            const first = ids[0];
-            return ids.every(id => id === first) ? first : null;
+        const summary = computed(() => {
+            const allBats = Object.values(barnBatData.value)
+                .flatMap(d => d.bats || []);
+            const moving = allBats.filter(b => b.moving_state && b.moving_state !== 'stopped').length;
+            const withDevice = allBats.filter(b => b.device_id).length;
+            const online = allBats.filter(b => b.is_online === true).length;
+            const auto = allBats.filter(b => b.auto_enabled).length;
+            const noDevice = allBats.filter(b => !b.device_id).length;
+            return {
+                total: allBats.length,
+                moving,
+                withDevice,
+                online,
+                auto,
+                noDevice,
+            };
         });
 
-        async function setSharedDevice(deviceId) {
-            const id = deviceId ? parseInt(deviceId) : null;
-            try {
-                for (const bat of bats.value) {
-                    await API.bats.update(bat.id, { device_id: id });
-                }
-                showToast('Đã cập nhật thiết bị cho tất cả bạt', 'success');
-                await loadBats();
-            } catch (e) {
-                showToast(`Lỗi: ${e.message}`, 'error');
-            }
-        }
+        const cards = computed(() => {
+            return barns.value
+                .map(b => {
+                    const data = barnBatData.value[b.id] || { bats: [], loading: true };
+                    const bats = data.bats || [];
+                    const moving = bats.filter(x => x.moving_state && x.moving_state !== 'stopped').length;
+                    const noDevice = bats.filter(x => !x.device_id).length;
+                    const auto = bats.filter(x => x.auto_enabled).length;
+                    // Device online if any bat has an online device
+                    const devices = [...new Set(bats.map(x => x.device_id).filter(Boolean))];
+                    const anyDeviceOnline = bats.some(x => x.is_online === true);
+                    const anyDeviceOffline = bats.some(x => x.device_id && x.is_online === false);
 
-        // ── Methods ───────────────────────────────────
-        async function loadBarns() {
+                    return {
+                        barn: b,
+                        bats,
+                        loading: data.loading,
+                        error: data.error,
+                        moving,
+                        noDevice,
+                        auto,
+                        devices,
+                        anyDeviceOnline,
+                        anyDeviceOffline,
+                        hasIssue: noDevice > 0 || (devices.length > 0 && !anyDeviceOnline),
+                    };
+                })
+                .filter(c => {
+                    if (filterMode.value === 'moving') return c.moving > 0;
+                    if (filterMode.value === 'issue') return c.hasIssue;
+                    return c.bats.length > 0; // default: only show barns that have bats configured
+                });
+        });
+
+        // ── API ────────────────────────────────────────
+        async function load() {
             try {
                 barns.value = await API.barns.list();
             } catch (e) {
-                showToast('Không thể tải danh sách chuồng', 'error');
+                console.error('Load barns error:', e);
             }
         }
 
-        async function loadBats() {
-            if (!selectedBarnId.value) return;
+        async function loadBatsForBarn(barnId) {
             try {
-                bats.value = await API.bats.listByBarn(selectedBarnId.value);
+                const bats = await API.bats.listByBarn(barnId);
+                barnBatData.value[barnId] = { bats, loading: false, error: null };
             } catch (e) {
-                showToast('Không thể tải bạt', 'error');
+                barnBatData.value[barnId] = { bats: [], loading: false, error: e.message };
             }
         }
 
-        async function loadLogs() {
-            if (!selectedBarnId.value) return;
-            try {
-                logs.value = await API.bats.logsByBarn(selectedBarnId.value, 20);
-            } catch (e) {
-                console.error('Failed to load logs', e);
-            }
-        }
-
-        async function loadDevices() {
-            if (!selectedBarnId.value) return;
-            try {
-                // Load devices for this barn (filter relay_8ch devices)
-                const allDevices = await API.devices.list(selectedBarnId.value);
-                devices.value = allDevices.filter(d =>
-                    d.type_code === 'relay_8ch' || d.channel_count === 8
-                );
-            } catch (e) {
-                console.error('Failed to load devices', e);
-            }
-        }
-
-        async function onBarnChange() {
-            await loadBats();
-            await loadLogs();
-            await loadDevices();
-        }
-
-        async function moveUp(bat) {
-            if (loading.value[bat.id]) return;
-            loading.value[bat.id] = 'up';
-            try {
-                await API.bats.moveUp(bat.id);
-                showToast(`${bat.name}: Đang kéo lên`, 'info');
-                await loadBats();
-                await loadLogs();
-            } catch (e) {
-                showToast(`Lỗi: ${e.message}`, 'error');
-            } finally {
-                delete loading.value[bat.id];
-            }
-        }
-
-        async function moveDown(bat) {
-            if (loading.value[bat.id]) return;
-            loading.value[bat.id] = 'down';
-            try {
-                await API.bats.moveDown(bat.id);
-                showToast(`${bat.name}: Đang hạ xuống`, 'info');
-                await loadBats();
-                await loadLogs();
-            } catch (e) {
-                showToast(`Lỗi: ${e.message}`, 'error');
-            } finally {
-                delete loading.value[bat.id];
-            }
-        }
-
-        async function stopBat(bat) {
-            if (loading.value[bat.id]) return;
-            loading.value[bat.id] = 'stop';
-            try {
-                await API.bats.stop(bat.id);
-                showToast(`${bat.name}: Đã dừng`, 'success');
-                await loadBats();
-                await loadLogs();
-            } catch (e) {
-                showToast(`Lỗi: ${e.message}`, 'error');
-            } finally {
-                delete loading.value[bat.id];
-            }
-        }
-
-        async function updateBat(bat, field, value) {
-            try {
-                await API.bats.update(bat.id, { [field]: value });
-                showToast('Đã cập nhật cài đặt', 'success');
-                await loadBats();
-            } catch (e) {
-                showToast(`Lỗi: ${e.message}`, 'error');
-            }
-        }
-
-        function getBatIcon(code) {
-            const icons = {
-                'left_top': '↖️',
-                'left_bottom': '↙️',
-                'right_top': '↗️',
-                'right_bottom': '↘️'
-            };
-            return icons[code] || '🪟';
-        }
-
-        function getBatName(code) {
-            const names = {
-                'left_top': 'Bạt trái trên',
-                'left_bottom': 'Bạt trái dưới',
-                'right_top': 'Bạt phải trên',
-                'right_bottom': 'Bạt phải dưới'
-            };
-            return names[code] || code;
-        }
-
-        function isMoving(bat) {
-            return bat.moving_state === 'up' || bat.moving_state === 'down';
-        }
-
-        function formatElapsed(bat) {
-            if (!bat.elapsed_seconds) return '';
-            const s = Math.floor(bat.elapsed_seconds);
-            if (s < 60) return `${s}s`;
-            const m = Math.floor(s / 60);
-            const sec = s % 60;
-            return `${m}:${sec.toString().padStart(2, '0')}`;
-        }
-
-        function formatTime(timeStr) {
-            if (!timeStr) return '-';
-            const d = new Date(timeStr);
-            return d.toLocaleTimeString('vi-VN', { hour: '2-digit', minute: '2-digit' });
-        }
-
-        function refresh() {
-            loadBats();
-            loadLogs();
-        }
-
-        // Auto-refresh khi có bạt đang chạy
-        function startAutoRefresh() {
-            stopAutoRefresh();
-            refreshInterval = setInterval(() => {
-                if (anyMoving.value) {
-                    loadBats();
+        async function loadAllBats() {
+            // Seed loading state for each barn
+            for (const b of barns.value) {
+                if (!barnBatData.value[b.id]) {
+                    barnBatData.value[b.id] = { bats: [], loading: true, error: null };
                 }
-            }, 1000);
-        }
-
-        function stopAutoRefresh() {
-            if (refreshInterval) {
-                clearInterval(refreshInterval);
-                refreshInterval = null;
             }
+            loading.value = true;
+            await Promise.all(barns.value.map(b => loadBatsForBarn(b.id)));
+            loading.value = false;
         }
 
-        // Watch bats changes để bật/tắt auto refresh
-        const stopWatch = watch(anyMoving, (moving) => {
-            if (moving) startAutoRefresh();
-            else stopAutoRefresh();
-        }, { immediate: true });
+        // ── Helpers (UI formatting) ────────────────────
+        const POS_LABELS = {
+            'left_top': 'Trái trên',
+            'left_bottom': 'Trái dưới',
+            'right_top': 'Phải trên',
+            'right_bottom': 'Phải dưới',
+        };
+
+        function batStateIcon(bat) {
+            if (!bat.device_id) return '⚫';
+            if (bat.moving_state === 'up') return '🟢';
+            if (bat.moving_state === 'down') return '🔴';
+            return '⚪';
+        }
+
+        function batStateLabel(bat) {
+            if (!bat.device_id) return 'Chưa gắn';
+            if (bat.moving_state === 'up') return 'Đang lên';
+            if (bat.moving_state === 'down') return 'Đang xuống';
+            return 'Dừng';
+        }
+
+        function deviceStatusText(card) {
+            if (card.devices.length === 0) return 'Chưa gắn ESP32';
+            if (card.anyDeviceOnline) return 'ESP32 online';
+            if (card.anyDeviceOffline) return 'ESP32 offline';
+            return 'ESP32 không rõ';
+        }
+
+        function deviceStatusColor(card) {
+            if (card.devices.length === 0) return 'gray';
+            if (card.anyDeviceOnline) return 'green';
+            if (card.anyDeviceOffline) return 'red';
+            return 'gray';
+        }
+
+        function posLabel(pos) {
+            return POS_LABELS[pos] || pos;
+        }
+
+        function findBat(card, pos) {
+            return card.bats.find(b => b.code === pos);
+        }
+
+        function miniIcon(card, pos) {
+            const bat = findBat(card, pos);
+            if (!bat) return '·';
+            return batStateIcon(bat);
+        }
+
+        function miniClass(card, pos) {
+            const bat = findBat(card, pos);
+            if (!bat) return 'none';
+            if (!bat.device_id) return 'no-device';
+            if (bat.moving_state === 'up') return 'up';
+            if (bat.moving_state === 'down') return 'down';
+            return 'stopped';
+        }
+
+        function miniTitle(card, pos) {
+            const bat = findBat(card, pos);
+            if (!bat) return 'Chưa cấu hình';
+            return batStateLabel(bat);
+        }
+
+        function goToDetail(card) {
+            router.push('/bats/' + card.barn.id);
+        }
+
+        // ── Light polling: re-fetch barns that have moving bats ──
+        let pollInterval = null;
+        function startPolling() {
+            stopPolling();
+            pollInterval = setInterval(() => {
+                if (summary.value.moving > 0) {
+                    const movingBarns = cards.value.filter(c => c.moving > 0).map(c => c.barn.id);
+                    movingBarns.forEach(loadBatsForBarn);
+                }
+            }, 3000);
+        }
+        function stopPolling() {
+            if (pollInterval) { clearInterval(pollInterval); pollInterval = null; }
+        }
+
+        const stopWatchMoving = watch(() => summary.value.moving, (m) => {
+            if (m > 0) startPolling();
+            else stopPolling();
+        });
 
         onMounted(async () => {
-            await loadBarns();
-            if (barns.value.length === 1) {
-                selectedBarnId.value = barns.value[0].id;
-                await onBarnChange();
-            }
+            await load();
+            await loadAllBats();
         });
 
         onUnmounted(() => {
-            stopAutoRefresh();
-            stopWatch();
+            stopPolling();
+            stopWatchMoving();
         });
 
         return {
-            barns,
-            selectedBarnId,
-            bats,
-            logs,
-            devices,
-            loading,
-            showSettings,
-            selectedBarn,
-            anyMoving,
-            sharedDeviceId,
-            onBarnChange,
-            setSharedDevice,
-            moveUp,
-            moveDown,
-            stopBat,
-            updateBat,
-            getBatIcon,
-            getBatName,
-            isMoving,
-            formatElapsed,
-            formatTime,
-            refresh
+            barns, barnBatData, loading, filterMode, summary, cards,
+            batStateIcon, batStateLabel, deviceStatusText, deviceStatusColor,
+            posLabel, miniIcon, miniClass, miniTitle,
+            goToDetail,
         };
     },
 
     template: `
-    <div class="bats-control-page">
-        <div class="page-header">
-            <div class="flex items-center gap-3">
-                <span class="text-2xl">🪟</span>
-                <h1 class="page-title">Điều khiển bạt</h1>
+    <div class="cf-container">
+
+        <!-- Header -->
+        <div class="cf-header-bar">
+            <div class="cf-header-left">
+                <div class="cf-header-icon" style="background-color: #0ea5e9;">
+                    <svg xmlns="http://www.w3.org/2000/svg" width="22" height="22" viewBox="0 0 24 24" fill="none" stroke="white" stroke-width="2.2" stroke-linecap="round" stroke-linejoin="round">
+                        <rect x="3" y="4" width="18" height="14" rx="2"/>
+                        <path d="M3 9h18"/>
+                        <path d="M9 4v14"/>
+                    </svg>
+                </div>
+                <div>
+                    <h1 class="cf-h1">Điều khiển bạt</h1>
+                    <p class="cf-subtitle">Bạt thông gió các chuồng</p>
+                </div>
             </div>
-            <div class="flex gap-2">
-                <button @click="refresh" class="p-2 rounded-lg hover:bg-gray-100 transition">
-                    🔄
+            <div class="cf-header-right">
+                <button @click="location.reload()" class="cf-btn-sm cf-btn-secondary" title="Tải lại">🔄</button>
+            </div>
+        </div>
+
+        <!-- Summary bar -->
+        <div class="cf-bats-summary">
+            <div class="cf-bats-summary-item">
+                <span class="cf-bats-summary-icon">🏠</span>
+                <div>
+                    <div class="cf-bats-summary-value">{{ cards.length }}</div>
+                    <div class="cf-bats-summary-label">Chuồng có bạt</div>
+                </div>
+            </div>
+            <div class="cf-bats-summary-item" :class="{ highlight: summary.moving > 0 }">
+                <span class="cf-bats-summary-icon">⚡</span>
+                <div>
+                    <div class="cf-bats-summary-value">{{ summary.moving }}</div>
+                    <div class="cf-bats-summary-label">Đang chạy</div>
+                </div>
+            </div>
+            <div class="cf-bats-summary-item">
+                <span class="cf-bats-summary-icon">🪟</span>
+                <div>
+                    <div class="cf-bats-summary-value">{{ summary.total }}</div>
+                    <div class="cf-bats-summary-label">Tổng bạt</div>
+                </div>
+            </div>
+            <div class="cf-bats-summary-item" :class="{ warn: summary.online < summary.withDevice }">
+                <span class="cf-bats-summary-icon">🎛️</span>
+                <div>
+                    <div class="cf-bats-summary-value">{{ summary.online }}/{{ summary.withDevice }}</div>
+                    <div class="cf-bats-summary-label">ESP32 online</div>
+                </div>
+            </div>
+            <div class="cf-bats-summary-item">
+                <span class="cf-bats-summary-icon">🤖</span>
+                <div>
+                    <div class="cf-bats-summary-value">{{ summary.auto }}</div>
+                    <div class="cf-bats-summary-label">Chế độ Auto</div>
+                </div>
+            </div>
+        </div>
+
+        <!-- Filter -->
+        <div class="cf-bats-toolbar" v-if="cards.length">
+            <span class="cf-text-muted text-sm">Hiển thị:</span>
+            <div class="cf-bats-filter-group">
+                <button @click="filterMode = 'all'" :class="['cf-bats-filter-btn', filterMode === 'all' ? 'active' : '']">
+                    Tất cả
                 </button>
-                <button @click="showSettings = !showSettings"
-                    class="p-2 rounded-lg hover:bg-gray-100 transition"
-                    :class="showSettings ? 'bg-blue-50 text-blue-600' : ''">
-                    ⚙️
+                <button @click="filterMode = 'moving'" :class="['cf-bats-filter-btn', filterMode === 'moving' ? 'active' : '']">
+                    ⚡ Đang chạy
+                </button>
+                <button @click="filterMode = 'issue'" :class="['cf-bats-filter-btn', filterMode === 'issue' ? 'active' : '']">
+                    ⚠️ Có vấn đề
                 </button>
             </div>
         </div>
 
-        <!-- Chọn chuồng -->
-        <div class="mb-6">
-            <label class="block text-sm font-medium text-gray-600 mb-2">Chọn chuồng</label>
-            <select v-model="selectedBarnId" @change="onBarnChange" 
-                class="w-full md:w-80 px-4 py-3 bg-white border border-gray-200 rounded-xl shadow-sm focus:ring-2 focus:ring-blue-500">
-                <option value="">-- Chọn chuồng --</option>
-                <option v-for="b in barns" :key="b.id" :value="b.id">
-                    {{ b.name || 'Chuồng ' + b.id }}
-                </option>
-            </select>
+        <!-- Empty state: no barns at all -->
+        <div v-if="!barns.length && !loading" class="cf-empty-box">
+            <div class="cf-empty-icon">🏠</div>
+            <h3 class="cf-empty-title">Chưa có chuồng nào</h3>
+            <p class="cf-empty-desc">Tạo chuồng trước khi cấu hình bạt điều khiển.</p>
         </div>
 
-        <!-- Nội dung chính -->
-        <div v-if="selectedBarnId && bats.length">
-            <!-- Grid điều khiển 2x2 -->
-            <div class="grid grid-cols-1 md:grid-cols-2 gap-5 mb-8">
-                <div v-for="bat in bats" :key="bat.id"
-                    class="relative bg-white rounded-2xl shadow-md border transition-all overflow-hidden"
-                    :class="{
-                        'border-green-400 ring-2 ring-green-200': bat.moving_state === 'up',
-                        'border-red-400 ring-2 ring-red-200': bat.moving_state === 'down',
-                        'border-gray-200': bat.moving_state === 'stopped',
-                        'opacity-75': !bat.device_id
-                    }">
+        <!-- Empty state: barns exist but no bats configured -->
+        <div v-else-if="!cards.length && !loading" class="cf-empty-box">
+            <div class="cf-empty-icon">🪟</div>
+            <h3 class="cf-empty-title">Chưa có bạt nào được cấu hình</h3>
+            <p class="cf-empty-desc">Cấu hình bạt (curtain) cho từng chuồng ở trang TECH hoặc backend.</p>
+        </div>
 
-                    <!-- Đèn báo trạng thái (animation) -->
-                    <div v-if="bat.moving_state === 'up' || bat.moving_state === 'down'" 
-                        class="absolute top-0 left-0 w-full h-1 bg-gradient-to-r from-transparent via-current to-transparent animate-pulse"
-                        :class="bat.moving_state === 'up' ? 'text-green-500' : 'text-red-500'">
+        <!-- Cards grid -->
+        <div class="cf-cards-grid cf-bats-dash-grid">
+            <div v-for="card in cards" :key="card.barn.id"
+                class="cf-bats-card" :class="{ moving: card.moving > 0, issue: card.hasIssue }"
+                @click="goToDetail(card)">
+
+                <!-- Banner -->
+                <div class="cf-bats-card-banner" :class="'device-' + deviceStatusColor(card)"></div>
+
+                <div class="cf-bats-card-body">
+                    <!-- Header: barn name + bat count -->
+                    <div class="cf-bats-card-header">
+                        <div class="cf-bats-card-title-row">
+                            <span class="cf-bats-card-icon">🏠</span>
+                            <h3 class="cf-bats-card-title">{{ card.barn.name || ('Chuồng ' + card.barn.id) }}</h3>
+                        </div>
+                        <span class="cf-bats-card-count">{{ card.bats.length }} bạt</span>
                     </div>
 
-                    <div class="p-6">
-                        <!-- Header Card -->
-                        <div class="flex items-start justify-between mb-4">
-                            <div class="flex items-center gap-3">
-                                <span class="text-3xl">{{ getBatIcon(bat.code) }}</span>
-                                <div>
-                                    <h3 class="font-bold text-gray-800 text-lg">{{ getBatName(bat.code) }}</h3>
-                                    <div class="flex items-center gap-2 mt-1">
-                                        <span class="text-xs px-2 py-0.5 bg-gray-100 text-gray-600 rounded-full">
-                                            {{ bat.device_name || 'Chưa gắn TB' }}
-                                        </span>
-                                        <span v-if="bat.auto_enabled" class="text-xs px-2 py-0.5 bg-purple-100 text-purple-700 rounded-full flex items-center gap-1">
-                                            🤖 Auto
-                                        </span>
-                                    </div>
-                                </div>
-                            </div>
-                            <!-- Trạng thái -->
-                            <div class="text-right">
-                                <div class="text-sm font-semibold" :class="{
-                                    'text-green-600': bat.moving_state === 'up',
-                                    'text-red-600': bat.moving_state === 'down',
-                                    'text-gray-500': bat.moving_state === 'stopped'
-                                }">
-                                    {{ bat.moving_state === 'up' ? '↑ ĐANG LÊN' : 
-                                       bat.moving_state === 'down' ? '↓ ĐANG XUỐNG' : '■ DỪNG' }}
-                                </div>
-                                <div v-if="isMoving(bat)" class="text-xs text-gray-500 mt-0.5">
-                                    {{ formatElapsed(bat) }}
-                                </div>
-                            </div>
+                    <!-- Mini bat indicators (4 positions: TL, BL, TR, BR) -->
+                    <div class="cf-bats-mini-grid" v-if="!card.loading">
+                        <div v-for="pos in ['left_top','left_bottom','right_top','right_bottom']" :key="pos"
+                            class="cf-bat-mini">
+                            <span class="cf-bat-mini-pos">{{ posLabel(pos) }}</span>
+                            <span class="cf-bat-mini-dot" :class="miniClass(card, pos)" :title="miniTitle(card, pos)">
+                                {{ miniIcon(card, pos) }}
+                            </span>
                         </div>
+                    </div>
+                    <div v-else class="cf-bats-mini-grid">
+                        <div v-for="n in 4" :key="n" class="cf-bat-mini loading">
+                            <span class="cf-bat-mini-pos">{{ n }}</span>
+                            <span class="cf-bat-mini-dot">·</span>
+                        </div>
+                    </div>
 
-                        <!-- Thanh tiến trình (nếu đang chạy) -->
-                        <div v-if="isMoving(bat)" class="mb-4">
-                            <div class="w-full bg-gray-100 rounded-full h-2 overflow-hidden">
-                                <div class="h-full transition-all duration-1000"
-                                    :class="bat.moving_state === 'up' ? 'bg-green-500' : 'bg-red-500'"
-                                    :style="{ width: Math.min((bat.elapsed_seconds || 0) / (bat.timeout_seconds || 60) * 100, 100) + '%' }">
-                                </div>
-                            </div>
-                            <div class="flex justify-between text-xs text-gray-400 mt-1">
-                                <span>0s</span>
-                                <span>{{ bat.timeout_seconds || 60 }}s</span>
-                            </div>
-                        </div>
+                    <!-- Status row -->
+                    <div class="cf-bats-card-status">
+                        <span class="cf-bats-card-device" :class="'device-' + deviceStatusColor(card)">
+                            <span class="cf-bats-card-device-dot"></span>
+                            {{ deviceStatusText(card) }}
+                        </span>
+                        <span v-if="card.auto > 0" class="cf-bats-card-auto">🤖 {{ card.auto }} auto</span>
+                    </div>
 
-                        <!-- Nút điều khiển 3 nút -->
-                        <div class="grid grid-cols-3 gap-3 mb-3">
-                            <button @click="moveUp(bat)"
-                                :disabled="bat.moving_state === 'up' || !bat.device_id || loading[bat.id]"
-                                class="py-4 px-2 rounded-xl font-bold text-white transition-all flex flex-col items-center justify-center gap-1 disabled:opacity-40 disabled:cursor-not-allowed"
-                                :class="bat.moving_state === 'up' ? 'bg-green-600' : 'bg-green-500 hover:bg-green-600'">
-                                <span v-if="loading[bat.id] === 'up'" class="text-xl animate-spin">⏳</span>
-                                <span v-else class="text-2xl">↑</span>
-                                <span class="text-xs">LÊN</span>
-                            </button>
-                            <button @click="moveDown(bat)"
-                                :disabled="bat.moving_state === 'down' || !bat.device_id || loading[bat.id]"
-                                class="py-4 px-2 rounded-xl font-bold text-white transition-all flex flex-col items-center justify-center gap-1 disabled:opacity-40 disabled:cursor-not-allowed"
-                                :class="bat.moving_state === 'down' ? 'bg-red-600' : 'bg-red-500 hover:bg-red-600'">
-                                <span v-if="loading[bat.id] === 'down'" class="text-xl animate-spin">⏳</span>
-                                <span v-else class="text-2xl">↓</span>
-                                <span class="text-xs">XUỐNG</span>
-                            </button>
-                            <button @click="stopBat(bat)"
-                                :disabled="!isMoving(bat) || loading[bat.id]"
-                                class="py-4 px-2 rounded-xl font-bold text-white transition-all flex flex-col items-center justify-center gap-1 disabled:opacity-40 disabled:cursor-not-allowed"
-                                :class="isMoving(bat) ? 'bg-amber-500 hover:bg-amber-600' : 'bg-gray-300'">
-                                <span v-if="loading[bat.id] === 'stop'" class="text-xl animate-spin">⏳</span>
-                                <span v-else class="text-2xl">■</span>
-                                <span class="text-xs">DỪNG</span>
-                            </button>
-                        </div>
+                    <!-- Moving badge (if any) -->
+                    <div v-if="card.moving > 0" class="cf-bats-card-moving-badge">
+                        <span class="animate-pulse">●</span> {{ card.moving }} bạt đang chạy
+                    </div>
 
-                        <!-- Cảnh báo chưa gắn thiết bị -->
-                        <div v-if="!bat.device_id" class="mt-3 text-xs text-center text-orange-500">
-                            ⚠️ Cần gắn thiết bị điều khiển
-                        </div>
+                    <!-- Issue badge -->
+                    <div v-else-if="card.hasIssue" class="cf-bats-card-issue-badge">
+                        ⚠️ Cần kiểm tra
+                    </div>
+
+                    <!-- Action hint -->
+                    <div class="cf-bats-card-action">
+                        <span>Mở điều khiển</span>
+                        <span class="cf-bats-card-arrow">→</span>
                     </div>
                 </div>
             </div>
-
-            <!-- Panel cài đặt (có thể ẩn/hiện) -->
-            <div v-if="showSettings" class="bg-white rounded-2xl shadow-sm border border-gray-200 p-5 mb-8">
-                <h3 class="font-semibold text-gray-800 mb-4 flex items-center gap-2">
-                    <span>⚙️</span> Cài đặt bạt
-                </h3>
-
-                <!-- Chọn thiết bị chung cho tất cả bạt -->
-                <div class="mb-6 p-4 bg-blue-50 rounded-xl border border-blue-200">
-                    <div class="flex items-center justify-between">
-                        <div class="flex items-center gap-3">
-                            <span class="text-xl">🎛️</span>
-                            <div>
-                                <div class="font-medium text-gray-800">Esp32 điều khiển (8 kênh)</div>
-                                <div class="text-xs text-gray-500">Tất cả 4 bạt đều dùng chung 1 ESP32</div>
-                            </div>
-                        </div>
-                        <select class="w-48 px-3 py-2 border border-gray-300 rounded-lg text-sm"
-                            :value="sharedDeviceId || ''"
-                            @change="setSharedDevice($event.target.value)">
-                            <option value="">-- Chọn Esp32 --</option>
-                            <option v-for="d in devices" :key="d.id" :value="d.id">
-                                {{ d.name || d.device_code }} {{ d.is_online ? '🟢' : '🔴' }}
-                            </option>
-                        </select>
-                    </div>
-                </div>
-
-                <div class="grid grid-cols-1 md:grid-cols-2 lg:grid-cols-4 gap-4">
-                    <div v-for="bat in bats" :key="'set-' + bat.id" class="p-4 bg-gray-50 rounded-xl">
-                        <div class="font-medium text-gray-800 mb-3">{{ getBatName(bat.code) }}</div>
-                        <div class="space-y-3">
-                            <!-- Kênh Lên -->
-                            <div class="flex items-center justify-between">
-                                <span class="text-sm text-gray-600">Kênh LÊN</span>
-                                <select class="w-20 px-2 py-1.5 border border-gray-300 rounded-lg text-sm"
-                                    :value="bat.up_relay_channel"
-                                    @change="updateBat(bat, 'up_relay_channel', parseInt($event.target.value))">
-                                    <option v-for="n in 8" :key="n" :value="n">K{{ n }}</option>
-                                </select>
-                            </div>
-                            <!-- Kênh Xuống -->
-                            <div class="flex items-center justify-between">
-                                <span class="text-sm text-gray-600">Kênh XUỐNG</span>
-                                <select class="w-20 px-2 py-1.5 border border-gray-300 rounded-lg text-sm"
-                                    :value="bat.down_relay_channel"
-                                    @change="updateBat(bat, 'down_relay_channel', parseInt($event.target.value))">
-                                    <option v-for="n in 8" :key="n" :value="n">K{{ n }}</option>
-                                </select>
-                            </div>
-                            <!-- Timeout -->
-                            <div class="flex items-center justify-between">
-                                <span class="text-sm text-gray-600">Timeout (giây)</span>
-                                <input type="number" 
-                                    class="w-20 px-2 py-1.5 border border-gray-300 rounded-lg text-sm"
-                                    :value="bat.timeout_seconds"
-                                    @change="updateBat(bat, 'timeout_seconds', parseInt($event.target.value))"
-                                    min="10" max="300">
-                            </div>
-                            <!-- Auto -->
-                            <div class="flex items-center justify-between">
-                                <span class="text-sm text-gray-600">Chế độ Auto</span>
-                                <label class="relative inline-flex items-center cursor-pointer">
-                                    <input type="checkbox" class="sr-only peer"
-                                        :checked="bat.auto_enabled"
-                                        @change="updateBat(bat, 'auto_enabled', $event.target.checked)">
-                                    <div class="w-10 h-5 bg-gray-200 rounded-full peer peer-checked:bg-blue-600 peer-checked:after:translate-x-5 after:content-[''] after:absolute after:top-0.5 after:left-[2px] after:bg-white after:rounded-full after:h-4 after:w-4 after:transition-all"></div>
-                                </label>
-                            </div>
-                        </div>
-                    </div>
-                </div>
-            </div>
-
-            <!-- Lịch sử hoạt động -->
-            <div class="bg-white rounded-2xl shadow-sm border border-gray-200 overflow-hidden">
-                <div class="px-5 py-4 border-b border-gray-100 flex items-center justify-between">
-                    <h3 class="font-semibold text-gray-800 flex items-center gap-2">
-                        <span>📋</span> Hoạt động gần đây
-                    </h3>
-                    <span class="text-xs text-gray-400">{{ logs.length }} bản ghi</span>
-                </div>
-                <div class="overflow-x-auto">
-                    <table class="w-full text-sm">
-                        <thead class="bg-gray-50 text-gray-500 text-xs">
-                            <tr>
-                                <th class="px-4 py-2 text-left">Thời gian</th>
-                                <th class="px-4 py-2 text-left">Bạt</th>
-                                <th class="px-4 py-2 text-center">Hành động</th>
-                                <th class="px-4 py-2 text-center">Thời gian</th>
-                            </tr>
-                        </thead>
-                        <tbody class="divide-y divide-gray-100">
-                            <tr v-for="log in logs" :key="log.id" class="hover:bg-gray-50">
-                                <td class="px-4 py-3 text-gray-700">{{ formatTime(log.started_at) }}</td>
-                                <td class="px-4 py-3 font-medium">{{ log.bat_name }}</td>
-                                <td class="px-4 py-3 text-center">
-                                    <span class="inline-flex items-center px-2 py-1 rounded-full text-xs font-medium"
-                                        :class="{
-                                            'bg-green-100 text-green-700': log.action === 'up',
-                                            'bg-red-100 text-red-700': log.action === 'down',
-                                            'bg-amber-100 text-amber-700': log.action === 'stop'
-                                        }">
-                                        {{ log.action === 'up' ? '↑ LÊN' : log.action === 'down' ? '↓ XUỐNG' : '■ DỪNG' }}
-                                    </span>
-                                </td>
-                                <td class="px-4 py-3 text-center text-gray-500">{{ log.duration_seconds ? log.duration_seconds + 's' : '-' }}</td>
-                            </tr>
-                            <tr v-if="logs.length === 0">
-                                <td colspan="4" class="px-4 py-8 text-center text-gray-400">
-                                    <div class="text-3xl mb-2">📭</div>
-                                    Chưa có hoạt động nào
-                                </td>
-                            </tr>
-                        </tbody>
-                    </table>
-                </div>
-            </div>
         </div>
 
-        <!-- Trạng thái rỗng -->
-        <div v-else-if="!selectedBarnId" class="bg-white rounded-2xl p-12 text-center border border-gray-200">
-            <div class="text-6xl mb-4">🪟</div>
-            <h3 class="text-lg font-medium text-gray-700 mb-2">Chưa chọn chuồng</h3>
-            <p class="text-gray-500">Vui lòng chọn chuồng để điều khiển bạt</p>
-        </div>
-
-        <div v-else class="bg-white rounded-2xl p-12 text-center border border-gray-200">
-            <div class="text-6xl mb-4">🚫</div>
-            <h3 class="text-lg font-medium text-gray-700 mb-2">Không có bạt</h3>
-            <p class="text-gray-500">Chuồng này chưa được cấu hình bạt điều khiển</p>
-        </div>
     </div>
     `
 };
