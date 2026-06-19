@@ -1,0 +1,34 @@
+# Cloudflare Tunnel configuration for CFarm Local Server
+# ------------------------------------------------------------
+# Recommended workflow (preferred over --token flag):
+#   1. cloudflared tunnel login              → writes ~/.cloudflared/cert.pem
+#   2. cloudflared tunnel create cfarm      → writes credentials JSON
+#   3. cloudflared tunnel route dns cfarm doihong.io.vn
+#   4. cloudflared tunnel run cfarm         → uses this config.yml
+#
+# The credentials-file below is the JSON blob generated in step 2.
+# credentials.json is gitignored — DO NOT commit it.
+
+tunnel: 759aea6e-0e83-4e75-af5a-c3c52b5d4c24
+credentials-file: C:\Users\nguye\.cloudflared\759aea6e-0e83-4e75-af5a-c3c52b5d4c24.json
+
+# Where cloudflared writes its own logs + metrics endpoint
+logfile: C:\Local server\logs\cloudflared.log
+metrics: localhost:2000
+
+# Ingress rules — first match wins. Final catch-all returns 404.
+ingress:
+  # Main app + APIs (everything not handled below)
+  - hostname: doihong.io.vn
+    path: ^/health$
+    service: http_status:200
+
+  - hostname: doihong.io.vn
+    service: http://localhost:8002
+
+  # (Optional) expose a second hostname for a different farm / test instance
+  # - hostname: test.doihong.io.vn
+  #   service: http://localhost:8003
+
+  # Default — reject anything else so unused hostnames get a clean 404
+  - service: http_status:404

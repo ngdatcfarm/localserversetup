@@ -145,15 +145,29 @@ def get_cloudflared_status():
 
 
 def start_cloudflared():
-    """Start cloudflared tunnel process."""
-    if not TUNNEL_TOKEN:
-        log.error("CLOUDFLARE_TUNNEL_TOKEN not set in environment — cannot start tunnel")
-        log.error("Generate a new token at: https://one.dash.cloudflare.com/ → Zero Trust → Networks → Tunnels")
+    """Start cloudflared tunnel process.
+
+    Prefers the config-file flow (cloudflared/config.yml in repo root) over the
+    legacy --token flag. Falls back to --token if no config exists.
+    """
+    repo_root = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
+    config_path = os.path.join(repo_root, "cloudflared", "config.yml")
+
+    if os.path.isfile(config_path):
+        log.info("Starting cloudflared tunnel via config file: %s", config_path)
+        cmd = [os.path.join(APP_DIR, "cloudflared.exe"), "tunnel", "--config", config_path, "run"]
+    elif TUNNEL_TOKEN:
+        log.warning("Config file not found, falling back to legacy --token flow")
+        cmd = [os.path.join(APP_DIR, "cloudflared.exe"), "tunnel", "run", "--token", TUNNEL_TOKEN]
+    else:
+        log.error("No config file and CLOUDFLARE_TUNNEL_TOKEN not set — cannot start tunnel")
+        log.error("Generate a token at: https://one.dash.cloudflare.com/ → Zero Trust → Networks → Tunnels")
+        log.error("Or create cloudflared/config.yml (see .env.example for guidance)")
         return None
-    log.info("Starting cloudflared tunnel...")
+
     try:
         proc = subprocess.Popen(
-            [os.path.join(APP_DIR, "cloudflared.exe"), "tunnel", "run", "--token", TUNNEL_TOKEN],
+            cmd,
             cwd=APP_DIR,
             stdout=subprocess.PIPE,
             stderr=subprocess.PIPE,
