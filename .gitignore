@@ -16,6 +16,7 @@ docker/mosquitto/data/
 docker/mosquitto/log/
 docker/mosquitto/config/passwd
 docker/db/data/
+docker/db/data.bak/
 
 # Secrets / environment files (NEVER commit)
 .env
@@ -28,3 +29,4 @@ cloudflared/credentials.json
 .cloudflared/
 tunnel.log
 tunnel-*.log
+cloudflared.exe
