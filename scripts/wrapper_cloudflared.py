@@ -22,7 +22,9 @@ from datetime import datetime
 APP_DIR = r"C:\Users\nguye"
 LOG_DIR = r"C:\Local server\logs"
 LOG_FILE = os.path.join(LOG_DIR, "guardian_cloudflared.log")
-TUNNEL_TOKEN = "eyJhIjoiOGE1ZWJhOGY1YmRiNWZiZDYzOGIzNTM1ZTQ0NDIzMDYiLCJ0IjoiNzU5YWVhNmUtMGU4My00ZTc1LWFmNWEtYzNjNTJiNWQ0YzI0IiwicyI6IlpXUmpaR1JrTkdNdFpUSm1PUzAwT0RSbUxUaGtZelV0WkRsaE1USmtPRFJsT0ROaCJ9"
+# Read tunnel token from environment (NEVER hardcode). Generate new tokens at:
+# https://one.dash.cloudflare.com/ → Zero Trust → Networks → Tunnels → Configure → Install connector
+TUNNEL_TOKEN = os.environ.get("CLOUDFLARE_TUNNEL_TOKEN", "")
 LOCAL_HEALTH_URL = "http://localhost:8002/health"
 TUNNEL_PUBLIC_URL = "https://doihong.io.vn"
 METRICS_URL = "http://localhost:2000/api/status"
@@ -144,6 +146,10 @@ def get_cloudflared_status():
 
 def start_cloudflared():
     """Start cloudflared tunnel process."""
+    if not TUNNEL_TOKEN:
+        log.error("CLOUDFLARE_TUNNEL_TOKEN not set in environment — cannot start tunnel")
+        log.error("Generate a new token at: https://one.dash.cloudflare.com/ → Zero Trust → Networks → Tunnels")
+        return None
     log.info("Starting cloudflared tunnel...")
     try:
         proc = subprocess.Popen(

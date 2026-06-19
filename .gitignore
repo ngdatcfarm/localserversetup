@@ -16,3 +16,15 @@ docker/mosquitto/data/
 docker/mosquitto/log/
 docker/mosquitto/config/passwd
 docker/db/data/
+
+# Secrets / environment files (NEVER commit)
+.env
+.env.local
+.env.*.local
+*.env
+cloudflared/credentials.json
+
+# Cloudflare tunnel artifacts
+.cloudflared/
+tunnel.log
+tunnel-*.log
