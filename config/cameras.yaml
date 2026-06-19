@@ -46,6 +46,15 @@ cameras:
   rtsp_path: /unicast/c1/s0/live
   enabled: true
   stream_type: main
+- id: cam-10
+  name: Camera 10
+  ip: 192.168.1.39
+  port: 554
+  username: admin
+  password: Abc@@1234
+  rtsp_path: /unicast/c1/s0/live
+  enabled: true
+  stream_type: main
 presets:
   cam_001:
   - number: 1

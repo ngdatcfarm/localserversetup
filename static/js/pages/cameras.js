@@ -54,6 +54,8 @@ const component = {
                     <button v-if="!cam.enabled || !getStatus(cam.id).online" class="btn btn-primary btn-sm" @click="startCam(cam)">Bật</button>
                     <button v-if="cam.enabled && getStatus(cam.id).online" class="btn btn-danger btn-sm" @click="stopCam(cam)">Tắt</button>
                     <button class="btn btn-secondary btn-sm" @click="testCam(cam)">Test</button>
+                    <button class="btn btn-secondary btn-sm" @click="openEditModal(cam)">Sửa</button>
+                    <button class="btn btn-danger btn-sm" @click="deleteCam(cam)">Xóa</button>
                     <button v-if="!getStatus(cam.id).recording" class="btn btn-warning btn-sm" @click="startRec(cam)">Ghi hình</button>
                     <button v-if="getStatus(cam.id).recording" class="btn btn-danger btn-sm" @click="stopRec(cam)">Dừng ghi</button>
                 </div>
@@ -106,6 +108,66 @@ const component = {
             <p class="text-sm mt-1">Cấu hình camera trong config/cameras.yaml</p>
         </div>
 
+        <!-- Add / Edit Camera Modal -->
+        <div v-if="showModal" class="modal-overlay" @click.self="showModal = false">
+            <div class="modal" style="max-width:36rem">
+                <div class="flex justify-between items-center mb-4">
+                    <h3 class="text-lg font-bold">{{ editMode ? 'Sửa Camera' : 'Thêm Camera' }}</h3>
+                    <button type="button" class="text-gray-500 hover:text-gray-700 text-xl" @click="showModal = false">&times;</button>
+                </div>
+                <form @submit.prevent="saveCamera">
+                    <div class="grid grid-cols-2 gap-3">
+                        <div class="form-group">
+                            <label>ID *</label>
+                            <input v-model="form.id" type="text" placeholder="VD: cam-01" :disabled="editMode" required>
+                            <small v-if="editMode" class="text-gray-400">ID không thể đổi</small>
+                        </div>
+                        <div class="form-group">
+                            <label>Tên *</label>
+                            <input v-model="form.name" type="text" placeholder="VD: Camera cổng" required>
+                        </div>
+                        <div class="form-group">
+                            <label>IP *</label>
+                            <input v-model="form.ip" type="text" placeholder="192.168.1.100" required>
+                        </div>
+                        <div class="form-group">
+                            <label>Port</label>
+                            <input v-model.number="form.port" type="number" min="1" max="65535" placeholder="554">
+                        </div>
+                        <div class="form-group">
+                            <label>Username</label>
+                            <input v-model="form.username" type="text" placeholder="admin">
+                        </div>
+                        <div class="form-group">
+                            <label>Password</label>
+                            <input v-model="form.password" type="password" placeholder="••••••">
+                        </div>
+                        <div class="form-group col-span-2">
+                            <label>RTSP Path</label>
+                            <input v-model="form.rtsp_path" type="text" placeholder="/unicast/c1/s0/live">
+                        </div>
+                        <div class="form-group">
+                            <label>Stream type</label>
+                            <select v-model="form.stream_type">
+                                <option value="main">Main</option>
+                                <option value="sub">Sub</option>
+                            </select>
+                        </div>
+                        <div class="form-group flex items-end">
+                            <label class="flex items-center gap-2 cursor-pointer">
+                                <input v-model="form.enabled" type="checkbox">
+                                <span>Kích hoạt ngay</span>
+                            </label>
+                        </div>
+                    </div>
+                    <div class="flex gap-2 mt-4">
+                        <button type="button" class="btn btn-secondary flex-1" @click="showModal = false">Hủy</button>
+                        <button type="submit" class="btn btn-primary flex-1">{{ editMode ? 'Cập nhật' : 'Lưu' }}</button>
+                    </div>
+                </form>
+            </div>
+        </div>
+
         <!-- Add Preset Modal -->
         <div v-if="showPresetModal" class="modal-overlay" @click.self="showPresetModal = false">
             <div class="modal">
@@ -139,6 +201,7 @@ const component = {
 
         // Modal state
         const showModal = ref(false);
+        const editMode = ref(false);
         const form = ref({
             id: '', name: '', ip: '', port: 554,
             username: '', password: '',
@@ -146,37 +209,81 @@ const component = {
             stream_type: 'main', enabled: true
         });
 
-        function openAddModal() {
-            form.value = { id: '', name: '', ip: '', port: 554,
+        function _emptyForm() {
+            return {
+                id: '', name: '', ip: '', port: 554,
                 username: '', password: '',
                 rtsp_path: '/unicast/c1/s0/live',
-                stream_type: 'main', enabled: true };
+                stream_type: 'main', enabled: true
+            };
+        }
+
+        function openAddModal() {
+            form.value = _emptyForm();
+            editMode.value = false;
+            showModal.value = true;
+        }
+
+        function openEditModal(cam) {
+            form.value = {
+                id: cam.id,
+                name: cam.name || '',
+                ip: cam.ip || '',
+                port: Number(cam.port) || 554,
+                username: cam.username || '',
+                password: cam.password || '',
+                rtsp_path: cam.rtsp_path || '/unicast/c1/s0/live',
+                stream_type: cam.stream_type || 'main',
+                enabled: cam.enabled !== false
+            };
+            editMode.value = true;
             showModal.value = true;
         }
 
         async function saveCamera() {
+            // Trim required fields
+            const id = (form.value.id || '').trim();
+            const name = (form.value.name || '').trim();
+            const ip = (form.value.ip || '').trim();
+            if (!id || !name || !ip) {
+                showToast('Vui lòng nhập ID, Tên và IP', 'error');
+                return;
+            }
+            const payload = {
+                id,
+                name,
+                ip,
+                port: parseInt(form.value.port) || 554,
+                username: form.value.username,
+                password: form.value.password,
+                rtsp_path: form.value.rtsp_path || '/unicast/c1/s0/live',
+                enabled: form.value.enabled,
+                stream_type: form.value.stream_type
+            };
             try {
-                const payload = {
-                    id: form.value.id,
-                    name: form.value.name,
-                    ip: form.value.ip,
-                    port: parseInt(form.value.port) || 554,
-                    username: form.value.username,
-                    password: form.value.password,
-                    rtsp_path: form.value.rtsp_path || '/unicast/c1/s0/live',
-                    enabled: form.value.enabled,
-                    stream_type: form.value.stream_type
-                };
-                await fetch('/api/cameras', {
-                    method: 'POST',
-                    headers: { 'Content-Type': 'application/json' },
-                    body: JSON.stringify(payload)
-                });
+                if (editMode.value) {
+                    await API.cameras.update(id, payload);
+                    showToast('Đã cập nhật camera ' + name);
+                } else {
+                    await API.cameras.create(payload);
+                    showToast('Đã thêm camera ' + name);
+                }
                 showModal.value = false;
-                showToast('Đã thêm camera ' + form.value.name);
+                await loadCameras();
+                await loadStatuses();
+            } catch(e) {
+                showToast(e.message || 'Lỗi không xác định', 'error');
+            }
+        }
+
+        async function deleteCam(cam) {
+            if (!confirm(`Xóa camera "${cam.name || cam.id}"?\n\nCamera sẽ bị gỡ khỏi danh sách và dừng stream.`)) return;
+            try {
+                await API.cameras.delete(cam.id);
+                showToast('Đã xóa camera ' + (cam.name || cam.id));
                 await loadCameras();
             } catch(e) {
-                showToast(e.message, 'error');
+                showToast(e.message || 'Lỗi không xác định', 'error');
             }
         }
 
@@ -342,7 +449,7 @@ const component = {
 
         return { cameras, statuses, snapTs, getStatus, snapshotUrl, onImgError, openStream, refreshSnapshots,
             startCam, stopCam, testCam, startRec, stopRec, recAll, ptzMove, ptzStop,
-            showModal, form, openAddModal, saveCamera,
+            showModal, form, editMode, openAddModal, openEditModal, saveCamera, deleteCam,
             showPresetModal, presetForm, openAddPresetModal, savePreset,
             camPresets, goToPreset, startSavePreset, endSavePreset, cancelSavePreset, loadPresetsForCamera };
     }
