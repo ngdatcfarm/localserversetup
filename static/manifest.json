@@ -2,12 +2,14 @@
     "name": "CFarm Local",
     "short_name": "CFarm",
     "description": "Điều khiển IoT & giám sát trang trại tại chỗ",
-    "start_url": "/",
+    "start_url": "/?source=pwa",
     "scope": "/",
     "display": "standalone",
     "background_color": "#0f172a",
     "theme_color": "#2563eb",
     "orientation": "any",
+    "lang": "vi",
+    "dir": "ltr",
     "categories": ["productivity", "utilities"],
     "icons": [
         {
