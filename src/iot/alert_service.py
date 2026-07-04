@@ -103,7 +103,7 @@ class AlertService:
                 logger.error(f"Alert rule {rule['id']} error: {e}")
 
     async def _create_alert(self, rule, reading, direction: str, threshold: float):
-        """Create an alert record."""
+        """Create an alert record and update cooldown atomically."""
         device_name = await db.fetchval(
             "SELECT name FROM devices WHERE id = $1", reading["device_id"]
         )
@@ -113,21 +113,24 @@ class AlertService:
             f"- Device: {device_name or reading['device_id']}"
         )
 
-        await db.execute(
-            """INSERT INTO alerts
-            (alert_rule_id, device_id, barn_id, sensor_type, value, threshold,
-             direction, severity, message)
-            VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9)""",
-            rule["id"], reading["device_id"], rule["barn_id"],
-            rule["sensor_type"], reading["value"], threshold,
-            direction, rule["severity"], message,
-        )
-
-        # Update cooldown timestamp
-        await db.execute(
-            "UPDATE alert_rules SET last_alerted_at = NOW() WHERE id = $1",
-            rule["id"],
-        )
+        # INSERT alert + UPDATE cooldown in one transaction so the cooldown
+        # timestamp is always written. Previously two separate db.execute()
+        # calls could leave the cooldown un-updated on transient DB errors,
+        # causing the same alert to fire every 30 seconds indefinitely.
+        async with db.transaction() as conn:
+            await conn.execute(
+                """INSERT INTO alerts
+                (alert_rule_id, device_id, barn_id, sensor_type, value, threshold,
+                 direction, severity, message)
+                VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9)""",
+                rule["id"], reading["device_id"], rule["barn_id"],
+                rule["sensor_type"], reading["value"], threshold,
+                direction, rule["severity"], message,
+            )
+            await conn.execute(
+                "UPDATE alert_rules SET last_alerted_at = NOW() WHERE id = $1",
+                rule["id"],
+            )
 
         logger.warning(f"ALERT [{rule['severity']}]: {message}")
 

@@ -52,6 +52,8 @@ from src.server.routes.density import router as density_router
 from src.server.routes.ai_detection import router as ai_detection_router
 from src.server.routes.dataset_capture import router as dataset_capture_router
 from src.server.routes.capture_scheduler_routes import router as capture_scheduler_router
+from src.server.routes.chat import router as chat_router
+from src.server.routes.cycle_snapshots import router as cycle_snapshots_router
 from src.services.database.db import db
 
 # Logging
@@ -288,6 +290,8 @@ app.include_router(density_router)
 app.include_router(ai_detection_router)
 app.include_router(dataset_capture_router)
 app.include_router(capture_scheduler_router)
+app.include_router(chat_router)
+app.include_router(cycle_snapshots_router)
 
 
 @app.get("/", response_class=HTMLResponse)
@@ -326,7 +330,7 @@ async def health_check():
 
     return {
         "status": "healthy",
-        "version": "0.9.0",
+        "version": "0.10.0",
         "mqtt": {
             "connected": mqtt_stats["connected"],
             "host": mqtt_stats["host"],

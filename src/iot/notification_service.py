@@ -1,5 +1,6 @@
 """Notification Service - WebPush notifications for alerts and events."""
 
+import asyncio
 import json
 import logging
 from typing import Optional
@@ -91,8 +92,32 @@ class NotificationService:
 
     # ── Send Notifications ─────────────────────────────
 
+    async def _send_one(self, sub, payload, claims_copy):
+        """Send a single push notification. Returns endpoint if expired, else None."""
+        subscription_info = {
+            "endpoint": sub["endpoint"],
+            "keys": {"p256dh": sub["p256dh"], "auth": sub["auth"]},
+        }
+        try:
+            await asyncio.to_thread(
+                webpush,
+                subscription_info=subscription_info,
+                data=payload,
+                vapid_private_key=self.vapid_private_key,
+                vapid_claims=claims_copy,
+            )
+        except WebPushException as e:
+            status = getattr(getattr(e, 'response', None), 'status_code', None)
+            if status in (410, 404):
+                return sub["endpoint"]
+            else:
+                logger.error(f"WebPush error: {e}")
+        except Exception as e:
+            logger.error(f"Push notification failed: {e}")
+        return None
+
     async def send_to_all(self, title: str, body: str, data: dict = None, notification_type: str = "TEST"):
-        """Send push notification to all subscribers."""
+        """Send push notification to all subscribers concurrently."""
         logger.debug(f"[send_to_all] notification_type={notification_type}, title={title[:50] if title else 'None'}")
         if not self.is_ready():
             logger.debug("Push notifications not configured, skipping")
@@ -109,34 +134,21 @@ class NotificationService:
             "data": data or {},
         })
 
-        failed_endpoints = []
-        for sub in subs:
-            subscription_info = {
-                "endpoint": sub["endpoint"],
-                "keys": {"p256dh": sub["p256dh"], "auth": sub["auth"]},
-            }
-            try:
-                webpush(
-                    subscription_info=subscription_info,
-                    data=payload,
-                    vapid_private_key=self.vapid_private_key,
-                    vapid_claims=self.vapid_claims,
-                )
-            except WebPushException as e:
-                if "410" in str(e) or "404" in str(e):
-                    # Subscription expired/invalid, remove it
-                    failed_endpoints.append(sub["endpoint"])
-                else:
-                    logger.error(f"WebPush error: {e}")
-            except Exception as e:
-                logger.error(f"Push notification failed: {e}")
+        # Copy vapid_claims to avoid race condition — webpush() mutates it in-place
+        claims_copy = dict(self.vapid_claims)
+
+        # Send all notifications concurrently
+        results = await asyncio.gather(
+            *(self._send_one(sub, payload, claims_copy) for sub in subs),
+            return_exceptions=True,
+        )
+
+        failed_endpoints = [r for r in results if isinstance(r, str)]
 
         # Clean up expired subscriptions
         for ep in failed_endpoints:
             try:
-                # Truncate endpoint to 100 chars to prevent VARCHAR(100) overflow
-                ep_safe = ep[:100] if ep else ""
-                await db.execute("DELETE FROM push_subscriptions WHERE endpoint = $1", ep_safe)
+                await db.execute("DELETE FROM push_subscriptions WHERE endpoint = $1", ep)
                 logger.info(f"Removed expired push subscription")
             except Exception as delete_err:
                 logger.error(f"Failed to remove expired subscription {ep[:50]}...: {delete_err}")
@@ -164,6 +176,7 @@ class NotificationService:
             title=f"{icon} CFarm Alert",
             body=message,
             data={"type": "alert", "severity": severity},
+            notification_type=f"ALERT_{severity.upper()}",
         )
 
 

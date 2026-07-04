@@ -34,6 +34,12 @@ Usage:
 
 import subprocess
 import time
+
+# Suppress console window flash when shelling out to console apps (powershell,
+# taskkill). Each call briefly allocates a new conhost.exe which the user sees
+# as a flashing terminal window. With CREATE_NO_WINDOW the new console is
+# suppressed. Also added to subprocess.Popen calls for service starts.
+NO_WINDOW = getattr(subprocess, "CREATE_NO_WINDOW", 0x08000000)
 import urllib.request
 import urllib.error
 import logging
@@ -53,8 +59,8 @@ from typing import Optional
 # Configuration (from environment)
 # ══════════════════════════════════════════════════════════════════════════════
 
-APP_DIR = os.environ.get("APP_DIR", r"E:\Cfarm")
-LOG_DIR = os.environ.get("LOG_DIR", r"E:\Cfarm\logs")
+APP_DIR = os.environ.get("APP_DIR", r"E:\cfarm")
+LOG_DIR = os.environ.get("LOG_DIR", r"E:\cfarm\logs")
 CLOUDFLARED_PATH = os.environ.get("CLOUDFLARED_PATH", os.path.join(APP_DIR, "cloudflared.exe"))
 TUNNEL_TOKEN = os.environ.get("CLOUDFLARE_TUNNEL_TOKEN", "")
 
@@ -102,6 +108,35 @@ def setup_logging():
     return logging.getLogger("guardian")
 
 log = setup_logging()
+
+# Max size for child process log files before rotation
+_CHILD_LOG_MAX_BYTES = int(os.environ.get("CHILD_LOG_MAX_BYTES", str(10 * 1024 * 1024)))  # 10 MB
+_CHILD_LOG_BACKUP_COUNT = int(os.environ.get("CHILD_LOG_BACKUP_COUNT", "3"))  # keep 3 backups
+
+
+def _open_rotated_log(filepath: str):
+    """Open a log file for appending, rotating it first if it exceeds the size limit.
+
+    Rotation: file.log → file.log.1 → file.log.2 → file.log.3 (oldest deleted).
+    This prevents child process logs from growing unbounded (the original
+    app_8002.stderr.log reached 362 MB with no rotation).
+    """
+    try:
+        if os.path.exists(filepath) and os.path.getsize(filepath) >= _CHILD_LOG_MAX_BYTES:
+            # Shift existing backups (delete oldest, rename others)
+            oldest = f"{filepath}.{_CHILD_LOG_BACKUP_COUNT}"
+            if os.path.exists(oldest):
+                os.remove(oldest)
+            for i in range(_CHILD_LOG_BACKUP_COUNT - 1, 0, -1):
+                src = f"{filepath}.{i}"
+                dst = f"{filepath}.{i + 1}"
+                if os.path.exists(src):
+                    os.rename(src, dst)
+            os.rename(filepath, f"{filepath}.1")
+            log.info(f"Rotated log {os.path.basename(filepath)} (exceeded {_CHILD_LOG_MAX_BYTES // (1024*1024)} MB)")
+    except Exception as e:
+        log.warning(f"Log rotation failed for {filepath}: {e}")
+    return open(filepath, "a")
 
 # ══════════════════════════════════════════════════════════════════════════════
 # Service State
@@ -202,7 +237,8 @@ def check_process(name: str) -> tuple[bool, str]:
     try:
         result = subprocess.run(
             ["powershell", "-Command", f"Get-Process -Name '{name}' -ErrorAction SilentlyContinue | Measure-Object | Select-Object -ExpandProperty Count"],
-            capture_output=True, text=True, timeout=10
+            capture_output=True, text=True, timeout=10,
+            creationflags=NO_WINDOW,
         )
         if result.returncode == 0:
             count = int(result.stdout.strip())
@@ -280,10 +316,7 @@ def check_service_health(svc: Service) -> tuple[bool, str]:
 # Hung Process Detection & Recovery
 # ══════════════════════════════════════════════════════════════════════════════
 
-# Configuration for hung detection
-HUNG_TIMEOUT_THRESHOLD = 3  # Number of consecutive timeouts to trigger hung detection
-CLOSEWAIT_THRESHOLD = 10  # Number of closewait connections to trigger force kill
-HUNG_KILL_ENABLED = os.environ.get("GUARDIAN_HUNG_KILL", "true").lower() == "true"
+# Configuration for hung detection — values set from env vars at top of file (lines 79-81)
 
 
 def check_port_listening(port: int) -> tuple[bool, str]:
@@ -294,7 +327,8 @@ def check_port_listening(port: int) -> tuple[bool, str]:
              f"Get-NetTCPConnection -LocalPort {port} -ErrorAction SilentlyContinue | "
              f"Where-Object {{ $_.State -eq 'Listen' }} | Measure-Object | "
              f"Select-Object -ExpandProperty Count"],
-            capture_output=True, text=True, timeout=10
+            capture_output=True, text=True, timeout=10,
+            creationflags=NO_WINDOW,
         )
         if result.returncode == 0:
             count = int(result.stdout.strip())
@@ -314,12 +348,13 @@ def check_closewait_connections(port: int) -> int:
              f"Get-NetTCPConnection -LocalPort {port} -ErrorAction SilentlyContinue | "
              f"Where-Object {{ $_.State -eq 'CloseWait' }} | "
              f"Measure-Object | Select-Object -ExpandProperty Count"],
-            capture_output=True, text=True, timeout=10
+            capture_output=True, text=True, timeout=10,
+            creationflags=NO_WINDOW,
         )
         if result.returncode == 0:
             return int(result.stdout.strip())
         return 0
-    except:
+    except Exception:
         return 0
 
 
@@ -331,14 +366,15 @@ def get_process_by_port(port: int) -> Optional[int]:
              f"Get-NetTCPConnection -LocalPort {port} -ErrorAction SilentlyContinue | "
              f"Where-Object {{ $_.State -eq 'Listen' }} | "
              f"Select-Object -First 1 -ExpandProperty OwningProcess"],
-            capture_output=True, text=True, timeout=10
+            capture_output=True, text=True, timeout=10,
+            creationflags=NO_WINDOW,
         )
         if result.returncode == 0:
             pid_str = result.stdout.strip()
             if pid_str.isdigit():
                 return int(pid_str)
         return None
-    except:
+    except Exception:
         return None
 
 
@@ -347,7 +383,8 @@ def force_kill_by_pid(pid: int) -> bool:
     try:
         result = subprocess.run(
             ["powershell", "-Command", f"Stop-Process -Id {pid} -Force -ErrorAction SilentlyContinue"],
-            capture_output=True, text=True, timeout=10
+            capture_output=True, text=True, timeout=10,
+            creationflags=NO_WINDOW,
         )
         return result.returncode == 0
     except Exception as e:
@@ -436,7 +473,8 @@ def force_kill(name: str, exe: str = None) -> bool:
         result = subprocess.run(
             ["taskkill", "/F", "/IM", process_name],
             capture_output=True,
-            timeout=10
+            timeout=10,
+            creationflags=NO_WINDOW,
         )
         if result.returncode == 0:
             log.info(f"Force killed {process_name}")
@@ -497,15 +535,30 @@ def restart_service(svc: Service) -> bool:
     # Start new process if command is defined
     if svc.command:
         try:
-            # Redirect stdout/stderr to log files to avoid pipe buffer issues
-            stdout_file = open(os.path.join(LOG_DIR, f"{svc.name}.stdout.log"), "a")
-            stderr_file = open(os.path.join(LOG_DIR, f"{svc.name}.stderr.log"), "a")
+            # Close old log file handles to prevent leaks on repeated restarts
+            for attr in ('_stdout_file', '_stderr_file'):
+                old = getattr(svc, attr, None)
+                if old:
+                    try:
+                        old.close()
+                    except Exception:
+                        pass
+            # Redirect stdout/stderr to log files (with rotation to prevent disk fill)
+            stdout_file = _open_rotated_log(os.path.join(LOG_DIR, f"{svc.name}.stdout.log"))
+            stderr_file = _open_rotated_log(os.path.join(LOG_DIR, f"{svc.name}.stderr.log"))
+            # CREATE_NO_WINDOW prevents the child from spawning a console
+            # window (critical for cloudflared.exe — it's a console app).
+            flags = 0
+            if hasattr(subprocess, "CREATE_NEW_PROCESS_GROUP"):
+                flags |= subprocess.CREATE_NEW_PROCESS_GROUP
+            if hasattr(subprocess, "CREATE_NO_WINDOW"):
+                flags |= subprocess.CREATE_NO_WINDOW
             svc.proc = subprocess.Popen(
                 svc.command,
                 cwd=svc.cwd or APP_DIR,
                 stdout=stdout_file,
                 stderr=stderr_file,
-                creationflags=subprocess.CREATE_NEW_PROCESS_GROUP if hasattr(subprocess, 'CREATE_NEW_PROCESS_GROUP') else 0,
+                creationflags=flags,
             )
             svc.startup_time = time.time()  # Record when service was started
             svc._stdout_file = stdout_file
@@ -531,15 +584,23 @@ def start_service(svc: Service) -> bool:
 
     if svc.command:
         try:
-            # Redirect stdout/stderr to log files to avoid pipe buffer issues
-            stdout_file = open(os.path.join(LOG_DIR, f"{svc.name}.stdout.log"), "a")
-            stderr_file = open(os.path.join(LOG_DIR, f"{svc.name}.stderr.log"), "a")
+            # Redirect stdout/stderr to log files (with rotation to prevent disk fill)
+            stdout_file = _open_rotated_log(os.path.join(LOG_DIR, f"{svc.name}.stdout.log"))
+            stderr_file = _open_rotated_log(os.path.join(LOG_DIR, f"{svc.name}.stderr.log"))
+            # CREATE_NO_WINDOW (0x08000000) prevents the child from spawning
+            # a console window — critical for cloudflared.exe which is a
+            # console app. Without this, every restart flashes a black window.
+            flags = 0
+            if hasattr(subprocess, "CREATE_NEW_PROCESS_GROUP"):
+                flags |= subprocess.CREATE_NEW_PROCESS_GROUP
+            if hasattr(subprocess, "CREATE_NO_WINDOW"):
+                flags |= subprocess.CREATE_NO_WINDOW
             svc.proc = subprocess.Popen(
                 svc.command,
                 cwd=svc.cwd or APP_DIR,
                 stdout=stdout_file,
                 stderr=stderr_file,
-                creationflags=subprocess.CREATE_NEW_PROCESS_GROUP if hasattr(subprocess, 'CREATE_NEW_PROCESS_GROUP') else 0,
+                creationflags=flags,
             )
             svc.startup_time = time.time()  # Record when service was started
             svc._stdout_file = stdout_file
@@ -565,12 +626,12 @@ def stop_service(svc: Service) -> bool:
     if hasattr(svc, '_stdout_file') and svc._stdout_file:
         try:
             svc._stdout_file.close()
-        except:
+        except Exception:
             pass
     if hasattr(svc, '_stderr_file') and svc._stderr_file:
         try:
             svc._stderr_file.close()
-        except:
+        except Exception:
             pass
 
     if svc.is_running():
@@ -611,7 +672,7 @@ def development_mode_reason() -> str:
     try:
         with open(INHIBIT_FILE, "r") as f:
             return f.read().strip() or "Development mode active"
-    except:
+    except Exception:
         return "Development mode active"
 
 
@@ -649,18 +710,19 @@ def is_guardian_running() -> bool:
         # Check if process exists
         result = subprocess.run(
             ["powershell", "-Command", f"Get-Process -Id {old_pid} -ErrorAction SilentlyContinue"],
-            capture_output=True, timeout=5
+            capture_output=True, timeout=5,
+            creationflags=NO_WINDOW,
         )
-        if result.returncode == 0:
+        if str(old_pid) in result.stdout.decode(errors="ignore"):
             log.warning(f"Another guardian instance already running (PID {old_pid})")
             return True
-    except:
+    except Exception:
         pass
 
     # PID file stale, remove it
     try:
         os.remove(PID_FILE)
-    except:
+    except Exception:
         pass
     return False
 
@@ -703,6 +765,140 @@ def check_grace_period(service: Service, failed_check: str) -> bool:
 
 
 # ══════════════════════════════════════════════════════════════════════════════
+# Crash Logging & Self-Respawn
+# ══════════════════════════════════════════════════════════════════════════════
+
+CRASH_LOG_FILE = os.path.join(LOG_DIR, "guardian.crash.log")
+RESPAWN_HISTORY_FILE = os.path.join(LOG_DIR, "guardian.respawn_history")
+RESPAWN_WINDOW_SECONDS = 600   # 10 minutes
+RESPAWN_MAX_PER_WINDOW = 5     # max 5 respawns per 10 min
+RESPAWN_DELAY = 3              # seconds before respawn
+
+
+def _log_crash(reason: str, exc_info=None) -> None:
+    """Write a crash entry to guardian.crash.log with full diagnostics.
+    This file is forensic-only — it survives log rotation of guardian.log.
+    """
+    import traceback
+    try:
+        with open(CRASH_LOG_FILE, "a", encoding="utf-8") as f:
+            f.write(f"\n{'=' * 70}\n")
+            f.write(f"CRASH @ {datetime.now().isoformat()}\n")
+            f.write(f"PID: {os.getpid()}\n")
+            f.write(f"PPID: {os.getppid() if hasattr(os, 'getppid') else 'N/A'}\n")
+            f.write(f"Reason: {reason}\n")
+            f.write(f"argv: {sys.argv}\n")
+            if exc_info is not None:
+                f.write("Traceback:\n")
+                traceback.print_exception(*exc_info, file=f)
+            f.write(f"{'=' * 70}\n")
+        log.error(f"Crash logged to {CRASH_LOG_FILE}: {reason}")
+    except Exception as e:
+        # Last-ditch effort: print to stderr
+        try:
+            sys.stderr.write(f"CRASH LOG WRITE FAILED: {e}\nReason was: {reason}\n")
+        except Exception:
+            pass
+
+
+def _install_crash_hooks() -> None:
+    """Install sys.excepthook and sys.unraisablehook to log any uncaught error."""
+    def excepthook(exc_type, exc_value, exc_tb):
+        _log_crash("UNCAUGHT EXCEPTION", (exc_type, exc_value, exc_tb))
+        # Still call the default hook so the OS / debugger sees it
+        sys.__excepthook__(exc_type, exc_value, exc_tb)
+    sys.excepthook = excepthook
+
+    if hasattr(sys, "unraisablehook"):
+        def unraisablehook(unraisable):
+            exc = unraisable.exc_value
+            _log_crash(
+                f"UNRAISABLE ({unraisable.err_msg})",
+                (type(exc) if exc is not None else Exception,
+                 exc if exc is not None else unraisable.err_msg,
+                 unraisable.exc_traceback),
+            )
+            sys.__unraisablehook__(unraisable)
+        sys.unraisablehook = unraisablehook
+
+
+def _can_respawn() -> bool:
+    """Rate-limit self-respawn to RESPAWN_MAX_PER_WINDOW per RESPAWN_WINDOW_SECONDS.
+    Prevents infinite crash loops (e.g. if guardian crashes on every startup).
+    """
+    now = time.time()
+    history = []
+    try:
+        if os.path.exists(RESPAWN_HISTORY_FILE):
+            with open(RESPAWN_HISTORY_FILE, "r") as f:
+                history = [float(x.strip()) for x in f if x.strip()]
+    except Exception:
+        pass
+    # Filter to current window
+    history = [t for t in history if now - t < RESPAWN_WINDOW_SECONDS]
+    if len(history) >= RESPAWN_MAX_PER_WINDOW:
+        log.error(
+            f"Respawn limit reached ({RESPAWN_MAX_PER_WINDOW}/{RESPAWN_WINDOW_SECONDS}s). "
+            f"Manual intervention required."
+        )
+        return False
+    # Record this respawn attempt
+    try:
+        with open(RESPAWN_HISTORY_FILE, "a") as f:
+            f.write(f"{now}\n")
+        # Trim file to last 100 lines to keep it small
+        with open(RESPAWN_HISTORY_FILE, "r") as f:
+            lines = f.readlines()[-100:]
+        with open(RESPAWN_HISTORY_FILE, "w") as f:
+            f.writelines(lines)
+    except Exception:
+        pass
+    return True
+
+
+def _respawn_self() -> None:
+    """Spawn a fresh guardian process. The current one exits.
+    Detached via CREATE_NEW_PROCESS_GROUP + DETACHED_PROCESS so the new
+    process survives the parent's exit.
+    """
+    try:
+        stdout_file = open(os.path.join(LOG_DIR, "guardian.respawn.stdout.log"), "a")
+        stderr_file = open(os.path.join(LOG_DIR, "guardian.respawn.stderr.log"), "a")
+        flags = 0
+        if hasattr(subprocess, "CREATE_NEW_PROCESS_GROUP"):
+            flags |= subprocess.CREATE_NEW_PROCESS_GROUP
+        if hasattr(subprocess, "DETACHED_PROCESS"):
+            flags |= subprocess.DETACHED_PROCESS
+        subprocess.Popen(
+            [sys.executable, os.path.abspath(__file__)],
+            cwd=APP_DIR,
+            stdout=stdout_file,
+            stderr=stderr_file,
+            stdin=subprocess.DEVNULL,
+            creationflags=flags,
+            close_fds=True,
+        )
+        log.warning("Self-respawn: new guardian process launched")
+    except Exception as e:
+        _log_crash(f"RESPAWN LAUNCH FAILED: {e}")
+        log.error(f"Self-respawn failed: {e}")
+
+
+def _should_respawn() -> bool:
+    """Decide whether to respawn on crash.
+    Skip respawn in:
+      - development mode (inhibit file present)
+      - explicit CLI subcommands (stop, status, restart)
+      - if respawn limit hit (handled by _can_respawn)
+    """
+    if is_development_mode():
+        return False
+    if len(sys.argv) > 1 and sys.argv[1].lower() in ("stop", "status", "restart"):
+        return False
+    return _can_respawn()
+
+
+# ══════════════════════════════════════════════════════════════════════════════
 # Main Guardian Loop
 # ══════════════════════════════════════════════════════════════════════════════
 
@@ -725,19 +921,14 @@ def main():
         sys.exit(1)
 
     write_pid()
-    # Register atexit to ensure PID file is cleaned up on any exit (normal, exception, signal)
-    import atexit
-    atexit.register(cleanup_pid_file)
+    # PID file cleanup is now handled by the atexit hook installed in __main__,
+    # which also logs the exit reason. No duplicate registration here.
 
-    # Cleanup on exit
+    # Cleanup on exit (signal-driven shutdown)
     def cleanup(signum, frame):
-        log.info("Guardian shutting down...")
+        log.info(f"Guardian shutting down (signal={signum})...")
         for svc in SERVICES:
             stop_service(svc)
-        try:
-            os.remove(PID_FILE)
-        except:
-            pass
         sys.exit(0)
 
     signal.signal(signal.SIGINT, cleanup)
@@ -775,7 +966,8 @@ def main():
                 if svc.failure_count > 0:
                     log.info(f"{svc.name} recovered (was {svc.failure_count} failures)")
                 svc.failure_count = 0
-                svc._grace_start = None  # Reset grace period
+                if hasattr(svc, '_grace_start'):
+                    delattr(svc, '_grace_start')  # Reset grace period
                 svc.hung_count = 0  # Reset hung detection on successful health check
                 log.debug(f"Health check OK: {svc.name}")
             else:
@@ -825,6 +1017,21 @@ def main():
 
 
 if __name__ == "__main__":
+    # Install crash hooks BEFORE anything else can throw.
+    # This ensures every subsequent error (uncaught or unraisable) is captured.
+    _install_crash_hooks()
+
+    # atexit handler: logs the final exit reason and cleans up PID.
+    # This fires on sys.exit(), normal return, or unhandled exception alike.
+    import atexit
+    _exit_reason = {"reason": "normal exit"}
+
+    def _on_exit():
+        if _exit_reason["reason"] != "normal exit":
+            _log_crash(f"ATEEXIT: {_exit_reason['reason']}")
+        cleanup_pid_file()
+    atexit.register(_on_exit)
+
     if len(sys.argv) > 1:
         cmd = sys.argv[1].lower()
         if cmd == "stop":
@@ -858,7 +1065,29 @@ if __name__ == "__main__":
         try:
             main()
         except KeyboardInterrupt:
+            _exit_reason["reason"] = "KeyboardInterrupt (user)"
             log.info("Guardian stopped by user")
-        except Exception as e:
+        except SystemExit as e:
+            _exit_reason["reason"] = f"SystemExit(code={e.code})"
+            # Don't re-raise; let atexit + crash log handle it
+            log.warning(f"Guardian exited via SystemExit(code={e.code})")
+        except BaseException as e:
+            # Catch EVERYTHING (including KeyboardInterrupt as a fallback).
+            # _log_crash + sys.excepthook both fire here.
+            import traceback
+            exc_info = (type(e), e, e.__traceback__)
+            _log_crash("UNCAUGHT IN MAIN LOOP", exc_info)
+            _exit_reason["reason"] = f"unhandled {type(e).__name__}: {e}"
             log.exception(f"Guardian crashed: {e}")
+
+            # Self-respawn: launch a fresh guardian before exiting, so we
+            # don't need Task Scheduler to be configured for the system to
+            # recover from a guardian crash. Rate-limited via _can_respawn().
+            if _should_respawn():
+                log.warning(f"Self-respawning in {RESPAWN_DELAY}s...")
+                time.sleep(RESPAWN_DELAY)
+                _respawn_self()
+            else:
+                log.error("Self-respawn disabled (dev mode / CLI / rate limit). "
+                          "Rely on Task Scheduler or manual restart.")
             sys.exit(1)

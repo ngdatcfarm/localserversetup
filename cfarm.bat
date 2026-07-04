@@ -8,7 +8,7 @@ rem   Run with "stop" argument to STOP all
 
 setlocal enabledelayedexpansion
 
-set "APP_DIR=C:\Local server"
+set "APP_DIR=E:\cfarm"
 set "PYTHONPATH=%APP_DIR%"
 set "LOG_DIR=%APP_DIR%\logs"
 set "GUARDIAN_SCRIPT=%APP_DIR%\scripts\guardian.py"
@@ -55,7 +55,7 @@ timeout /t 2 /nobreak >nul
 
 echo [4/4] Starting Guardian (process supervisor)...
 echo.
-start /B python "%GUARDIAN_SCRIPT%"
+call "%APP_DIR%\scripts\start_guardian.bat"
 timeout /t 5 /nobreak >nul
 
 echo.

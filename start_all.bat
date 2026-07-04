@@ -2,7 +2,7 @@
 rem CFarm Single-Button Start Script
 rem Starts Guardian which manages: app_8002, app_8003, cloudflared
 
-cd /d C:\Local server
+cd /d E:\cfarm
 
 echo [1/3] Stopping any existing processes on ports 8002, 8003, 2000...
 for /f "tokens=5" %%a in ('netstat -ano ^| findstr :8002 ^| findstr LISTENING') do taskkill /PID %%a /F >nul 2>&1
@@ -11,7 +11,7 @@ for /f "tokens=5" %%a in ('netstat -ano ^| findstr :2000 ^| findstr LISTENING') 
 timeout /t 2 >nul
 
 echo [2/3] Starting Guardian (monitors 8002, 8003, cloudflared)...
-start /B python scripts\guardian.py
+call scripts\start_guardian.bat
 timeout /t 3 >nul
 
 echo [3/3] Checking services...

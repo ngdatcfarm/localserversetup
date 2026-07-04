@@ -185,10 +185,11 @@ const API = {
 
     // Sensor Alerts
     sensorAlerts: {
-        list(ack, barnId) {
+        list(ack, barnId, limit) {
             const params = [];
             if (ack !== undefined) params.push('acknowledged=' + ack);
             if (barnId) params.push('barn_id=' + barnId);
+            if (limit) params.push('limit=' + limit);
             const q = params.length ? '?' + params.join('&') : '';
             return API.get('/api/alerts' + q);
         },
@@ -228,7 +229,10 @@ const API = {
         resolveAlert(id) { return API.post(`/api/farm/inventory/alerts/${id}/resolve`); },
         deleteAlert(id) { return API.del(`/api/farm/inventory/alerts/${id}`); },
         // Alert rules
-        alertRules(params) { return API.get('/api/farm/inventory/alerts/rules', params); },
+        alertRules(params) {
+            const q = params ? '?' + new URLSearchParams(params).toString() : '';
+            return API.get('/api/farm/inventory/alerts/rules' + q);
+        },
         createAlertRule(d) { return API.post('/api/farm/inventory/alerts/rules', d); },
         getAlertRule(id) { return API.get(`/api/farm/inventory/alerts/rules/${id}`); },
         updateAlertRule(id, d) { return API.put(`/api/farm/inventory/alerts/rules/${id}`, d); },
@@ -481,6 +485,16 @@ const API = {
         detect(data) { return API.post('/api/ai/detect', data); },
         getStatus() { return API.get('/api/ai/detect/status'); },
         loadModel(modelPath) { return API.post('/api/ai/detect/load-model', { model_path: modelPath }); },
+    },
+
+    // AI Chat
+    chat: {
+        query(message, model, conversationId) {
+            return API.post('/api/chat/query', { message, model: model || 'MiniMax-M2.7', conversation_id: conversationId });
+        },
+        getConversation(id) { return API.get(`/api/chat/conversation/${id}`); },
+        clearConversation(id) { return API.del(`/api/chat/conversation/${id}`); },
+        reportIssue(data) { return API.post('/api/chat/report-issue', data); },
     },
 
     // ML Dataset

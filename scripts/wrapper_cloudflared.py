@@ -19,8 +19,8 @@ import threading
 from datetime import datetime
 
 # Configuration
-APP_DIR = r"C:\Users\nguye"
-LOG_DIR = r"C:\Local server\logs"
+APP_DIR = r"E:\cfarm"
+LOG_DIR = r"E:\cfarm\logs"
 LOG_FILE = os.path.join(LOG_DIR, "guardian_cloudflared.log")
 # Read tunnel token from environment (NEVER hardcode). Generate new tokens at:
 # https://one.dash.cloudflare.com/ → Zero Trust → Networks → Tunnels → Configure → Install connector

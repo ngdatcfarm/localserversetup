@@ -38,8 +38,8 @@ from datetime import datetime
 # Paths
 # ══════════════════════════════════════════════════════════════════════════════
 
-APP_DIR = os.environ.get("APP_DIR", r"C:\Users\nguye")
-LOG_DIR = os.environ.get("LOG_DIR", r"C:\Local server\logs")
+APP_DIR = os.environ.get("APP_DIR", r"E:\cfarm")
+LOG_DIR = os.environ.get("LOG_DIR", r"E:\cfarm\logs")
 CLOUDFLARED_PATH = os.environ.get("CLOUDFLARED_PATH", os.path.join(APP_DIR, "cloudflared.exe"))
 TUNNEL_TOKEN = os.environ.get("CLOUDFLARE_TUNNEL_TOKEN", "")
 

@@ -307,53 +307,6 @@ async def _fetch_peak_readings() -> str:
         logger.warning(f"Could not fetch peak readings: {e}")
         return f"Lỗi khi lấy peak: {str(e)}"
 
-        if not rows:
-            return "Không có dữ liệu sensor 24h gần đây."
-
-        lines = ["=== TỔNG KẾT SENSOR (24 giờ) ==="]
-        anomalies = []
-        current_barn = None
-
-        for r in rows:
-            barn = r['name'] or r['id']
-
-            # Anomaly detection
-            is_anomaly = False
-            if r['sensor_type'] == 'temperature':
-                if r['avg_value'] < TEMP_MIN or r['avg_value'] > TEMP_MAX:
-                    is_anomaly = True
-            elif r['sensor_type'] == 'humidity':
-                if r['avg_value'] < HUM_MIN or r['avg_value'] > HUM_MAX:
-                    is_anomaly = True
-
-            # Also check for 0 values (sensor error)
-            if r['sensor_type'] == 'temperature' and r['avg_value'] == 0:
-                is_anomaly = True
-                anomalies.append(f"  ⚠️ {r['device_code']}: gửi giá trị 0°C (lỗi cảm biến)")
-
-            if is_anomaly:
-                anomalies.append(f"  ⚠️ {r['device_code']}: {r['sensor_type']} avg={r['avg_value']} (bất thường)")
-
-            if barn != current_barn:
-                lines.append(f"\n🏠 {barn}:")
-                current_barn = barn
-
-            icon = "🌡️" if r['sensor_type'] == 'temperature' else "💧"
-            unit = "°C" if r['sensor_type'] == 'temperature' else "%"
-            status = " ⚠️ ANOMALY" if is_anomaly else ""
-            lines.append(f"  {icon} {r['sensor_type']}: avg={r['avg_value']}{unit}, min={r['min_value']}{unit}, max={r['max_value']}{unit} ({r['reading_count']} đọc){status}")
-
-        # Add anomaly alerts
-        if anomalies:
-            lines.append("\n=== CẢNH BÁO THIẾT BỊ BẤT THƯỜNG ===")
-            lines.extend(anomalies)
-
-        return "\n".join(lines)
-
-    except Exception as e:
-        logger.warning(f"Could not fetch sensor summary: {e}")
-        return ""
-
 
 async def _fetch_sensor_history(time_start: str, time_end: str, sensor_type: str = None, barn_id: str = None) -> str:
     """Fetch sensor data for a specific time range."""

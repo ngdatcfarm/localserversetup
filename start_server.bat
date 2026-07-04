@@ -2,7 +2,7 @@
 REM ==========================================
 REM CFarm Local Server - Startup Script
 REM ==========================================
-cd /d "C:\Local server"
+cd /d "E:\cfarm"
 
 echo === Starting CFarm Local Server ===
 echo.
@@ -47,5 +47,5 @@ echo.
 echo Press Ctrl+C to stop the server.
 echo.
 
-cd /d "C:\Local server"
+cd /d "E:\cfarm"
 python -m uvicorn src.server.main:app --host 0.0.0.0 --port 8443 --ssl-keyfile cert.key --ssl-certfile cert.pem

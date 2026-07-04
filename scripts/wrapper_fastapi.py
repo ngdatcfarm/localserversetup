@@ -10,8 +10,8 @@ import os
 from datetime import datetime
 
 # Configuration
-APP_DIR = r"C:\Local server"
-LOG_DIR = r"C:\Local server\logs"
+APP_DIR = r"E:\cfarm"
+LOG_DIR = r"E:\cfarm\logs"
 LOG_FILE = os.path.join(LOG_DIR, "guardian_fastapi.log")
 HEALTH_URL = "http://localhost:8002/health"
 HEALTH_INTERVAL = 30  # seconds

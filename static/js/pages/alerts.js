@@ -465,8 +465,8 @@ export default{
         }
 
         function downloadCert() {
-            showToast('Dang tai certificate...', 'info');
-            setTimeout(() => showToast('Chung thuc an toan tai ve thanh cong!'), 800);
+            showToast('Đang tải certificate...', 'info');
+            window.open('/cfarm.crt', '_blank');
         }
 
         // ── Helpers ─────────────────────────────────────
@@ -477,9 +477,15 @@ export default{
             return new Uint8Array([...rawData].map(c => c.charCodeAt(0)));
         }
 
-        function checkAlertsNow() {
-            showToast('Dang kiem tra he thong...', 'info');
-            setTimeout(() => showToast('Kiem tra hoan tat!'), 800);
+        async function checkAlertsNow() {
+            try {
+                showToast('Đang kiểm tra hệ thống...', 'info');
+                await API.sensorAlerts.check();
+                await loadAll();
+                showToast('Kiểm tra hoàn tất!');
+            } catch (e) {
+                showToast(e.message, 'error');
+            }
         }
 
         function fmtDate(d) {
@@ -490,6 +496,11 @@ export default{
         function fmtNum(n, dec = 0) {
             if (n == null) return '0';
             return Number(n).toLocaleString('vi-VN', { minimumFractionDigits: dec, maximumFractionDigits: dec });
+        }
+
+        function closeBanner() {
+            sensorAlerts.value = [];
+            inventoryAlerts.value = [];
         }
 
         onMounted(() => { loadAll(); });
@@ -511,7 +522,7 @@ export default{
             openInventoryRule, saveInventoryRule, deleteInventoryRule, ackInventoryAlert, ackAllInventory,
             markVaccineDone, skipVaccine, changeVaccineDays,
             simulateSensorAlert, simulateInventoryAlert,
-            togglePush, sendTestPush, removeSub, downloadCert, checkAlertsNow,
+            togglePush, sendTestPush, removeSub, downloadCert, checkAlertsNow, closeBanner,
             fmtDate, fmtNum
         };
     },
@@ -535,7 +546,7 @@ export default{
                 <h3 class="font-semibold text-sm" style="color:#be123c;">RUI RO DANG BAO DONG</h3>
                 <button v-if="activeSensorAlerts.length" @click="ackAllSensor" class="btn btn-xs" style="background:#e11d48;color:white;border:none;">Xử lý tất cả cảm biến</button>
                 <button v-if="activeInventoryAlerts.length" @click="ackAllInventory" class="btn btn-xs" style="background:#b45309;color:white;border:none;">Xử lý tất cả kho</button>
-                <button @click="() => { sensorAlerts = []; inventoryAlerts = []; }" class="ml-auto text-xs btn btn-ghost btn-sm">✕ Dong</button>
+                <button @click="closeBanner" class="ml-auto text-xs btn btn-ghost btn-sm">✕ Dong</button>
             </div>
             <div class="flex flex-wrap gap-3">
                 <div v-if="activeSensorAlerts.length" class="flex-1 min-w-[200px]">
@@ -768,7 +779,7 @@ export default{
                             <tr v-for="s in pushSubs" :key="s.id">
                                 <td class="text-sm" style="max-width:200px;overflow:hidden;text-overflow:ellipsis;white-space:nowrap;">{{ s.user_label || s.endpoint }}</td>
                                 <td class="text-right">
-                                    <button @click="removeSub(s.id)" class="btn btn-ghost btn-sm text-red-500">Goiv</button>
+                                    <button @click="removeSub(s.id)" class="btn btn-ghost btn-sm text-red-500">Gỡ bỏ</button>
                                 </td>
                             </tr>
                         </tbody>

@@ -85,6 +85,7 @@ const router = createRouter({
         { path: '/cameras', component: () => loadPage('cameras') },
         { path: '/sync', component: () => loadPage('sync') },
         { path: '/density-label', component: () => loadPage('density_label') },
+        { path: '/chat', component: () => loadPage('chat') },
     ],
 });
 
@@ -163,6 +164,7 @@ const app = createApp({
             { path: '/cameras', icon: '📹', label: 'Camera' },
             { path: '/sync', icon: '☁️', label: 'Cloud Sync' },
             { path: '/density-label', icon: '🎯', label: 'Density Label' },
+            { path: '/chat', icon: '💬', label: 'AI Chat' },
         ];
 
         const externalLinks = [
