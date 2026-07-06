@@ -1,9 +1,12 @@
-"""Care Service - Daily farm operations (cho ăn, tử vong, thuốc, cân)."""
+"""Care Service - Daily farm operations (cho ăn, tử vong, thuốc, cân).
+
+Decoupled from inventory: care is a pure log (notebook). No automatic
+stock deduction. Inventory module operates independently.
+"""
 
 from datetime import date
 from typing import Optional
 from src.services.database.db import db
-from src.farm.inventory_service import inventory_service
 from src.sync.sync_service import sync_service
 
 
@@ -12,59 +15,7 @@ class CareService:
     # ── Feed Logs (Cho ăn) ────────────────────────────
 
     async def log_feed(self, data: dict) -> dict:
-        """Log a feeding event and deduct from warehouse.
-
-        Validates:
-        - warehouse_type must be 'feed' or have warehouse_type 'mixed'
-        - If warehouse_id not provided, auto-lookup from barn_default_warehouses
-        - Product product_type must be 'feed'
-        - Warehouse must be active
-        """
-        barn_id = data.get("barn_id")
-        warehouse_id = data.get("warehouse_id")
-        product_id = data.get("product_id")
-
-        # ── Auto-lookup default warehouse if not specified ──
-        if not warehouse_id and barn_id:
-            try:
-                default_wh = await inventory_service.get_default_warehouse(barn_id, "feed")
-                if default_wh:
-                    warehouse_id = default_wh["warehouse_id"]
-                    data = {**data, "warehouse_id": warehouse_id}
-            except Exception:
-                # barn_default_warehouses table may not exist - skip auto-lookup
-                pass
-
-        # ── Validate warehouse if specified or resolved ──
-        if warehouse_id:
-            warehouse = await inventory_service.get_warehouse(warehouse_id)
-            if not warehouse:
-                return {"ok": False, "message": f"Warehouse {warehouse_id} not found"}
-            if not warehouse.get("active"):
-                return {"ok": False, "message": "Warehouse is not active"}
-            if warehouse.get("warehouse_type") not in ("feed", "mixed"):
-                return {"ok": False, "message": f"Warehouse type '{warehouse['warehouse_type']}' is not valid for feed operations. Must be 'feed' or 'mixed'."}
-
-        # ── Validate product type matches ──
-        if product_id:
-            product = await db.fetchrow("SELECT * FROM products WHERE id = $1", product_id)
-            if not product:
-                return {"ok": False, "message": f"Product {product_id} not found"}
-            if product.get("product_type") not in ("feed", None):
-                return {"ok": False, "message": f"Product type '{product['product_type']}' is not valid for feed operations. Must be 'feed'."}
-
-        # Deduct from warehouse if specified
-        if warehouse_id and product_id:
-            result = await inventory_service.export_stock({
-                "warehouse_id": warehouse_id,
-                "product_id": product_id,
-                "quantity": data["quantity"],
-                "reference_type": "feed_log",
-                "notes": f"Cho ăn {barn_id} {data.get('feed_date', '')}",
-            })
-            if not result["ok"]:
-                return result
-
+        """Log a feeding event (pure log, no inventory deduction)."""
         row = await db.fetchrow(
             """INSERT INTO care_feeds
             (cycle_id, barn_id, feed_date, meal, product_id, quantity, remaining,
@@ -182,59 +133,7 @@ class CareService:
     # ── Medication (Thuốc/Vaccine) ────────────────────
 
     async def log_medication(self, data: dict) -> dict:
-        """Log a medication/vaccination event and deduct from warehouse.
-
-        Validates:
-        - warehouse_type must be 'medication' or have warehouse_type 'mixed'
-        - If warehouse_id not provided, auto-lookup from barn_default_warehouses
-        - Product product_type must be 'medication' or 'medicine'
-        - Warehouse must be active
-        """
-        barn_id = data.get("barn_id")
-        warehouse_id = data.get("warehouse_id")
-        product_id = data.get("product_id")
-
-        # ── Auto-lookup default warehouse if not specified ──
-        if not warehouse_id and barn_id:
-            try:
-                default_wh = await inventory_service.get_default_warehouse(barn_id, "medication")
-                if default_wh:
-                    warehouse_id = default_wh["warehouse_id"]
-                    data = {**data, "warehouse_id": warehouse_id}
-            except Exception:
-                # barn_default_warehouses table may not exist - skip auto-lookup
-                pass
-
-        # ── Validate warehouse if specified or resolved ──
-        if warehouse_id:
-            warehouse = await inventory_service.get_warehouse(warehouse_id)
-            if not warehouse:
-                return {"ok": False, "message": f"Warehouse {warehouse_id} not found"}
-            if not warehouse.get("active"):
-                return {"ok": False, "message": "Warehouse is not active"}
-            if warehouse.get("warehouse_type") not in ("medication", "mixed"):
-                return {"ok": False, "message": f"Warehouse type '{warehouse['warehouse_type']}' is not valid for medication operations. Must be 'medication' or 'mixed'."}
-
-        # ── Validate product type matches ──
-        if product_id:
-            product = await db.fetchrow("SELECT * FROM products WHERE id = $1", product_id)
-            if not product:
-                return {"ok": False, "message": f"Product {product_id} not found"}
-            if product.get("product_type") not in ("medication", "medicine", None):
-                return {"ok": False, "message": f"Product type '{product['product_type']}' is not valid for medication operations. Must be 'medication' or 'medicine'."}
-
-        # Deduct from warehouse if specified
-        if warehouse_id and product_id and data.get("quantity"):
-            result = await inventory_service.export_stock({
-                "warehouse_id": warehouse_id,
-                "product_id": product_id,
-                "quantity": data["quantity"],
-                "reference_type": "medication",
-                "notes": f"{data.get('med_type', '')} {barn_id}",
-            })
-            if not result["ok"]:
-                return result
-
+        """Log a medication/vaccination event (pure log, no inventory deduction)."""
         row = await db.fetchrow(
             """INSERT INTO care_medications
             (cycle_id, barn_id, med_date, med_type, product_id, quantity,
@@ -498,20 +397,10 @@ class CareService:
     # ── Delete Care Logs ──────────────────────────────
 
     async def delete_feed(self, feed_id: int) -> dict:
-        """Delete a feed log. Restores inventory if warehouse/product specified."""
+        """Delete a feed log."""
         feed = await db.fetchrow("SELECT * FROM care_feeds WHERE id = $1", feed_id)
         if not feed:
             return {"ok": False, "message": "Feed log not found"}
-
-        # Restore inventory if warehouse_id and product_id specified
-        if feed.get("warehouse_id") and feed.get("product_id") and feed.get("quantity"):
-            await db.execute(
-                """INSERT INTO inventory (warehouse_id, product_id, quantity, updated_at)
-                VALUES ($1, $2, $3, NOW())
-                ON CONFLICT (warehouse_id, product_id)
-                DO UPDATE SET quantity = inventory.quantity + $3, updated_at = NOW()""",
-                feed["warehouse_id"], feed["product_id"], feed["quantity"],
-            )
 
         await db.execute("DELETE FROM care_feeds WHERE id = $1", feed_id)
         return {"ok": True, "message": "Feed log deleted"}
@@ -532,20 +421,10 @@ class CareService:
         return {"ok": True, "message": "Death log deleted"}
 
     async def delete_medication(self, med_id: int) -> dict:
-        """Delete a medication log. Restores inventory if warehouse/product specified."""
+        """Delete a medication log."""
         med = await db.fetchrow("SELECT * FROM care_medications WHERE id = $1", med_id)
         if not med:
             return {"ok": False, "message": "Medication log not found"}
-
-        # Restore inventory if warehouse_id and product_id and quantity specified
-        if med.get("warehouse_id") and med.get("product_id") and med.get("quantity"):
-            await db.execute(
-                """INSERT INTO inventory (warehouse_id, product_id, quantity, updated_at)
-                VALUES ($1, $2, $3, NOW())
-                ON CONFLICT (warehouse_id, product_id)
-                DO UPDATE SET quantity = inventory.quantity + $3, updated_at = NOW()""",
-                med["warehouse_id"], med["product_id"], med["quantity"],
-            )
 
         await db.execute("DELETE FROM care_medications WHERE id = $1", med_id)
         return {"ok": True, "message": "Medication log deleted"}

@@ -24,7 +24,6 @@ export default{
         const feedForm = reactive({
             bag_count: 0,
             manual_qty: 0,
-            warehouse_id: '',
             product_id: '',
             notes: ''
         });
@@ -67,25 +66,6 @@ export default{
 
         const feedProducts = computed(() => products.value.filter(p => p.product_type === 'feed'));
         const medProducts = computed(() => products.value.filter(p => p.product_type === 'medication' || p.product_type === 'medicine'));
-        // Only show medications that are in the current barn's medication warehouse
-        const medProductsInBarn = computed(() => {
-            if (!barnMedWarehouse.value?.warehouse_id) return medProducts.value;
-            const stockProductIds = new Set(medWarehouses.value.map(w => w.product_id));
-            return medProducts.value.filter(p => stockProductIds.has(p.id));
-        });
-
-        // Barn-specific warehouses (fetched when cycle changes via suggested-warehouses)
-        const barnFeedWarehouse = ref(null);   // { id, name, stock }
-        const barnMedWarehouse = ref(null);    // { id, name, stock }
-        const feedWarehouses = computed(() => barnFeedWarehouse.value?.stock || []);
-        // Filter medWarehouses to only show products actually in this barn's medication warehouse
-        const medWarehouses = computed(() => {
-            const stock = barnMedWarehouse.value?.stock || [];
-            return stock.filter(item => {
-                const prod = products.value.find(p => p.id === item.product_id);
-                return prod && (prod.product_type === 'medication' || prod.product_type === 'medicine');
-            });
-        });
 
         // Filter logs by cycle + date
         const currentFeedLogs = computed(() =>
@@ -134,13 +114,9 @@ export default{
             probiotic: 'cf-care-med-probiotic'
         };
 
-        // When cycle changes: load barn warehouses + reload logs
+        // When cycle changes: reload logs
         watch(() => selectedCycleId.value, async (newId) => {
             if (!newId) return;
-            const cycle = cycles.value.find(c => c.id == newId);
-            if (cycle?.barn_id) {
-                await loadBarnWarehouses(cycle.barn_id);
-            }
             await loadLogs();
         });
 
@@ -199,26 +175,6 @@ export default{
             }
         }
 
-        // Load barn-specific warehouses when cycle changes
-        async function loadBarnWarehouses(barnId) {
-            if (!barnId) return;
-            try {
-                const sug = await API.barns.suggestedWarehouses(barnId);
-                barnFeedWarehouse.value = sug.feed_warehouse || null;
-                barnMedWarehouse.value = sug.medication_warehouse || null;
-                // Auto-set warehouse in forms
-                if (barnFeedWarehouse.value?.warehouse_id && !feedForm.warehouse_id) {
-                    feedForm.warehouse_id = barnFeedWarehouse.value.warehouse_id;
-                }
-                if (barnMedWarehouse.value?.warehouse_id && !medForm.warehouse_id) {
-                    medForm.warehouse_id = barnMedWarehouse.value.warehouse_id;
-                }
-            } catch (e) {
-                barnFeedWarehouse.value = null;
-                barnMedWarehouse.value = null;
-            }
-        }
-
         async function loadLogs() {
             if (!selectedCycleId.value) return;
             try {
@@ -262,7 +218,6 @@ export default{
                     meal: currentShift.value,
                     quantity: finalQty,
                     product_id: feedForm.product_id ? Number(feedForm.product_id) : undefined,
-                    warehouse_id: feedForm.warehouse_id ? Number(feedForm.warehouse_id) : undefined,
                     notes: feedForm.notes
                 });
                 if (typeof showToast === 'function') showToast('Đã ghi nhận cho ăn: ' + finalQty + ' kg', 'success');
@@ -300,7 +255,6 @@ export default{
                     unit: medForm.unit,
                     method: medForm.method,
                     shift: currentShift.value,
-                    warehouse_id: medForm.warehouse_id ? Number(medForm.warehouse_id) : undefined,
                     notes: medForm.notes || undefined,
                 });
                 if (typeof showToast === 'function') showToast('Đã lưu cấp thuốc thú y!', 'success');
@@ -348,8 +302,7 @@ export default{
             selectedCycleId, selectedDate, currentShift, activeTab,
             feedForm, medForm,
             selectedCycle, dayAge,
-            feedProducts, medProducts, medProductsInBarn, feedWarehouses, medWarehouses,
-            barnFeedWarehouse, barnMedWarehouse,
+            feedProducts, medProducts,
             currentFeedLogs, currentMedLogs, shiftFeedLogs, shiftMedLogs,
             totalKgToday, totalMedToday,
             shiftHasFeedData, shiftHasMedData,
@@ -580,14 +533,14 @@ export default{
                     <div class="cf-care-product-section">
                         <div class="cf-care-product-label">Chọn thuốc thú y</div>
                         <div class="cf-care-product-grid">
-                            <button v-for="p in medProductsInBarn" :key="p.id"
+                            <button v-for="p in medProducts" :key="p.id"
                                 @click="medForm.product_id = p.id; medForm.custom_name = ''"
                                 :class="['cf-care-product-btn', medForm.product_id === p.id && !medForm.custom_name ? 'selected' : '']">
                                 <span class="cf-care-product-name">{{ p.name }}</span>
                                 <span class="cf-care-product-type">{{ p.product_type }}</span>
                             </button>
                         </div>
-                        <div v-if="!medProductsInBarn.length" class="cf-care-empty-list">
+                        <div v-if="!medProducts.length" class="cf-care-empty-list">
                             Chưa có thuốc nào trong danh mục
                         </div>
                     </div>

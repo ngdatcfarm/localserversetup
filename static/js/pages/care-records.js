@@ -9,7 +9,6 @@ export default{
         // ── Data Store ──────────────────────────────
         const cycles = ref([]);
         const products = ref([]);
-        const warehouses = ref([]);
         const weightLogs = ref([]);
         const medLogs = ref([]);
         const healthNotes = ref([]);
@@ -21,7 +20,7 @@ export default{
 
         // ── Form States ─────────────────────────────
         const weightForm = reactive({ mode: 'aggregate', sample_count: '', total_weight: '', currentWeight: '', currentGender: 'female', samples: [], notes: '' });
-        const medForm = reactive({ med_type: 'medicine', unit: 'g', quantity: '', product_id: '', custom_name: '', method: 'water', warehouse_id: '', notes: '' });
+        const medForm = reactive({ med_type: 'medicine', unit: 'g', quantity: '', product_id: '', custom_name: '', method: 'water', notes: '' });
         const healthForm = reactive({ severity: 'normal', symptoms: '', health_flags: [], notes: '' });
 
         // ── UI State ───────────────────────────────
@@ -63,7 +62,6 @@ export default{
                 medForm.product_id = '';
                 medForm.custom_name = '';
                 medForm.method = 'water';
-                medForm.warehouse_id = '';
                 medForm.notes = '';
             } else if (name === 'healthForm') {
                 healthForm.severity = 'normal';
@@ -76,14 +74,12 @@ export default{
         async function loadData() {
             loading.value = true;
             try {
-                const [c, p, w] = await Promise.all([
+                const [c, p] = await Promise.all([
                     API.cycles.list(),
                     API.products.list(),
-                    API.warehouses.list(),
                 ]);
                 cycles.value = c;
                 products.value = p;
-                warehouses.value = w;
 
                 if (!selectedCycleId.value && cycles.value.length > 0) {
                     const active = cycles.value.find(cycle => !cycle.end_date);
@@ -163,7 +159,6 @@ export default{
                             product_id: medForm.product_id || null,
                             custom_name: medForm.custom_name || null,
                             method: medForm.method,
-                            warehouse_id: medForm.warehouse_id || null,
                             notes: medForm.notes,
                         });
                         resetForm('medForm');
@@ -286,7 +281,7 @@ export default{
 
         return {
             // State
-            cycles, products, warehouses, weightLogs, medLogs, healthNotes, vaccineSchedules,
+            cycles, products, weightLogs, medLogs, healthNotes, vaccineSchedules,
             selectedCycleId, selectedDate,
             weightForm, medForm, healthForm,
             loading, submitting,

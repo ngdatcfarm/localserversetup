@@ -19,7 +19,6 @@ export default{
     setup() {
         // ── State ──────────────────────────────────────
         const cycles = ref([]);
-        const warehouses = ref([]);
         const products = ref([]);
         const vaccineSchedules = ref([]);
 
@@ -42,7 +41,6 @@ export default{
         const feedForm = reactive({
             bag_count: 0,
             quantity: 0,
-            warehouse_id: '',
             product_id: '',
             notes: ''
         });
@@ -61,7 +59,6 @@ export default{
             quantity: 0,
             unit: 'g',
             method: 'water',
-            warehouse_id: '',
             notes: ''
         });
 
@@ -217,25 +214,6 @@ export default{
         const feedProducts = computed(() => products.value.filter(p => p.product_type === 'feed'));
         const medProducts = computed(() => products.value.filter(p => p.product_type === 'medicine'));
 
-        const feedWarehouses = computed(() => warehouses.value.filter(w => w.warehouse_type === 'feed' || w.warehouse_type === 'mixed'));
-        const medWarehouses = computed(() => warehouses.value.filter(w => w.warehouse_type === 'medication' || w.warehouse_type === 'mixed'));
-
-        const defaultFeedWarehouse = computed(() => {
-            if (!selectedCycle.value) return null;
-            return feedWarehouses.value.find(w =>
-                w.barn_id === selectedCycle.value.barn_id ||
-                w.name?.toLowerCase().includes(selectedCycle.value.barn_id?.toLowerCase() || '')
-            ) || feedWarehouses.value[0] || null;
-        });
-
-        const defaultMedWarehouse = computed(() => {
-            if (!selectedCycle.value) return null;
-            return medWarehouses.value.find(w =>
-                w.barn_id === selectedCycle.value.barn_id ||
-                w.name?.toLowerCase().includes(selectedCycle.value.barn_id?.toLowerCase() || '')
-            ) || medWarehouses.value[0] || null;
-        });
-
         // Feed in bags (25kg per bag)
         const feedInBags = computed(() => feedForm.quantity / 25);
 
@@ -346,13 +324,11 @@ export default{
         async function loadData() {
             loading.value = true;
             try {
-                const [c, w, p] = await Promise.all([
+                const [c, p] = await Promise.all([
                     API.cycles.list(),
-                    API.warehouses.list(),
                     API.products.list()
                 ]);
                 cycles.value = c.filter(x => x.status === 'active');
-                warehouses.value = w;
                 products.value = p;
 
                 if (cycles.value.length === 1) {
@@ -364,17 +340,11 @@ export default{
             loading.value = false;
         }
 
-        // Set default warehouse khi chọn cycle
         watch(selectedCycleId, async () => {
             if (selectedCycleId.value) {
-                const defFeedWh = defaultFeedWarehouse.value;
-                if (defFeedWh) feedForm.warehouse_id = defFeedWh.id;
-                const defMedWh = defaultMedWarehouse.value;
-                if (defMedWh) medForm.warehouse_id = defMedWh.id;
-                
                 // Tự động chọn shift dựa trên dữ liệu hiện có
                 currentShift.value = autoShift.value;
-                
+
                 await loadCycleLogs();
             }
         });
@@ -438,7 +408,6 @@ export default{
                             meal: mealMapping,
                             product_id: feedForm.product_id || null,
                             quantity: qty,
-                            warehouse_id: feedForm.warehouse_id || null,
                             notes: feedForm.notes
                         };
                         await API.care.logFeed(data);
@@ -476,7 +445,6 @@ export default{
                             quantity: medForm.quantity || null,
                             unit: medForm.unit,
                             method: medForm.method || 'water',
-                            warehouse_id: medForm.warehouse_id || null,
                             notes: medForm.notes,
                             shift: currentShift.value
                         };
@@ -680,7 +648,6 @@ export default{
         // ── Template ──────────────────────────────────
         return {
             cycles,
-            warehouses,
             products,
             selectedCycleId,
             selectedCycle,
@@ -719,11 +686,7 @@ export default{
             vaccinesToday,
             feedProducts,
             medProducts,
-            feedWarehouses,
-            medWarehouses,
             feedInBags,
-            defaultFeedWarehouse,
-            defaultMedWarehouse,
             autoShift,
             weightStats,
             // Methods
@@ -958,13 +921,6 @@ export default{
                                     class="w-full px-4 py-2.5 border border-gray-300 rounded-lg focus:ring-2 focus:ring-green-500 focus:border-green-500" 
                                     placeholder="VD: 50" min="0" step="0.1">
                             </div>
-                            <div class="space-y-1">
-                                <label class="text-sm font-medium text-gray-700">Kho ({{ defaultFeedWarehouse?.name || 'Mặc định' }})</label>
-                                <select v-model="feedForm.warehouse_id" class="w-full px-4 py-2.5 border border-gray-300 rounded-lg focus:ring-2 focus:ring-green-500">
-                                    <option value="">-- Kho mặc định --</option>
-                                    <option v-for="w in feedWarehouses" :key="w.id" :value="w.id">{{ w.name }}</option>
-                                </select>
-                            </div>
                             <div class="md:col-span-2 space-y-2">
                                 <label class="text-sm font-medium text-gray-700">Loại thức ăn</label>
                                 <div class="flex flex-wrap gap-2">
@@ -1037,13 +993,6 @@ export default{
                                         :class="medForm.unit === 'ml' ? 'bg-purple-600 text-white shadow-sm' : 'bg-gray-100'"
                                         class="flex-1 px-4 py-2 rounded-lg font-medium text-sm">ML (ml)</button>
                                 </div>
-                            </div>
-                            <div class="space-y-1">
-                                <label class="text-sm font-medium text-gray-700">Kho thuốc</label>
-                                <select v-model="medForm.warehouse_id" class="w-full px-4 py-2.5 border border-gray-300 rounded-lg">
-                                    <option value="">-- Kho mặc định --</option>
-                                    <option v-for="w in medWarehouses" :key="w.id" :value="w.id">{{ w.name }}</option>
-                                </select>
                             </div>
                             <div class="md:col-span-2 space-y-2">
                                 <label class="text-sm font-medium text-gray-700">Tên thuốc</label>
