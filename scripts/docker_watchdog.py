@@ -32,6 +32,9 @@ FAIL_THRESHOLD = 3        # consecutive failures before restart
 DOCKER_DESKTOP = r"C:\Program Files\Docker\Docker\Docker Desktop.exe"
 RESTART_COOLDOWN = 300    # don't restart more than once per 5 minutes
 
+# Critical ports that must be accessible from LAN for ESP devices + server
+CRITICAL_PORTS = [1884, 5432]  # MQTT broker, TimescaleDB
+
 os.makedirs(LOG_DIR, exist_ok=True)
 
 _running = True
@@ -67,6 +70,46 @@ def docker_responsive() -> bool:
         return r.returncode == 0
     except (sp.TimeoutExpired, FileNotFoundError, OSError):
         return False
+
+
+def _get_lan_ip() -> str:
+    """Get the primary LAN IP address (192.168.x.x)."""
+    import socket
+    try:
+        s = socket.socket(socket.AF_INET, socket.SOCK_DGRAM)
+        s.connect(("8.8.8.8", 80))
+        ip = s.getsockname()[0]
+        s.close()
+        return ip
+    except Exception:
+        return "127.0.0.1"
+
+
+def ports_accessible() -> tuple[bool, str]:
+    """Check if critical Docker ports are accessible from LAN IP.
+
+    Docker Desktop on Windows sometimes runs (docker info OK) but fails
+    to forward ports from container to host — ESP devices can't connect.
+    This detects that specific failure mode.
+
+    Returns (ok, detail) where detail lists broken ports.
+    """
+    import socket
+    lan_ip = _get_lan_ip()
+    broken = []
+    for port in CRITICAL_PORTS:
+        try:
+            s = socket.socket(socket.AF_INET, socket.SOCK_STREAM)
+            s.settimeout(3)
+            result = s.connect_ex((lan_ip, port))
+            s.close()
+            if result != 0:
+                broken.append(port)
+        except Exception:
+            broken.append(port)
+    if broken:
+        return False, f"ports {broken} not reachable on {lan_ip}"
+    return True, "OK"
 
 
 def kill_docker():
@@ -155,14 +198,23 @@ def main():
                 consecutive_failures = 0
                 continue
 
-            if docker_responsive():
-                if consecutive_failures > 0:
-                    log(f"Docker recovered after {consecutive_failures} failures")
-                consecutive_failures = 0
-                continue
-
-            consecutive_failures += 1
-            log(f"Docker unresponsive ({consecutive_failures}/{FAIL_THRESHOLD})")
+            # Check 1: Docker daemon responsive?
+            if not docker_responsive():
+                consecutive_failures += 1
+                log(f"Docker daemon unresponsive ({consecutive_failures}/{FAIL_THRESHOLD})")
+            else:
+                # Check 2: Ports forwarded correctly?
+                # Docker Desktop on Windows can run but fail to forward ports
+                # after WSL2 VM corruption — ESP devices can't connect.
+                ports_ok, port_detail = ports_accessible()
+                if not ports_ok:
+                    consecutive_failures += 1
+                    log(f"Docker running but {port_detail} ({consecutive_failures}/{FAIL_THRESHOLD})")
+                else:
+                    if consecutive_failures > 0:
+                        log(f"Docker recovered after {consecutive_failures} failures")
+                    consecutive_failures = 0
+                    continue
 
             if consecutive_failures >= FAIL_THRESHOLD:
                 now = time.time()
