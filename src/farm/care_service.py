@@ -51,15 +51,28 @@ class CareService:
 
         return {"ok": True, "feed": dict(row)}
 
-    async def get_feeds(self, cycle_id: int, days: int = 30) -> list[dict]:
+    async def get_feeds(self, cycle_id: int, days: int = 30,
+                        date_from: str = None, date_to: str = None) -> list[dict]:
+        params = [cycle_id]
+        idx = 2
+        date_filter = ""
+        if date_from:
+            date_filter += f" AND cf.feed_date >= ${idx}"
+            params.append(date.fromisoformat(date_from))
+            idx += 1
+        if date_to:
+            date_filter += f" AND cf.feed_date <= ${idx}"
+            params.append(date.fromisoformat(date_to))
+            idx += 1
+        params.append(days * 4)
         rows = await db.fetch(
-            """SELECT cf.*, p.name as product_name
+            f"""SELECT cf.*, p.name as product_name
             FROM care_feeds cf
             LEFT JOIN products p ON cf.product_id = p.id
-            WHERE cf.cycle_id = $1
+            WHERE cf.cycle_id = $1{date_filter}
             ORDER BY cf.feed_date DESC, cf.created_at DESC
-            LIMIT $2""",
-            cycle_id, days * 4,  # ~4 meals per day
+            LIMIT ${idx}""",
+            *params,
         )
         return [dict(r) for r in rows]
 
@@ -78,20 +91,19 @@ class CareService:
     # ── Mortality (Tử vong) ───────────────────────────
 
     async def log_death(self, data: dict) -> dict:
-        row = await db.fetchrow(
-            """INSERT INTO care_deaths
-            (cycle_id, barn_id, death_date, count, cause, symptoms, notes)
-            VALUES ($1, $2, $3, $4, $5, $6, $7) RETURNING *""",
-            data["cycle_id"], data["barn_id"], data["death_date"],
-            data["count"], data.get("cause"), data.get("symptoms"),
-            data.get("notes"),
-        )
-
-        # Update current_count in cycle
-        await db.execute(
-            "UPDATE cycles SET current_count = current_count - $1, updated_at = NOW() WHERE id = $2",
-            data["count"], data["cycle_id"],
-        )
+        async with db.transaction() as conn:
+            row = await conn.fetchrow(
+                """INSERT INTO care_deaths
+                (cycle_id, barn_id, death_date, count, cause, symptoms, notes)
+                VALUES ($1, $2, $3, $4, $5, $6, $7) RETURNING *""",
+                data["cycle_id"], data["barn_id"], data["death_date"],
+                data["count"], data.get("cause"), data.get("symptoms"),
+                data.get("notes"),
+            )
+            await conn.execute(
+                "UPDATE cycles SET current_count = current_count - $1, updated_at = NOW() WHERE id = $2",
+                data["count"], data["cycle_id"],
+            )
 
         # Queue sync to cloud - map local field names to cloud schema
         payload = {
@@ -111,11 +123,24 @@ class CareService:
 
         return {"ok": True, "death": dict(row)}
 
-    async def get_deaths(self, cycle_id: int, days: int = 30) -> list[dict]:
+    async def get_deaths(self, cycle_id: int, days: int = 30,
+                         date_from: str = None, date_to: str = None) -> list[dict]:
+        params = [cycle_id]
+        idx = 2
+        date_filter = ""
+        if date_from:
+            date_filter += f" AND death_date >= ${idx}"
+            params.append(date.fromisoformat(date_from))
+            idx += 1
+        if date_to:
+            date_filter += f" AND death_date <= ${idx}"
+            params.append(date.fromisoformat(date_to))
+            idx += 1
+        params.append(days)
         rows = await db.fetch(
-            """SELECT * FROM care_deaths WHERE cycle_id = $1
-            ORDER BY death_date DESC LIMIT $2""",
-            cycle_id, days,
+            f"""SELECT * FROM care_deaths WHERE cycle_id = $1{date_filter}
+            ORDER BY death_date DESC LIMIT ${idx}""",
+            *params,
         )
         return [dict(r) for r in rows]
 
@@ -170,104 +195,115 @@ class CareService:
 
         return {"ok": True, "medication": dict(row)}
 
-    async def get_medications(self, cycle_id: int) -> list[dict]:
+    async def get_medications(self, cycle_id: int,
+                              date_from: str = None, date_to: str = None) -> list[dict]:
+        params = [cycle_id]
+        idx = 2
+        date_filter = ""
+        if date_from:
+            date_filter += f" AND cm.med_date >= ${idx}"
+            params.append(date.fromisoformat(date_from))
+            idx += 1
+        if date_to:
+            date_filter += f" AND cm.med_date <= ${idx}"
+            params.append(date.fromisoformat(date_to))
+            idx += 1
         rows = await db.fetch(
-            """SELECT cm.*, p.name as product_name
+            f"""SELECT cm.*, p.name as product_name
             FROM care_medications cm
             LEFT JOIN products p ON cm.product_id = p.id
-            WHERE cm.cycle_id = $1
+            WHERE cm.cycle_id = $1{date_filter}
             ORDER BY cm.med_date DESC""",
-            cycle_id,
+            *params,
         )
         return [dict(r) for r in rows]
 
     # ── Weight Sampling (Cân trọng lượng) ─────────────
 
     async def log_weight(self, data: dict) -> dict:
-        day_age = None
-        cycle = await db.fetchrow(
-            "SELECT start_date FROM cycles WHERE id = $1", data["cycle_id"]
-        )
-        if cycle:
-            day_age = (data["weigh_date"] - cycle["start_date"]).days
+        from datetime import timedelta
 
         # Get samples array (individual bird weights in grams)
         samples = data.get("samples", [])
         gender = data.get("gender", "mixed")  # 'male', 'female', 'mixed'
 
-        # If individual samples provided, calculate aggregates
-        if samples:
-            total_weight = sum(s["weight_g"] for s in samples)
-            sample_count = len(samples)
-
-            # Calculate gender-specific stats if gender markers present
-            male_samples = [s for s in samples if s.get("gender") == "male"]
-            female_samples = [s for s in samples if s.get("gender") == "female"]
-
-            sample_male = len(male_samples)
-            sample_female = len(female_samples)
-            total_weight_male = sum(s["weight_g"] for s in male_samples) if male_samples else None
-            total_weight_female = sum(s["weight_g"] for s in female_samples) if female_samples else None
-
-            # Calculate min/max/uniformity from all samples
-            weights = [s["weight_g"] for s in samples]
-            min_weight = min(weights) if weights else None
-            max_weight = max(weights) if weights else None
-
-            # Uniformity: % of birds within ±10% of avg
-            avg_weight = total_weight / sample_count if sample_count > 0 else 0
-            if avg_weight > 0:
-                within_range = sum(1 for w in weights if abs(w - avg_weight) / avg_weight <= 0.10)
-                uniformity = (within_range / sample_count * 100) if sample_count > 0 else 0
-            else:
-                uniformity = 0
-        else:
-            # Use aggregate values from form
-            total_weight = data.get("total_weight", 0)
-            sample_count = data.get("sample_count", 0)
-            min_weight = data.get("min_weight")
-            max_weight = data.get("max_weight")
-            uniformity = data.get("uniformity")
-            sample_male = data.get("sample_male", 0)
-            sample_female = data.get("sample_female", 0)
-            total_weight_male = data.get("total_weight_male")
-            total_weight_female = data.get("total_weight_female")
-
-        row = await db.fetchrow(
-            """INSERT INTO care_weights
-            (cycle_id, barn_id, weigh_date, sample_count, total_weight,
-             min_weight, max_weight, uniformity, day_age, notes,
-             gender, sample_male, sample_female, total_weight_male, total_weight_female)
-            VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10, $11, $12, $13, $14, $15) RETURNING *""",
-            data["cycle_id"], data["barn_id"], data["weigh_date"],
-            sample_count, total_weight,
-            min_weight, max_weight, uniformity, day_age, data.get("notes"),
-            gender, sample_male, sample_female, total_weight_male, total_weight_female,
-        )
-
-        weight_id = row["id"]
-
-        # Insert individual samples if provided
-        if samples:
-            for s in samples:
-                await db.execute(
-                    """INSERT INTO weight_samples (weight_id, weight_g, gender)
-                    VALUES ($1, $2, $3)""",
-                    weight_id, s["weight_g"], s.get("gender"),
-                )
-
-        # Update next weight reminder
-        reminder = await db.fetchrow(
-            "SELECT * FROM weight_reminders WHERE cycle_id = $1 AND enabled = TRUE",
-            data["cycle_id"],
-        )
-        if reminder:
-            from datetime import timedelta
-            next_date = data["weigh_date"] + timedelta(days=reminder["remind_every_days"])
-            await db.execute(
-                "UPDATE weight_reminders SET next_remind_date = $1 WHERE id = $2",
-                next_date, reminder["id"],
+        async with db.transaction() as conn:
+            # Calculate day_age from cycle start
+            day_age = None
+            cycle = await conn.fetchrow(
+                "SELECT start_date FROM cycles WHERE id = $1", data["cycle_id"]
             )
+            if cycle:
+                day_age = (data["weigh_date"] - cycle["start_date"]).days
+
+            # If individual samples provided, calculate aggregates
+            if samples:
+                total_weight = sum(s["weight_g"] for s in samples)
+                sample_count = len(samples)
+
+                male_samples = [s for s in samples if s.get("gender") == "male"]
+                female_samples = [s for s in samples if s.get("gender") == "female"]
+
+                sample_male = len(male_samples)
+                sample_female = len(female_samples)
+                total_weight_male = sum(s["weight_g"] for s in male_samples) if male_samples else None
+                total_weight_female = sum(s["weight_g"] for s in female_samples) if female_samples else None
+
+                weights = [s["weight_g"] for s in samples]
+                min_weight = min(weights) if weights else None
+                max_weight = max(weights) if weights else None
+
+                avg_weight = total_weight / sample_count if sample_count > 0 else 0
+                if avg_weight > 0:
+                    within_range = sum(1 for w in weights if abs(w - avg_weight) / avg_weight <= 0.10)
+                    uniformity = (within_range / sample_count * 100) if sample_count > 0 else 0
+                else:
+                    uniformity = 0
+            else:
+                total_weight = data.get("total_weight", 0)
+                sample_count = data.get("sample_count", 0)
+                min_weight = data.get("min_weight")
+                max_weight = data.get("max_weight")
+                uniformity = data.get("uniformity")
+                sample_male = data.get("sample_male", 0)
+                sample_female = data.get("sample_female", 0)
+                total_weight_male = data.get("total_weight_male")
+                total_weight_female = data.get("total_weight_female")
+
+            row = await conn.fetchrow(
+                """INSERT INTO care_weights
+                (cycle_id, barn_id, weigh_date, sample_count, total_weight,
+                 min_weight, max_weight, uniformity, day_age, notes,
+                 gender, sample_male, sample_female, total_weight_male, total_weight_female)
+                VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10, $11, $12, $13, $14, $15) RETURNING *""",
+                data["cycle_id"], data["barn_id"], data["weigh_date"],
+                sample_count, total_weight,
+                min_weight, max_weight, uniformity, day_age, data.get("notes"),
+                gender, sample_male, sample_female, total_weight_male, total_weight_female,
+            )
+
+            weight_id = row["id"]
+
+            # Insert individual samples if provided
+            if samples:
+                for s in samples:
+                    await conn.execute(
+                        """INSERT INTO weight_samples (weight_id, weight_g, gender)
+                        VALUES ($1, $2, $3)""",
+                        weight_id, s["weight_g"], s.get("gender"),
+                    )
+
+            # Update next weight reminder
+            reminder = await conn.fetchrow(
+                "SELECT * FROM weight_reminders WHERE cycle_id = $1 AND enabled = TRUE",
+                data["cycle_id"],
+            )
+            if reminder:
+                next_date = data["weigh_date"] + timedelta(days=reminder["remind_every_days"])
+                await conn.execute(
+                    "UPDATE weight_reminders SET next_remind_date = $1 WHERE id = $2",
+                    next_date, reminder["id"],
+                )
 
         # Queue sync to cloud
         payload = {
@@ -347,22 +383,21 @@ class CareService:
     # ── Sales (Xuất bán) ──────────────────────────────
 
     async def log_sale(self, data: dict) -> dict:
-        row = await db.fetchrow(
-            """INSERT INTO care_sales
-            (cycle_id, barn_id, sale_date, count, total_weight, avg_weight,
-             unit_price, total_amount, buyer, sale_type, notes)
-            VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10, $11) RETURNING *""",
-            data["cycle_id"], data["barn_id"], data["sale_date"],
-            data["count"], data.get("total_weight"), data.get("avg_weight"),
-            data.get("unit_price"), data.get("total_amount"),
-            data.get("buyer"), data.get("sale_type", "sale"), data.get("notes"),
-        )
-
-        # Update current_count
-        await db.execute(
-            "UPDATE cycles SET current_count = current_count - $1, updated_at = NOW() WHERE id = $2",
-            data["count"], data["cycle_id"],
-        )
+        async with db.transaction() as conn:
+            row = await conn.fetchrow(
+                """INSERT INTO care_sales
+                (cycle_id, barn_id, sale_date, count, total_weight, avg_weight,
+                 unit_price, total_amount, buyer, sale_type, notes)
+                VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10, $11) RETURNING *""",
+                data["cycle_id"], data["barn_id"], data["sale_date"],
+                data["count"], data.get("total_weight"), data.get("avg_weight"),
+                data.get("unit_price"), data.get("total_amount"),
+                data.get("buyer"), data.get("sale_type", "sale"), data.get("notes"),
+            )
+            await conn.execute(
+                "UPDATE cycles SET current_count = current_count - $1, updated_at = NOW() WHERE id = $2",
+                data["count"], data["cycle_id"],
+            )
 
         # Queue sync to cloud - map local field names to cloud schema
         payload = {
@@ -411,13 +446,12 @@ class CareService:
         if not death:
             return {"ok": False, "message": "Death log not found"}
 
-        # Restore current_count to cycle
-        await db.execute(
-            "UPDATE cycles SET current_count = current_count + $1, updated_at = NOW() WHERE id = $2",
-            death["count"], death["cycle_id"],
-        )
-
-        await db.execute("DELETE FROM care_deaths WHERE id = $1", death_id)
+        async with db.transaction() as conn:
+            await conn.execute(
+                "UPDATE cycles SET current_count = current_count + $1, updated_at = NOW() WHERE id = $2",
+                death["count"], death["cycle_id"],
+            )
+            await conn.execute("DELETE FROM care_deaths WHERE id = $1", death_id)
         return {"ok": True, "message": "Death log deleted"}
 
     async def delete_medication(self, med_id: int) -> dict:
@@ -430,12 +464,14 @@ class CareService:
         return {"ok": True, "message": "Medication log deleted"}
 
     async def delete_weight(self, weight_id: int) -> dict:
-        """Delete a weight log."""
+        """Delete a weight log and its individual samples."""
         weight = await db.fetchrow("SELECT * FROM care_weights WHERE id = $1", weight_id)
         if not weight:
             return {"ok": False, "message": "Weight log not found"}
 
-        await db.execute("DELETE FROM care_weights WHERE id = $1", weight_id)
+        async with db.transaction() as conn:
+            await conn.execute("DELETE FROM weight_samples WHERE weight_id = $1", weight_id)
+            await conn.execute("DELETE FROM care_weights WHERE id = $1", weight_id)
         return {"ok": True, "message": "Weight log deleted"}
 
     async def delete_sale(self, sale_id: int) -> dict:
@@ -444,13 +480,12 @@ class CareService:
         if not sale:
             return {"ok": False, "message": "Sale log not found"}
 
-        # Restore current_count to cycle
-        await db.execute(
-            "UPDATE cycles SET current_count = current_count + $1, updated_at = NOW() WHERE id = $2",
-            sale["count"], sale["cycle_id"],
-        )
-
-        await db.execute("DELETE FROM care_sales WHERE id = $1", sale_id)
+        async with db.transaction() as conn:
+            await conn.execute(
+                "UPDATE cycles SET current_count = current_count + $1, updated_at = NOW() WHERE id = $2",
+                sale["count"], sale["cycle_id"],
+            )
+            await conn.execute("DELETE FROM care_sales WHERE id = $1", sale_id)
         return {"ok": True, "message": "Sale log deleted"}
 
     # ── Water Logs (Nước uống) ───────────────────────────
@@ -496,12 +531,25 @@ class CareService:
 
         return {"ok": True, "water": dict(row)}
 
-    async def get_water_logs(self, cycle_id: int, days: int = 30) -> list[dict]:
+    async def get_water_logs(self, cycle_id: int, days: int = 30,
+                             date_from: str = None, date_to: str = None) -> list[dict]:
         """Get water logs for a cycle."""
+        params = [cycle_id]
+        idx = 2
+        date_filter = ""
+        if date_from:
+            date_filter += f" AND water_date >= ${idx}"
+            params.append(date.fromisoformat(date_from))
+            idx += 1
+        if date_to:
+            date_filter += f" AND water_date <= ${idx}"
+            params.append(date.fromisoformat(date_to))
+            idx += 1
+        params.append(days * 2)
         rows = await db.fetch(
-            """SELECT * FROM care_water_logs WHERE cycle_id = $1
-            ORDER BY water_date DESC, created_at DESC LIMIT $2""",
-            cycle_id, days * 2,  # ~2 logs per day
+            f"""SELECT * FROM care_water_logs WHERE cycle_id = $1{date_filter}
+            ORDER BY water_date DESC, created_at DESC LIMIT ${idx}""",
+            *params,
         )
         return [dict(r) for r in rows]
 
@@ -569,12 +617,25 @@ class CareService:
 
         return {"ok": True, "health": dict(row)}
 
-    async def get_health_notes(self, cycle_id: int, days: int = 30) -> list[dict]:
+    async def get_health_notes(self, cycle_id: int, days: int = 30,
+                               date_from: str = None, date_to: str = None) -> list[dict]:
         """Get health notes for a cycle."""
+        params = [cycle_id]
+        idx = 2
+        date_filter = ""
+        if date_from:
+            date_filter += f" AND recorded_at::date >= ${idx}"
+            params.append(date.fromisoformat(date_from))
+            idx += 1
+        if date_to:
+            date_filter += f" AND recorded_at::date <= ${idx}"
+            params.append(date.fromisoformat(date_to))
+            idx += 1
+        params.append(days)
         rows = await db.fetch(
-            """SELECT * FROM health_notes WHERE cycle_id = $1
-            ORDER BY recorded_at DESC LIMIT $2""",
-            cycle_id, days,
+            f"""SELECT * FROM health_notes WHERE cycle_id = $1{date_filter}
+            ORDER BY recorded_at DESC LIMIT ${idx}""",
+            *params,
         )
         return [dict(r) for r in rows]
 
@@ -589,6 +650,196 @@ class CareService:
         if not row:
             return {"ok": False, "message": "Health note not found"}
         return {"ok": True, "health": dict(row)}
+
+    async def delete_health(self, note_id: int) -> dict:
+        """Delete a health note."""
+        note = await db.fetchrow("SELECT * FROM health_notes WHERE id = $1", note_id)
+        if not note:
+            return {"ok": False, "message": "Health note not found"}
+        await db.execute("DELETE FROM health_notes WHERE id = $1", note_id)
+        return {"ok": True, "message": "Health note deleted"}
+
+    # ── Medication Suggestions ─────────────────────────
+
+    async def get_medication_suggestions(self, barn_id: str, limit: int = 20) -> list[dict]:
+        """Get distinct medication names used in a barn, ordered by most recent."""
+        rows = await db.fetch(
+            """SELECT COALESCE(custom_name, p.name, 'Thuốc') AS name,
+                      cm.med_type, cm.method, cm.unit,
+                      MAX(cm.med_date) AS last_used,
+                      COUNT(*) AS use_count
+            FROM care_medications cm
+            LEFT JOIN products p ON cm.product_id = p.id
+            WHERE cm.barn_id = $1
+            GROUP BY COALESCE(custom_name, p.name, 'Thuốc'), cm.med_type, cm.method, cm.unit
+            ORDER BY MAX(cm.med_date) DESC
+            LIMIT $2""",
+            barn_id, limit,
+        )
+        return [dict(r) for r in rows]
+
+    # ── Timeline (UNION ALL across care tables) ────────
+
+    async def get_timeline(self, cycle_id: int, type_filter: str = None,
+                           date_from: str = None, date_to: str = None,
+                           limit: int = 100) -> list[dict]:
+        """Get a merged timeline of all care events for a cycle."""
+        params = [cycle_id]
+        idx = 2
+
+        # Build date filter fragments
+        date_frag_feed = ""
+        date_frag_death = ""
+        date_frag_med = ""
+        date_frag_water = ""
+        date_frag_health = ""
+        date_frag_sale = ""
+
+        if date_from:
+            date_frag_feed = f" AND cf.feed_date >= ${idx}"
+            date_frag_death = f" AND cd.death_date >= ${idx}"
+            date_frag_med = f" AND cm.med_date >= ${idx}"
+            date_frag_water = f" AND cw.water_date >= ${idx}"
+            date_frag_health = f" AND hn.recorded_at >= ${idx}"
+            date_frag_sale = f" AND cs.sale_date >= ${idx}"
+            params.append(date.fromisoformat(date_from))
+            idx += 1
+
+        if date_to:
+            date_frag_feed += f" AND cf.feed_date <= ${idx}"
+            date_frag_death += f" AND cd.death_date <= ${idx}"
+            date_frag_med += f" AND cm.med_date <= ${idx}"
+            date_frag_water += f" AND cw.water_date <= ${idx}"
+            date_frag_health += f" AND hn.recorded_at <= ${idx}"
+            date_frag_sale += f" AND cs.sale_date <= ${idx}"
+            params.append(date.fromisoformat(date_to))
+            idx += 1
+
+        # UNION ALL query — each sub-select aliases columns to a common set
+        type_wheres = {
+            "feed": "feed",
+            "medication": "medication",
+            "death": "death",
+            "water": "water",
+            "health": "health",
+            "sale": "sale",
+        }
+
+        # Build individual SELECTs
+        selects = []
+
+        if not type_filter or type_filter == "feed":
+            selects.append(f"""
+                SELECT cf.id, 'feed' AS type, cf.feed_date AS entry_date, cf.created_at,
+                       cf.product_id, cf.quantity, cf.notes, cf.barn_id,
+                       NULL::text AS med_type, NULL::text AS custom_name, NULL::text AS unit,
+                       NULL::int AS count, NULL::text AS cause, NULL::text AS severity,
+                       cf.meal AS shift, NULL::text AS symptoms,
+                       NULL::float AS consumption_liters, NULL::bool AS medicated,
+                       NULL::float AS total_weight, NULL::float AS unit_price,
+                       NULL::text AS buyer
+                FROM care_feeds cf
+                WHERE cf.cycle_id = $1{date_frag_feed}
+            """)
+
+        if not type_filter or type_filter == "death":
+            selects.append(f"""
+                SELECT cd.id, 'death' AS type, cd.death_date AS entry_date, cd.created_at,
+                       NULL::int AS product_id, NULL::float AS quantity, cd.notes, cd.barn_id,
+                       NULL::text AS med_type, NULL::text AS custom_name, NULL::text AS unit,
+                       cd.count, cd.cause, NULL::text AS severity,
+                       NULL::text AS shift, cd.symptoms,
+                       NULL::float AS consumption_liters, NULL::bool AS medicated,
+                       NULL::float AS total_weight, NULL::float AS unit_price,
+                       NULL::text AS buyer
+                FROM care_deaths cd
+                WHERE cd.cycle_id = $1{date_frag_death}
+            """)
+
+        if not type_filter or type_filter == "medication":
+            selects.append(f"""
+                SELECT cm.id, 'medication' AS type, cm.med_date AS entry_date, cm.created_at,
+                       cm.product_id, cm.quantity, cm.notes, cm.barn_id,
+                       cm.med_type, cm.custom_name, cm.unit,
+                       NULL::int AS count, NULL::text AS cause, NULL::text AS severity,
+                       cm.shift, NULL::text AS symptoms,
+                       NULL::float AS consumption_liters, NULL::bool AS medicated,
+                       NULL::float AS total_weight, NULL::float AS unit_price,
+                       NULL::text AS buyer
+                FROM care_medications cm
+                WHERE cm.cycle_id = $1{date_frag_med}
+            """)
+
+        if not type_filter or type_filter == "water":
+            selects.append(f"""
+                SELECT cw.id, 'water' AS type, cw.water_date AS entry_date, cw.created_at,
+                       NULL::int AS product_id, NULL::float AS quantity, cw.notes, cw.barn_id,
+                       NULL::text AS med_type, NULL::text AS custom_name, NULL::text AS unit,
+                       NULL::int AS count, NULL::text AS cause, NULL::text AS severity,
+                       cw.shift, NULL::text AS symptoms,
+                       cw.consumption_liters, cw.medicated,
+                       NULL::float AS total_weight, NULL::float AS unit_price,
+                       NULL::text AS buyer
+                FROM care_water_logs cw
+                WHERE cw.cycle_id = $1{date_frag_water}
+            """)
+
+        if not type_filter or type_filter == "health":
+            selects.append(f"""
+                SELECT hn.id, 'health' AS type, hn.recorded_at AS entry_date, hn.created_at,
+                       NULL::int AS product_id, NULL::float AS quantity, hn.symptoms AS notes, hn.barn_id,
+                       NULL::text AS med_type, NULL::text AS custom_name, NULL::text AS unit,
+                       NULL::int AS count, NULL::text AS cause, hn.severity,
+                       NULL::text AS shift, hn.symptoms,
+                       NULL::float AS consumption_liters, NULL::bool AS medicated,
+                       NULL::float AS total_weight, NULL::float AS unit_price,
+                       NULL::text AS buyer
+                FROM health_notes hn
+                WHERE hn.cycle_id = $1{date_frag_health}
+            """)
+
+        if not type_filter or type_filter == "sale":
+            selects.append(f"""
+                SELECT cs.id, 'sale' AS type, cs.sale_date AS entry_date, cs.created_at,
+                       NULL::int AS product_id, NULL::float AS quantity, cs.notes, cs.barn_id,
+                       NULL::text AS med_type, NULL::text AS custom_name, NULL::text AS unit,
+                       cs.count, NULL::text AS cause, NULL::text AS severity,
+                       NULL::text AS shift, NULL::text AS symptoms,
+                       NULL::float AS consumption_liters, NULL::bool AS medicated,
+                       cs.total_weight, cs.unit_price,
+                       cs.buyer
+                FROM care_sales cs
+                WHERE cs.cycle_id = $1{date_frag_sale}
+            """)
+
+        if not selects:
+            return []
+
+        union_sql = " UNION ALL ".join(selects)
+        sql = f"SELECT * FROM ({union_sql}) AS timeline ORDER BY entry_date DESC, created_at DESC LIMIT ${idx}"
+        params.append(limit)
+
+        rows = await db.fetch(sql, *params)
+
+        # Enrich with product names
+        product_ids = {r["product_id"] for r in rows if r.get("product_id")}
+        product_names = {}
+        if product_ids:
+            p_rows = await db.fetch(
+                "SELECT id, name FROM products WHERE id = ANY($1)", list(product_ids)
+            )
+            product_names = {r["id"]: r["name"] for r in p_rows}
+
+        result = []
+        for r in rows:
+            d = dict(r)
+            d["entry_date"] = d["entry_date"].isoformat() if d.get("entry_date") else None
+            d["created_at"] = d["created_at"].isoformat() if d.get("created_at") else None
+            if d.get("product_id") and d["product_id"] in product_names:
+                d["product_name"] = product_names[d["product_id"]]
+            result.append(d)
+
+        return result
 
 
 care_service = CareService()
