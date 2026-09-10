@@ -132,6 +132,20 @@ class RTSPClient:
             import os
             os.environ.setdefault("OPENCV_FFMPEG_LOGLEVEL", "-8")
 
+            # Force TCP + auto-reconnect for RTSP (VLC-equivalent defaults).
+            # Without this, FFmpeg defaults to UDP transport for RTP — on WiFi
+            # cameras (Hikvision/Dahua/HiLook) UDP packet loss causes FFmpeg's
+            # internal read to block until OpenCV's 30s interrupt callback fires,
+            # showing up as "Stream timeout triggered after 30000ms" + drop.
+            # VLC defaults to TCP and works fine — same cameras, same network.
+            # `reconnect_streamed=1` lets FFmpeg retry on its own without us
+            # having to re-call connect() (saves the 30-failure / 15-min gap).
+            os.environ.setdefault(
+                "OPENCV_FFMPEG_CAPTURE_OPTIONS",
+                "rtsp_transport;tcp|stimeout;10000000"
+                "|reconnect;1|reconnect_streamed;1|reconnect_delay_max;5",
+            )
+
             cap = cv2.VideoCapture(self.rtsp_url, cv2.CAP_FFMPEG)
 
             # Optimize buffer to reduce latency
