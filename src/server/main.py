@@ -20,6 +20,7 @@ from src.server.routes.automation import router as automation_router
 from src.server.routes.firmware import router as firmware_router
 from src.server.routes.farm import router as farm_router
 from src.server.routes.farm_extended import router as farm_extended_router
+from src.server.routes.medication_aliases import router as medication_aliases_router
 from src.server.routes.notifications import router as notifications_router
 from src.server.routes.bats import router as bats_router
 from src.server.routes.equipment import router as equipment_router
@@ -44,6 +45,8 @@ from src.iot.vaccine_notification_service import vaccine_notification_service
 from src.iot.care_notification_service import care_notification_service
 from src.iot.weight_notification_service import weight_notification_service
 from src.iot.ai_logic_service import ai_logic_service
+from src.iot.inverter_service import inverter_service
+from src.iot.cf_relay import cf_relay
 from src.server.routes.ml import router as ml_router
 from src.server.routes.ai_logic import router as ai_logic_router
 from src.server.routes.ml_dataset import router as ml_dataset_router
@@ -54,7 +57,14 @@ from src.server.routes.dataset_capture import router as dataset_capture_router
 from src.server.routes.capture_scheduler_routes import router as capture_scheduler_router
 from src.server.routes.chat import router as chat_router
 from src.server.routes.cycle_snapshots import router as cycle_snapshots_router
+from src.iot.cycle_snapshot_service import start_snapshot_scheduler
+from src.server.routes.terminal import router as terminal_router
+from src.server.routes.inverter import router as inverter_router
+from src.server.routes.security import router as security_router
+from src.server.routes.relay_bind import router as relay_bind_router
+from src.security.security_service import security_service, set_main_event_loop
 from src.services.database.db import db
+from src.server.session_store import SessionStore
 
 # Logging
 logging.basicConfig(
@@ -76,6 +86,7 @@ app = FastAPI(
 
 # Background task handle
 _offline_check_task = None
+_snapshot_task = None
 
 
 async def _offline_check_loop():
@@ -96,7 +107,7 @@ async def startup_event():
     global _offline_check_task
     config = config_service.load_config()
 
-    # 1. Connect to TimescaleDB
+    # 1. Connect to TimescaleDB (retry up to 60 times, 5s apart — DB in Docker may need ~2min)
     db_config = config.get("database", {})
     db.configure(db_config if db_config else {
         "host": "localhost",
@@ -105,7 +116,14 @@ async def startup_event():
         "user": "cfarm",
         "password": "cfarm_local_2026",
     })
-    await db.connect()
+    for _db_attempt in range(60):
+        await db.connect()
+        if db.pool is not None:
+            break
+        logger.warning("DB not ready, retrying in 5s... (%d/60)", _db_attempt + 1)
+        await asyncio.sleep(5)
+    if db.pool is None:
+        logger.error("DB connection failed after 60 attempts — app running WITHOUT database")
 
     # 2. Connect to local MQTT broker
     mqtt_config = config.get("mqtt", {})
@@ -123,6 +141,13 @@ async def startup_event():
     _offline_check_task = asyncio.create_task(_offline_check_loop())
     logger.info("Device offline detection started (every 60s)")
 
+    # 4a. Start cycle_daily_snapshots scheduler (daily 00:30 VN + backfill on startup).
+    #     Replaces the old "manual CLI only" workflow that left snapshot table empty
+    #     for cycles 13/14/15 and any cycle active after 2026-05-26.
+    global _snapshot_task
+    _snapshot_task = asyncio.create_task(start_snapshot_scheduler())
+    logger.info("Cycle daily snapshots scheduler started (daily 00:30 VN + 30d backfill)")
+
     await automation_service.start()
     await alert_service.start()
     await vaccine_notification_service.start()
@@ -131,13 +156,31 @@ async def startup_event():
     await ai_logic_service.start()
 
     # 4b. Start cloud sync service
-    await sync_service.start()
+    # ARCHIVED 2026-09-07: cloud DB sync (app.cfarm.vn) replaced by Cloudflare Worker
+    # (cfarm-relay) for Telegram notifications. Sync service is no-op (sync.enabled=false,
+    # cloud_url cleared, triggers gated on sync_config.archived). Kept in codebase for
+    # potential re-activation. See CLAUDE.md "Cloud DB Sync (archived)".
+    # await sync_service.start()
+
+    # 4b-2. Start terminal SessionStore cleanup loop (kills expired
+    #        pinned/unpinned sessions every 30s; see session_store.py).
+    SessionStore.get_instance().start_cleanup()
 
     # 4c. Configure push notifications (optional)
     push_config = config.get("push_notifications", {})
     if push_config:
         notification_service.configure(push_config)
         logger.info("Push notifications configured")
+
+    # 4c-2. Configure Cloudflare Worker relay (optional, fire-and-forget).
+    # Mirrors local WebPush + cloud sync — never blocks the alert path.
+    cf_relay_cfg = config.get("cf_relay", {})
+    if cf_relay_cfg:
+        await cf_relay.configure(cf_relay_cfg)
+        if cf_relay.is_ready():
+            logger.info("Cloudflare Worker relay configured (cf_relay)")
+        else:
+            logger.debug("cf_relay block present but disabled or missing worker_url")
 
     # 4d. Reconcile MQ tare sessions from previous server lifetime
     try:
@@ -151,6 +194,58 @@ async def startup_event():
     if curtains_config:
         curtain_service.load_from_config(curtains_config)
         logger.info(f"Loaded {len(curtains_config)} curtain(s)")
+
+    # 5b. Configure + start inverter poller (read-only). Wrapped in try/except
+    #     so a config error here can never block the rest of startup.
+    try:
+        inverter_cfg = config.get("inverter", {})
+        inverter_service.configure(inverter_cfg)
+        await inverter_service.start()
+    except Exception as e:
+        logger.error("Inverter service start failed: %s", e)
+
+    # 5c. Configure + start security service (motion + YOLO person detection).
+    #     MUST come BEFORE camera frame-callback registration so the worker is
+    #     ready when frames start flowing.
+    try:
+        sec_cfg = config.get("security", {})
+        security_service.configure(sec_cfg)
+        # Capture the main event loop so the worker thread can dispatch
+        # async side-effects (push notification, siren).
+        try:
+            set_main_event_loop(asyncio.get_running_loop())
+        except RuntimeError:
+            pass
+        await security_service.start()
+    except Exception as e:
+        logger.error("Security service start failed: %s", e)
+
+    # 5d. Snapshot cleanup cron — runs hourly, deletes security snapshots
+    #     older than retention_days (default 30). Cheap, blocks nothing.
+    async def _cleanup_old_security_snapshots():
+        from datetime import datetime, timedelta
+        while True:
+            await asyncio.sleep(3600)  # hourly
+            try:
+                cfg = config.get("security", {})
+                snap_dir = Path(cfg.get("snapshot_dir", "E:\\AI\\Snapshots\\security"))
+                retention_days = int(cfg.get("snapshot_retention_days", 30))
+                if not snap_dir.exists():
+                    continue
+                cutoff = datetime.now().timestamp() - (retention_days * 86400)
+                deleted = 0
+                for f in snap_dir.rglob("*.jpg"):
+                    try:
+                        if f.stat().st_mtime < cutoff:
+                            f.unlink()
+                            deleted += 1
+                    except Exception:
+                        pass
+                if deleted:
+                    logger.info("Security snapshot cleanup: deleted %d files", deleted)
+            except Exception as e:
+                logger.warning("Security snapshot cleanup failed: %s", e)
+    asyncio.create_task(_cleanup_old_security_snapshots())
 
     # 6. Register frame callbacks BEFORE starting cameras
     setup_mjpeg()
@@ -172,13 +267,31 @@ async def startup_event():
     # Run initial cleanup
     snapshot_service.cleanup_old()
 
-    # 8. Start all enabled cameras
+    # 8. Start all enabled cameras.
+    # Each camera is wrapped in a 5s timeout — if a camera is unreachable
+    # (LAN drop, IP changed, RTSP auth changed), don't let it block the
+    # whole startup forever. Cameras that don't connect in time will be
+    # retried by the camera manager's background reconnect loop.
     cameras = config_service.get_cameras()
     started = 0
     for camera in cameras:
-        if camera.enabled:
-            if camera_manager.add_camera(camera):
+        if not camera.enabled:
+            continue
+        try:
+            ok = await asyncio.wait_for(
+                asyncio.to_thread(camera_manager.add_camera, camera),
+                timeout=5.0,
+            )
+            if ok:
                 started += 1
+        except asyncio.TimeoutError:
+            logger.warning(
+                "Camera %s add timed out after 5s — continuing startup; "
+                "camera may reconnect in background.",
+                camera.id,
+            )
+        except Exception as e:
+            logger.warning("Camera %s add failed: %s", camera.id, e)
     logger.info(f"Started {started}/{len(cameras)} cameras")
 
     logger.info("CFarm Local Server v0.10.0 ready!")
@@ -187,9 +300,15 @@ async def startup_event():
 @app.on_event("shutdown")
 async def shutdown_event():
     """Shutdown: stop all services cleanly."""
-    global _offline_check_task
+    global _offline_check_task, _snapshot_task
     if _offline_check_task:
         _offline_check_task.cancel()
+    if _snapshot_task:
+        _snapshot_task.cancel()
+        try:
+            await _snapshot_task
+        except asyncio.CancelledError:
+            pass
     await sync_service.stop()
     await automation_service.stop()
     await alert_service.stop()
@@ -197,10 +316,25 @@ async def shutdown_event():
     await care_notification_service.stop()
     await weight_notification_service.stop()
     await ai_logic_service.stop()
+    try:
+        await inverter_service.stop()
+    except Exception as e:
+        logger.warning("Inverter service stop error: %s", e)
     recording_service.stop_all()
     for camera_id in list(camera_manager.get_all_cameras().keys()):
         camera_manager.stop_camera(camera_id)
+    try:
+        await cf_relay.close()
+    except Exception as e:
+        logger.warning("CfRelay close error: %s", e)
+    # Stop security service AFTER cameras so no callback can fire mid-shutdown.
+    try:
+        await security_service.stop()
+    except Exception as e:
+        logger.warning("Security service stop error: %s", e)
     mqtt_client.disconnect()
+    # Kill any remaining terminal sessions (pinned or otherwise).
+    SessionStore.get_instance().shutdown_all()
     await db.disconnect()
     logger.info("CFarm Local Server stopped")
 
@@ -236,6 +370,11 @@ if static_dir.exists():
 snapshot_dir = Path("E:/AI/Snapshots")
 if snapshot_dir.exists():
     app.mount("/snapshots", StaticFiles(directory=str(snapshot_dir)), name="snapshots")
+
+# Mount security snapshot subfolder. URLs in security_events.snapshot_url
+# use /snapshots/security/<date>/<file>.jpg — the StaticFiles mount above
+# already covers this path because /snapshots/security is a subdir of E:/AI/Snapshots.
+# No separate mount needed.
 
 # Mount dataset folder for ML training images
 dataset_dir = Path("E:/AI/Dataset")
@@ -276,6 +415,7 @@ app.include_router(automation_router)
 app.include_router(firmware_router)
 app.include_router(farm_router)
 app.include_router(farm_extended_router)
+app.include_router(medication_aliases_router)
 app.include_router(notifications_router)
 app.include_router(database_router)
 app.include_router(bats_router)
@@ -292,6 +432,10 @@ app.include_router(dataset_capture_router)
 app.include_router(capture_scheduler_router)
 app.include_router(chat_router)
 app.include_router(cycle_snapshots_router)
+app.include_router(terminal_router)
+app.include_router(inverter_router)
+app.include_router(security_router)
+app.include_router(relay_bind_router)
 
 
 @app.get("/", response_class=HTMLResponse)
@@ -321,15 +465,30 @@ async def iot_page():
 
 @app.get("/health")
 async def health_check():
-    """Health check endpoint."""
+    """Health check endpoint — returns 503 if database is down."""
     mqtt_stats = mqtt_client.get_stats()
-    device_count = await db.fetchval("SELECT COUNT(*) FROM devices") if db.pool else 0
+    db_connected = db.pool is not None
+    device_count = await db.fetchval("SELECT COUNT(*) FROM devices") if db_connected else 0
     online_count = await db.fetchval(
         "SELECT COUNT(*) FROM devices WHERE is_online = TRUE"
-    ) if db.pool else 0
+    ) if db_connected else 0
 
-    return {
-        "status": "healthy",
+    # Terminal subsystem metrics (session count, active WS, cmd.exe
+    # process count, oldest session age). Lets external monitors /
+    # future guardian enhancements detect "FastAPI up but pywinpty
+    # broken" vs "FastAPI up and everything works".
+    # stats() shells out to `tasklist` (up to 2 s) — run in a thread so
+    # the asyncio loop isn't blocked while /health is being polled.
+    try:
+        from src.server.session_store import SessionStore
+        terminal_stats = await asyncio.to_thread(
+            SessionStore.get_instance().stats
+        )
+    except Exception as e:
+        terminal_stats = {"error": str(e)}
+
+    body = {
+        "status": "healthy" if db_connected else "degraded",
         "version": "0.10.0",
         "mqtt": {
             "connected": mqtt_stats["connected"],
@@ -337,13 +496,19 @@ async def health_check():
             "messages": mqtt_stats["message_count"],
         },
         "database": {
-            "connected": db.pool is not None,
+            "connected": db_connected,
         },
         "devices": {
             "total": device_count,
             "online": online_count,
         },
+        "terminal": terminal_stats,
     }
+
+    if not db_connected:
+        from fastapi.responses import JSONResponse
+        return JSONResponse(status_code=503, content=body)
+    return body
 
 
 if __name__ == "__main__":

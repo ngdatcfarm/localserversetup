@@ -9,6 +9,7 @@ import cv2
 
 from src.services.database.db import db
 from src.services.storage.config_service import ConfigService
+from src.utils.timezone import now_hcm
 
 logger = logging.getLogger(__name__)
 
@@ -56,8 +57,9 @@ class CaptureSchedulerService:
         if schedule_hours is None:
             schedule_hours = [6, 11, 15, 19]
 
-        # Calculate next capture time
-        now = datetime.now()
+        # Calculate next capture time — HCM-aware so schedule hours like
+        # [6, 11, 15, 19] mean 6 AM HCM (not 6 AM in whatever host TZ is).
+        now = now_hcm()
         next_capture = self._get_next_capture_time(schedule_hours, date.today())
 
         row = await db.fetchrow("""
@@ -169,8 +171,9 @@ class CaptureSchedulerService:
         schedule_hours: list[int],
         target_date: date
     ) -> datetime:
-        """Calculate next capture time based on schedule hours."""
-        now = datetime.now()
+        """Calculate next capture time based on schedule hours.
+        HCM-local so ``schedule_hours`` are interpreted as HCM wall-clock."""
+        now = now_hcm()
 
         # Check today first
         for hour in sorted(schedule_hours):
@@ -219,8 +222,8 @@ class CaptureSchedulerService:
                 errors.append(f"Shot {i}: failed to capture")
                 continue
 
-            # Save image
-            timestamp = datetime.now().strftime("%Y%m%d_%H%M%S_%f")
+            # Save image — HCM-local filename timestamp
+            timestamp = now_hcm().strftime("%Y%m%d_%H%M%S_%f")
             filename = f"sched_p{preset_id}_{timestamp}_{i:02d}.jpg"
             filepath = DATASET_DIR / filename
             cv2.imwrite(str(filepath), frame)
@@ -258,7 +261,8 @@ class CaptureSchedulerService:
 
         while self._running:
             try:
-                now = datetime.now()
+                # HCM-local so schedule hours match the barn's wall clock
+                now = now_hcm()
 
                 # Find schedules that need to run
                 schedules = await db.fetch("""

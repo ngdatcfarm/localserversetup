@@ -123,6 +123,12 @@ async def create_device(req: DeviceCreateRequest):
         "Thiết bị mới",
         f"Thiết bị '{req.name}' đã được thêm vào hệ thống"
     ))
+    # Forward to Cloudflare Worker relay (Telegram etc.) — fire-and-forget
+    asyncio.create_task(_send_relay_notification(
+        "info",
+        "Thiết bị mới",
+        f"Thiết bị '{req.name}' đã được thêm vào hệ thống"
+    ))
     return result["device"]
 
 
@@ -134,6 +140,22 @@ async def _send_local_notification(severity: str, title: str, message: str):
     except Exception as e:
         logger = __import__('logging').getLogger(__name__)
         logger.debug(f"Local notification skipped: {e}")
+
+
+async def _send_relay_notification(severity: str, title: str, message: str):
+    """Forward to Cloudflare Worker relay (Telegram etc.) — fire-and-forget."""
+    try:
+        from src.iot.cf_relay import cf_relay
+        await cf_relay.relay(
+            alert_type="DEVICE",
+            title=f"{title}: {message}",
+            body=message,
+            severity=severity,
+            url="/devices",
+        )
+    except Exception as e:
+        logger = __import__('logging').getLogger(__name__)
+        logger.debug(f"Device CfRelay skipped: {e}")
 
 
 @router.get("/{device_id}")

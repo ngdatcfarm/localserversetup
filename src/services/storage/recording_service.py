@@ -2,6 +2,8 @@
 
 import cv2
 import os
+import subprocess
+import shutil
 import time
 import logging
 import threading
@@ -9,12 +11,103 @@ from pathlib import Path
 from datetime import datetime
 from typing import Dict, Optional
 from dataclasses import dataclass, field
+from src.utils.timezone import now_hcm
 
 logger = logging.getLogger(__name__)
 
 # Default segment duration: 10 minutes
 DEFAULT_SEGMENT_DURATION = 600
 DEFAULT_RECORDING_DIR = "F:\\Camera"
+
+# Suppress console window allocation when shelling out to ffmpeg.exe (and any
+# other console app). Without this, Windows briefly spawns a conhost.exe every
+# time we run ffmpeg for faststart remux — visible as a flashing terminal.
+# Same fix as scripts/guardian.py and scripts/guardian_watchdog.py.
+NO_WINDOW = getattr(subprocess, "CREATE_NO_WINDOW", 0x08000000)
+
+
+# ── ffmpeg discovery (for faststart remux) ────────────────────────────────
+# We prefer the ffmpeg binary bundled with `imageio-ffmpeg` (no system PATH
+# dependency, cross-platform). If that isn't installed we fall back to the
+# system ffmpeg, then to a no-op.
+_FFMPEG_EXE: Optional[str] = None
+try:
+    import imageio_ffmpeg
+    _FFMPEG_EXE = imageio_ffmpeg.get_ffmpeg_exe()
+    if not os.path.exists(_FFMPEG_EXE):
+        _FFMPEG_EXE = None
+except Exception:
+    _FFMPEG_EXE = None
+
+if _FFMPEG_EXE is None:
+    _FFMPEG_EXE = shutil.which("ffmpeg")
+
+if _FFMPEG_EXE:
+    logger.info(f"RecordingService: faststart remux enabled (ffmpeg={_FFMPEG_EXE})")
+else:
+    logger.warning(
+        "RecordingService: ffmpeg not found (imageio-ffmpeg not installed and "
+        "no system ffmpeg on PATH). MP4 faststart remux is DISABLED — browser "
+        "playback will require buffering the entire segment before seeking. "
+        "Install imageio-ffmpeg to enable."
+    )
+
+
+def _remux_faststart(filepath: str, camera_id: str) -> None:
+    """Remux an MP4 to add the faststart flag (move `moov` atom to head).
+
+    Runs in a background daemon thread. Failure is non-fatal — the original
+    file is kept intact if anything goes wrong.
+
+    Why this matters: OpenCV's `cv2.VideoWriter` writes `moov` (the MP4
+    metadata + sample index) at the END of the file. Browsers need `moov`
+    before they can play or seek, so without this remux the user has to wait
+    for the whole 10-minute segment to download before the first frame shows.
+    `ffmpeg -movflags +faststart` is a stream copy (lossless, ~1s for a 1GB
+    file) that just relocates the metadata box.
+    """
+    if not _FFMPEG_EXE:
+        return  # ffmpeg not available — already warned at module load
+    try:
+        tmp_path = filepath + ".remux.mp4"
+        # -c copy: stream copy (no re-encode → lossless, fast)
+        # -movflags +faststart: write moov at start of file
+        cmd = [
+            _FFMPEG_EXE, "-y", "-hide_banner", "-loglevel", "error",
+            "-i", filepath,
+            "-c", "copy",
+            "-movflags", "+faststart",
+            tmp_path,
+        ]
+        result = subprocess.run(cmd, timeout=300, capture_output=True, text=True, creationflags=NO_WINDOW)
+        if result.returncode != 0:
+            logger.warning(
+                f"[{camera_id}] faststart remux failed (rc={result.returncode}): "
+                f"{result.stderr.strip()[:200]}"
+            )
+            if os.path.exists(tmp_path):
+                try:
+                    os.remove(tmp_path)
+                except OSError:
+                    pass
+            return
+        # Atomic replace: only swap the temp file in if it's actually present
+        # and non-empty. This guarantees we never leave a half-written file
+        # in the recordings directory.
+        if os.path.exists(tmp_path) and os.path.getsize(tmp_path) > 0:
+            os.replace(tmp_path, filepath)
+            logger.info(f"[{camera_id}] faststart remux OK: {filepath}")
+        else:
+            logger.warning(f"[{camera_id}] faststart remux produced empty file, keeping original")
+            if os.path.exists(tmp_path):
+                try:
+                    os.remove(tmp_path)
+                except OSError:
+                    pass
+    except subprocess.TimeoutExpired:
+        logger.warning(f"[{camera_id}] faststart remux timed out (>300s) for {filepath}")
+    except Exception as e:
+        logger.error(f"[{camera_id}] faststart remux error: {e}")
 
 
 @dataclass
@@ -87,7 +180,8 @@ class CameraRecorder:
     def _open_new_segment(self, frame, stats):
         """Open a new video segment file."""
         try:
-            now = datetime.now()
+            # HCM-local so day_dir groups by farm-day, not UTC-day
+            now = now_hcm()
             # Directory structure: base_dir/camera_id/YYYY-MM-DD/
             day_dir = self.base_dir / self.camera_id / now.strftime("%Y-%m-%d")
             day_dir.mkdir(parents=True, exist_ok=True)
@@ -126,15 +220,30 @@ class CameraRecorder:
     def _close_writer(self):
         """Close current video writer."""
         if self._writer is not None:
+            closed_file = self._current_file
             try:
                 self._writer.release()
                 # Update total size
-                if self._current_file and os.path.exists(self._current_file):
-                    size_mb = os.path.getsize(self._current_file) / (1024 * 1024)
+                if closed_file and os.path.exists(closed_file):
+                    size_mb = os.path.getsize(closed_file) / (1024 * 1024)
                     self.stats.total_size_mb += size_mb
             except Exception as e:
                 logger.error(f"[{self.camera_id}] Close writer error: {e}")
-            self._writer = None
+            finally:
+                self._writer = None
+                self._current_file = ""
+
+            # Remux the just-closed segment in a background thread so the
+            # `moov` atom is moved to the head of the file (faststart).
+            # Without this, browsers must download the whole file before they
+            # can play or seek — the "khung hình bị nhiễu / đứng hình" symptom.
+            if closed_file and os.path.exists(closed_file):
+                threading.Thread(
+                    target=_remux_faststart,
+                    args=(closed_file, self.camera_id),
+                    daemon=True,
+                    name=f"faststart-{self.camera_id}",
+                ).start()
 
 
 class RecordingService:

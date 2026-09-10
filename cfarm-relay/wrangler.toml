@@ -1,0 +1,17 @@
+name = "cfarm-relay"
+main = "src/index.js"
+compatibility_date = "2026-01-01"
+
+[vars]
+# TELEGRAM_BOT_TOKEN must be set via `wrangler secret put TELEGRAM_BOT_TOKEN`
+# (not committed to source). Same for CFARM_SHARED_SECRET.
+TELEGRAM_DEFAULT_CHAT_ID = ""
+HMAC_WINDOW_SECONDS = "300"
+
+[[d1_databases]]
+binding = "DB"
+database_name = "cfarm-relay-db"
+database_id = "REPLACE_AFTER_WRANGLER_D1_CREATE"
+
+[observability]
+enabled = true

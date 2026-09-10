@@ -182,6 +182,19 @@ class CareNotificationService:
                 cycle_id=cycle["id"],
                 url=f"/?tab=care&cycle={cycle['id']}&highlight=feed"
             )
+            # Forward to Cloudflare Worker relay (Telegram etc.) — fire-and-forget
+            try:
+                from src.iot.cf_relay import cf_relay
+                await cf_relay.relay(
+                    alert_type="CARE_FEED_MISSING",
+                    title=title,
+                    body=body,
+                    severity="warning",
+                    cycle_id=cycle["id"],
+                    url=f"/?tab=care&cycle={cycle['id']}&highlight=feed",
+                )
+            except Exception as e:
+                logger.debug(f"CfRelay skipped: {e}")
             logger.info(f"Feed reminder sent for cycle {cycle['id']} ({meal_type})")
         except Exception as e:
             logger.error(f"Failed to send feed reminder: {e}")
@@ -222,6 +235,19 @@ class CareNotificationService:
                 cycle_id=cycle["id"],
                 url=f"/?tab=care&cycle={cycle['id']}&highlight=medication"
             )
+            # Forward to Cloudflare Worker relay (Telegram etc.) — fire-and-forget
+            try:
+                from src.iot.cf_relay import cf_relay
+                await cf_relay.relay(
+                    alert_type="CARE_MEDICATION_REMINDER",
+                    title=title,
+                    body=body,
+                    severity="warning",
+                    cycle_id=cycle["id"],
+                    url=f"/?tab=care&cycle={cycle['id']}&highlight=medication",
+                )
+            except Exception as e:
+                logger.debug(f"CfRelay skipped: {e}")
             logger.info(f"Medication reminder sent for cycle {cycle['id']}")
         except Exception as e:
             logger.error(f"Failed to send medication reminder: {e}")

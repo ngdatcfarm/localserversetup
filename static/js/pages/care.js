@@ -1,336 +1,263 @@
 /**
- * Care - Quick Logging Page
- * 5 tabs: Feed | Medication | Death | Water | Health
- * Mobile-first, .cf-care-* CSS namespace
+ * Care - Quick Logging Page (Feed + Med side-by-side)
  * Route: /care
+ * Sub-routes: /care/water, /care/death, /care/health, /care/weight, /care/history
+ * Mobile-first, .cf-care-* CSS namespace
+ *
+ * Free-text product names: works even when inventory is empty.
+ *
+ * Refactored 2026-08-16: uses useCareContext() + <care-context-card>.
+ * Page-specific: products fetch, autoShift, feed/med forms, parseFeedLog.
  */
+import { useCareContext } from '../composables/useCareContext.js';
+import CareCyclePill from '../components/care-cycle-pill.js';
 const { ref, reactive, computed, watch, onMounted } = Vue;
 
 export default {
+    components: { CareCyclePill },
     setup() {
-        // ── State ──────────────────────────────────────
-        const cycles = ref([]);
-        const products = ref([]);
+        const ctx = useCareContext();
 
+        // ── Local helper (mirrors app.js fmtNum) ────────────
+        // Exposed in setup return so templates can call {{ fmtNum(x) }} safely
+        // via the component proxy. See useCareContext.js:39 for the `with (_ctx)`
+        // scope that bareword references resolve through.
+        function fmtNum(n, dec = 0) {
+            if (n === null || n === undefined) return '-';
+            return Number(n).toLocaleString('vi-VN', { minimumFractionDigits: dec, maximumFractionDigits: dec });
+        }
+
+        // ── Page-specific state ───────────────────────────
+        const products = ref([]);
         const feedLogs = ref([]);
         const medLogs = ref([]);
-        const deathLogs = ref([]);
-        const waterLogs = ref([]);
-        const healthNotes = ref([]);
-        const medSuggestions = ref([]);
-
-        const selectedCycleId = ref('');
-        const selectedDate = ref(new Date().toISOString().slice(0, 10));
         const currentShift = ref('sang');
-        const activeTab = ref('feed');
-        const loading = ref(false);
-        const submitting = ref(false);
-        const confirmDelete = ref(null);
+        const editingFeedId = ref(null);
+        const editingMedId = ref(null);
+        // Recent med name suggestions (lazy-loaded)
+        const recentMedSuggestions = ref([]);
+        const suggestionsLoading = ref(false);
 
-        // ── Forms ────────────────────────────────────────
-        const feedForm = reactive({ bag_count: 0, manual_qty: 0, product_id: '', notes: '' });
-        const medForm = reactive({
-            med_type: 'medicine', product_id: '', custom_name: '',
-            quantity: 0, unit: 'g', method: 'water', notes: ''
+        const feedForm = reactive({
+            bag_count: 0, manual_qty: 0,
+            feed_name: '',
+            notes: ''
         });
-        const deathForm = reactive({ count: 1, cause: '', symptoms: '', notes: '' });
-        const waterForm = reactive({ consumption_liters: 0, medicated: false, notes: '' });
-        const healthForm = reactive({ severity: 'normal', symptoms: '', health_flags: [], notes: '' });
+        const medForm = reactive({
+            med_type: 'medicine',
+            product_id: '', custom_name: '',
+            quantity: 0, unit: 'g', method: 'water',
+            notes: ''
+        });
 
         // ── Labels ──────────────────────────────────────
         const medMethodLabels = { water: 'Pha nước uống', feed: 'Trộn cám', inject: 'Tiêm lườn', eye_drop: 'Nhỏ mắt/mũi' };
-        const medTypeLabels = { vaccine: 'Phòng dịch', antibiotic: 'Kháng sinh', vitamin: 'Điện giải', probiotic: 'Men tiêu hóa' };
-        const deathCauseLabels = { disease: 'Bệnh', predator: 'Kẻ thù tự nhiên', heat: 'Nóng', cold: 'Lạnh', other: 'Khác' };
-        const healthFlagLabels = { cough: 'Ho', diarrhea: 'Tiêu chảy', lethargy: 'Uể oải', respiratory: 'Hô hấp' };
+        const medTypeLabels = {
+            medicine: 'Thuốc thường',
+            vaccine: 'Phòng dịch',
+            antibiotic: 'Kháng sinh',
+            vitamin: 'Điện giải',
+            probiotic: 'Men tiêu hóa'
+        };
         const medTypeColour = {
+            medicine: 'cf-care-med-default',
             vaccine: 'cf-care-med-vaccine', antibiotic: 'cf-care-med-antibiotic',
             vitamin: 'cf-care-med-vitamin', probiotic: 'cf-care-med-probiotic'
         };
+        // Hardcoded feed codes — user picks one of these (no free-text, no inventory lookup)
+        const FEED_TYPES = ['311H', '311', '312', '313'];
 
-        // ── Computed ────────────────────────────────────
-        const selectedCycle = computed(() =>
-            cycles.value.find(c => c.id == selectedCycleId.value) || null
-        );
-
-        const dayAge = computed(() => {
-            if (!selectedCycle.value) return 0;
-            const start = new Date(selectedCycle.value.start_date);
-            const today = new Date(selectedDate.value);
-            return Math.max(0, Math.floor((today - start) / (1000 * 60 * 60 * 24)));
-        });
-
-        const aliveCount = computed(() =>
-            selectedCycle.value?.current_count ?? selectedCycle.value?.initial_count ?? 0
-        );
-
-        const feedProducts = computed(() => products.value.filter(p => p.product_type === 'feed'));
+        // ── Page-specific computed ───────────────────────
         const medProducts = computed(() => products.value.filter(p =>
             p.product_type === 'medication' || p.product_type === 'medicine'
         ));
-
-        // Feed preview kg (unified calculation)
+        const selectedMedProduct = computed(() =>
+            medProducts.value.find(p => p.id === medForm.product_id) || null
+        );
         const feedPreviewKg = computed(() => {
             if (!feedForm.bag_count) return 0;
-            const prod = feedProducts.value.find(p => p.id === feedForm.product_id);
-            const wpb = prod?.kg_per_bag || prod?.capacity_kg || 25;
-            return feedForm.bag_count * wpb;
+            return feedForm.bag_count * 25;
+        });
+        const feedFinalQty = computed(() => {
+            if (feedForm.bag_count > 0) return feedPreviewKg.value;
+            return feedForm.manual_qty || 0;
+        });
+        const medFinalName = computed(() => {
+            return (medForm.custom_name || '').trim() || selectedMedProduct.value?.name || '';
         });
 
-        // Data from API is already filtered by cycle + date (server-side)
-        const todayFeedLogs = computed(() => feedLogs.value);
-        const todayMedLogs = computed(() => medLogs.value);
-        const todayDeathLogs = computed(() => deathLogs.value);
-        const todayWaterLogs = computed(() => waterLogs.value);
-        const todayHealthNotes = computed(() => healthNotes.value);
+        // ── Shift status: which shifts already have logs today? ──
+        const sangHasFeed = computed(() => feedLogs.value.some(l => l.meal === 'sang'));
+        const chieuHasFeed = computed(() => feedLogs.value.some(l => l.meal === 'chieu'));
+        const sangHasMed = computed(() => medLogs.value.some(l => l.shift === 'sang'));
+        const chieuHasMed = computed(() => medLogs.value.some(l => l.shift === 'chieu'));
+        const sangHasRecord = computed(() => sangHasFeed.value || sangHasMed.value);
+        const chieuHasRecord = computed(() => chieuHasFeed.value || chieuHasMed.value);
 
-        // Shift-filtered
-        const shiftFeedLogs = computed(() =>
-            todayFeedLogs.value.filter(l => l.meal === currentShift.value || l.meal === 'all_day')
+        // ── History card totals ──
+        const feedTotalKg = computed(() =>
+            feedLogs.value.reduce((s, l) => s + (Number(l.quantity) || 0), 0)
         );
-        const shiftMedLogs = computed(() =>
-            todayMedLogs.value.filter(l => l.shift === currentShift.value || l.shift === 'all_day')
-        );
-        const shiftWaterLogs = computed(() =>
-            todayWaterLogs.value.filter(l => l.shift === currentShift.value || l.shift === 'all_day')
-        );
+        const medTotalDose = computed(() => medLogs.value.length);
 
-        const totalKgToday = computed(() =>
-            todayFeedLogs.value.reduce((s, l) => s + (l.quantity || 0), 0)
-        );
-
-        // Auto-shift detection based on existing data
-        const sangHasFeed = computed(() => todayFeedLogs.value.some(l => l.meal === 'sang'));
-        const chieuHasFeed = computed(() => todayFeedLogs.value.some(l => l.meal === 'chieu'));
-        const sangHasMed = computed(() => todayMedLogs.value.some(l => l.shift === 'sang'));
-        const chieuHasMed = computed(() => todayMedLogs.value.some(l => l.shift === 'chieu'));
-
-        // Tab counts for badges
-        const tabCounts = computed(() => ({
-            feed: todayFeedLogs.value.length,
-            medication: todayMedLogs.value.length,
-            death: todayDeathLogs.value.length,
-            water: todayWaterLogs.value.length,
-            health: todayHealthNotes.value.length,
-        }));
-
-        // ── Watchers ────────────────────────────────────
-        watch(selectedCycleId, async (newId) => {
-            if (!newId) return;
-            loading.value = true;
-            try {
-                await loadLogs();
-                loadMedSuggestions();
-            } finally {
-                loading.value = false;
-            }
-        });
-
-        watch(selectedDate, async () => {
-            if (!selectedCycleId.value) return;
-            await loadLogs();
-        });
-
-        // Auto-set unit when med product changes
+        // ── Page-specific watcher: auto-fill unit + med_type when med product changes ──
         watch(() => medForm.product_id, (newId) => {
             const prod = medProducts.value.find(p => p.id === newId);
             if (prod) {
+                // Unit (existing logic)
                 if (prod.medication_unit_specs && prod.medication_unit_specs.length > 0) {
                     medForm.unit = prod.medication_unit_specs[0].base_unit || prod.unit || 'g';
                 } else {
                     medForm.unit = prod.base_unit || prod.unit || 'g';
                 }
+                // Category → med_type (e.g. "antibiotic" → "Kháng sinh")
+                _applyCategory(prod.category || prod.medication_category);
             }
         });
 
-        // Auto-shift based on time of day
+        // ── Helper: map medications.category → medForm.med_type ──
+        // medTypeLabels keys: medicine | vaccine | antibiotic | vitamin | probiotic
+        // Falls back silently if category doesn't match any (e.g. "disinfectant", "other")
+        function _applyCategory(category) {
+            if (!category) return;
+            const valid = Object.keys(medTypeLabels);
+            if (valid.includes(category)) {
+                medForm.med_type = category;
+            }
+        }
+
         function autoShift() {
             const hour = new Date().getHours();
             currentShift.value = hour < 13 ? 'sang' : 'chieu';
         }
 
-        // ── API ────────────────────────────────────────
-        async function loadData() {
-            loading.value = true;
-            try {
-                const [c, p] = await Promise.all([API.cycles.list(), API.products.list()]);
-                cycles.value = c;
-                products.value = p;
-
-                if (!selectedCycleId.value && cycles.value.length > 0) {
-                    const active = cycles.value.find(cl => !cl.end_date);
-                    selectedCycleId.value = active ? active.id : cycles.value[0].id;
-                }
-                autoShift();
-                await loadLogs();
-                loadMedSuggestions();
-            } catch (e) {
-                showToast('Lỗi tải dữ liệu: ' + e.message, 'error');
-            } finally {
-                loading.value = false;
-            }
-        }
-
+        // ── API loaders ──────────────────────────────────────
         async function loadLogs() {
-            if (!selectedCycleId.value) return;
-            const cid = selectedCycleId.value;
-            const d = selectedDate.value;
+            if (!ctx.selectedCycleId.value) return;
+            const cid = ctx.selectedCycleId.value;
+            const d = ctx.selectedDate.value;
             try {
-                const [fl, ml, dl, wl, hl] = await Promise.all([
+                const [fl, ml] = await Promise.all([
                     API.care.feedHistory(cid, d, d),
                     API.care.medHistory(cid, d, d),
-                    API.care.deathHistory(cid, d, d),
-                    API.care.waterHistory(cid, d, d),
-                    API.care.healthHistory(cid, d, d),
                 ]);
                 feedLogs.value = Array.isArray(fl) ? fl : [];
                 medLogs.value = Array.isArray(ml) ? ml : [];
-                deathLogs.value = Array.isArray(dl) ? dl : [];
-                waterLogs.value = Array.isArray(wl) ? wl : [];
-                healthNotes.value = Array.isArray(hl) ? hl : [];
             } catch (e) {
-                feedLogs.value = []; medLogs.value = []; deathLogs.value = [];
-                waterLogs.value = []; healthNotes.value = [];
+                feedLogs.value = []; medLogs.value = [];
             }
         }
-
-        async function loadMedSuggestions() {
-            const barnId = selectedCycle.value?.barn_id;
-            if (!barnId) { medSuggestions.value = []; return; }
-            try {
-                const data = await API.care.medSuggestions(barnId);
-                medSuggestions.value = Array.isArray(data) ? data : [];
-            } catch (e) {
-                medSuggestions.value = [];
-            }
-        }
-
-        function applySuggestion(s) {
-            medForm.custom_name = s.name;
-            if (s.med_type) medForm.med_type = s.med_type;
-            if (s.method) medForm.method = s.method;
-            if (s.unit) medForm.unit = s.unit;
-            medForm.product_id = '';
-        }
+        ctx.onCycleChange(loadLogs);
+        ctx.onDateChange(loadLogs);
 
         // ── Submit handlers ─────────────────────────────
         async function saveFeed() {
-            const prod = feedProducts.value.find(p => p.id === feedForm.product_id);
-            if (!prod) { showToast('Chọn loại cám', 'error'); return; }
-
-            let finalQty = feedForm.manual_qty;
-            if (feedForm.bag_count > 0) finalQty = feedPreviewKg.value;
-
+            const finalQty = feedFinalQty.value;
+            if (!feedForm.feed_name) { showToast('Chọn loại cám', 'error'); return; }
             if (finalQty <= 0) { showToast('Nhập số lượng cám', 'error'); return; }
 
-            const barnId = selectedCycle.value?.barn_id ? String(selectedCycle.value.barn_id) : '';
+            const barnId = ctx.selectedCycle.value?.barn_id ? String(ctx.selectedCycle.value.barn_id) : '';
+            const wasEditing = editingFeedId.value;
             try {
+                // Edit = delete old log first, then create new (no PUT endpoint)
+                if (wasEditing) {
+                    await API.care.delFeed(editingFeedId.value);
+                }
                 await API.care.logFeed({
-                    cycle_id: Number(selectedCycleId.value), barn_id: barnId,
-                    feed_date: selectedDate.value, meal: currentShift.value,
+                    cycle_id: Number(ctx.selectedCycleId.value), barn_id: barnId,
+                    feed_date: ctx.selectedDate.value, meal: currentShift.value,
                     quantity: finalQty,
-                    product_id: feedForm.product_id ? Number(feedForm.product_id) : undefined,
-                    notes: feedForm.notes
+                    notes: [feedForm.feed_name, feedForm.notes].filter(Boolean).join(' · ') || undefined
                 });
-                showToast('Đã ghi nhận: ' + finalQty + ' kg', 'success');
-                feedForm.bag_count = 0; feedForm.manual_qty = 0; feedForm.notes = '';
+                showToast(wasEditing ? 'Đã cập nhật: ' + finalQty + ' kg' : 'Đã ghi nhận: ' + finalQty + ' kg', 'success');
+                feedForm.bag_count = 0; feedForm.manual_qty = 0;
+                feedForm.feed_name = ''; feedForm.notes = '';
+                editingFeedId.value = null;
                 await loadLogs();
             } catch (e) { showToast(e.message, 'error'); }
         }
 
         async function saveMedication() {
             if (medForm.quantity <= 0) { showToast('Nhập liều lượng', 'error'); return; }
+            const finalName = medFinalName.value;
+            if (!finalName) { showToast('Nhập tên thuốc', 'error'); return; }
 
-            const barnId = selectedCycle.value?.barn_id ? String(selectedCycle.value.barn_id) : '';
+            const barnId = ctx.selectedCycle.value?.barn_id ? String(ctx.selectedCycle.value.barn_id) : '';
+            const wasEditing = editingMedId.value;
             try {
+                if (wasEditing) {
+                    await API.care.delMedication(editingMedId.value);
+                }
                 await API.care.logMedication({
-                    cycle_id: Number(selectedCycleId.value), barn_id: barnId,
-                    med_date: selectedDate.value, med_type: medForm.med_type || 'medicine',
+                    cycle_id: Number(ctx.selectedCycleId.value), barn_id: barnId,
+                    med_date: ctx.selectedDate.value, med_type: medForm.med_type || 'medicine',
                     product_id: medForm.product_id ? Number(medForm.product_id) : undefined,
                     quantity: medForm.quantity, unit: medForm.unit,
                     method: medForm.method, shift: currentShift.value,
-                    custom_name: medForm.custom_name || undefined,
+                    custom_name: finalName,
                     notes: medForm.notes || undefined
                 });
-                showToast('Đã lưu thuốc', 'success');
+                showToast(wasEditing ? 'Đã cập nhật thuốc' : 'Đã lưu thuốc', 'success');
                 medForm.custom_name = ''; medForm.quantity = 0; medForm.notes = '';
+                editingMedId.value = null;
                 await loadLogs();
             } catch (e) { showToast(e.message, 'error'); }
         }
 
-        async function saveDeath() {
-            if (deathForm.count <= 0) { showToast('Nhập số lượng', 'error'); return; }
-
-            const barnId = selectedCycle.value?.barn_id ? String(selectedCycle.value.barn_id) : '';
-            try {
-                await API.care.logDeath({
-                    cycle_id: Number(selectedCycleId.value), barn_id: barnId,
-                    death_date: selectedDate.value, count: deathForm.count,
-                    cause: deathForm.cause || undefined,
-                    symptoms: deathForm.symptoms || undefined,
-                    notes: deathForm.notes || undefined
-                });
-                showToast('Đã ghi nhận tử vong: ' + deathForm.count + ' con', 'success');
-                deathForm.count = 1; deathForm.cause = ''; deathForm.symptoms = ''; deathForm.notes = '';
-                await loadLogs();
-            } catch (e) { showToast(e.message, 'error'); }
+        // ── Edit handlers (delete-then-recreate) ─────
+        function editFeed(log) {
+            // Populate feed form from existing log
+            const parsed = parseFeedLog(log);
+            const isFeedCode = FEED_TYPES.includes(parsed.feedCode);
+            feedForm.feed_name = isFeedCode ? parsed.feedCode : '';
+            feedForm.notes = parsed.userNotes || '';
+            // Populate bag/quantity: prefer bag_count when total cleanly divides 25, else raw
+            const qty = Number(log.quantity) || 0;
+            feedForm.bag_count = 0;
+            feedForm.manual_qty = qty;
+            editingFeedId.value = log.id;
+            currentShift.value = log.meal || 'sang';
+            // Scroll the feed form into view
+            const el = document.querySelector('.cf-care-stack:first-of-type .cf-care-form-card');
+            if (el) el.scrollIntoView({ behavior: 'smooth', block: 'start' });
         }
 
-        async function saveWater() {
-            if (waterForm.consumption_liters <= 0) { showToast('Nhập lượng nước', 'error'); return; }
-
-            const barnId = selectedCycle.value?.barn_id ? String(selectedCycle.value.barn_id) : '';
-            try {
-                await API.care.logWater({
-                    cycle_id: Number(selectedCycleId.value), barn_id: barnId,
-                    water_date: selectedDate.value, shift: currentShift.value,
-                    consumption_liters: waterForm.consumption_liters,
-                    medicated: waterForm.medicated,
-                    notes: waterForm.notes || undefined
-                });
-                showToast('Đã ghi nhận nước: ' + waterForm.consumption_liters + ' lít', 'success');
-                waterForm.consumption_liters = 0; waterForm.medicated = false; waterForm.notes = '';
-                await loadLogs();
-            } catch (e) { showToast(e.message, 'error'); }
+        function cancelFeedEdit() {
+            editingFeedId.value = null;
+            feedForm.bag_count = 0;
+            feedForm.manual_qty = 0;
+            feedForm.feed_name = '';
+            feedForm.notes = '';
         }
 
-        async function saveHealth() {
-            const barnId = selectedCycle.value?.barn_id ? String(selectedCycle.value.barn_id) : '';
-            try {
-                await API.care.logHealth({
-                    cycle_id: Number(selectedCycleId.value), barn_id: barnId,
-                    severity: healthForm.severity,
-                    symptoms: healthForm.symptoms || null,
-                    health_flags: healthForm.health_flags,
-                    notes: healthForm.notes || undefined,
-                    recorded_at: selectedDate.value,
-                    day_age: dayAge.value
-                });
-                showToast('Đã ghi nhận sức khỏe', 'success');
-                healthForm.severity = 'normal'; healthForm.symptoms = '';
-                healthForm.health_flags = []; healthForm.notes = '';
-                await loadLogs();
-            } catch (e) { showToast(e.message, 'error'); }
+        function editMed(log) {
+            medForm.custom_name = log.custom_name || '';
+            medForm.product_id = log.product_id ? String(log.product_id) : '';
+            medForm.med_type = log.med_type || 'medicine';
+            medForm.quantity = Number(log.quantity) || 0;
+            medForm.unit = log.unit || 'g';
+            medForm.method = log.method || 'water';
+            medForm.notes = log.notes || '';
+            editingMedId.value = log.id;
+            currentShift.value = log.shift || 'sang';
+            const el = document.querySelector('.cf-care-stack:nth-of-type(2) .cf-care-form-card');
+            if (el) el.scrollIntoView({ behavior: 'smooth', block: 'start' });
         }
 
-        // ── Delete handlers ─────────────────────────────
-        function askDelete(message, onConfirm) {
-            confirmDelete.value = { message, onConfirm };
+        function cancelMedEdit() {
+            editingMedId.value = null;
+            medForm.custom_name = '';
+            medForm.product_id = '';
+            medForm.quantity = 0;
+            medForm.notes = '';
         }
-        function doConfirmDelete() {
-            confirmDelete.value.onConfirm();
-            confirmDelete.value = null;
-        }
-        function cancelDelete() { confirmDelete.value = null; }
 
         async function deleteEntry(type, id) {
-            askDelete('Xóa dòng ghi nhận này?', async () => {
+            ctx.askDelete('Xóa dòng ghi nhận này?', async () => {
                 try {
                     const delMap = {
                         feed: () => API.care.delFeed(id),
                         medication: () => API.care.delMedication(id),
-                        death: () => API.care.delDeath(id),
-                        water: () => API.care.delWater(id),
-                        health: () => API.care.delHealth(id),
                     };
                     const fn = delMap[type];
                     if (fn) await fn();
@@ -340,49 +267,141 @@ export default {
             });
         }
 
-        function toggleHealthFlag(flag) {
-            const idx = healthForm.health_flags.indexOf(flag);
-            if (idx === -1) healthForm.health_flags.push(flag);
-            else healthForm.health_flags.splice(idx, 1);
+        // ── Feed log parsing ─────────────────────────────
+        function parseFeedLog(log) {
+            const raw = (log.notes || '').split(' · ');
+            const first = raw[0] || '';
+            const isFeedCode = FEED_TYPES.includes(first);
+            return {
+                feedCode: isFeedCode ? first : (log.product_name || ''),
+                userNotes: isFeedCode ? raw.slice(1).join(' · ') : (log.notes || '')
+            };
+        }
+        const parsedFeedLogs = computed(() => feedLogs.value.map(parseFeedLog));
+
+        // ── Recent medication name suggestions (lazy-load after page interactive) ──
+        async function loadRecentMeds() {
+            suggestionsLoading.value = true;
+            try {
+                recentMedSuggestions.value = await API.medications.nameSuggestions(15);
+            } catch (e) {
+                recentMedSuggestions.value = [];
+            } finally {
+                suggestionsLoading.value = false;
+            }
         }
 
-        function changeDate(delta) {
-            const d = new Date(selectedDate.value);
-            d.setDate(d.getDate() + delta);
-            selectedDate.value = d.toISOString().slice(0, 10);
+        function pickRecentMed(s) {
+            // Click → fills custom_name AND links medication_id (was: cleared product_id)
+            medForm.custom_name = s.canonical_name;
+            if (s.medication_id) medForm.product_id = s.medication_id;
+            // Auto-fill unit + med_type from chip metadata (no need to wait for watcher)
+            if (s.unit) medForm.unit = s.unit;
+            _applyCategory(s.category);
+            showToast(`Đã chọn "${s.canonical_name}"`, 'success');
         }
 
-        function fmtNum(n, d = 0) {
-            if (n == null) return '-';
-            return Number(n).toLocaleString('vi-VN', { minimumFractionDigits: d, maximumFractionDigits: d });
+        // ── Real-time fuzzy suggestion dropdown (Layer 4) ────────
+        const fuzzySuggestions = ref([]);     // top 3 from /resolve
+        const showFuzzy = ref(false);
+        const resolveSeq = ref(0);            // race-condition guard
+        let fuzzyTimer = null;
+
+        watch(() => medForm.custom_name, (newText) => {
+            // Hide if user picked a catalog chip (product_id set + custom_name cleared)
+            if (medForm.product_id && !newText) {
+                fuzzySuggestions.value = [];
+                showFuzzy.value = false;
+                return;
+            }
+            const txt = (newText || '').trim();
+            if (txt.length < 3) {
+                fuzzySuggestions.value = [];
+                showFuzzy.value = false;
+                return;
+            }
+            clearTimeout(fuzzyTimer);
+            fuzzyTimer = setTimeout(() => doResolve(txt), 200);  // debounce 200ms
+        });
+
+        async function doResolve(text) {
+            const seq = ++resolveSeq.value;
+            try {
+                const r = await API.medications.resolve(text);
+                if (seq !== resolveSeq.value) return;  // stale response
+                fuzzySuggestions.value = r.suggestions || [];
+                showFuzzy.value = (r.suggestions || []).length > 0;
+                // Auto-apply exact alias match — silently link + fill med_type/unit
+                if (r.exact) {
+                    _applyExactMatch(r.exact);
+                }
+            } catch (e) {
+                fuzzySuggestions.value = [];
+                showFuzzy.value = false;
+            }
         }
 
-        function timeStr(log) {
-            const t = log.recorded_at || log.created_at;
-            if (!t) return '';
-            // Extract HH:MM from datetime
-            if (typeof t === 'string' && t.includes('T')) return t.split('T')[1]?.substring(0, 5) || '';
-            if (typeof t === 'string' && t.length > 10) return t.substring(11, 16);
-            return '';
+        function _applyExactMatch(exact) {
+            // Exact alias match → fill canonical name + medication_id + unit + med_type.
+            // No dropdown click needed; user just typed and got it right.
+            if (medForm.custom_name !== exact.canonical_name) {
+                medForm.custom_name = exact.canonical_name;
+            }
+            if (exact.medication_id) medForm.product_id = exact.medication_id;
+            if (exact.unit) medForm.unit = exact.unit;
+            _applyCategory(exact.category);
         }
 
-        // ── Lifecycle ─────────────────────────────
-        onMounted(() => loadData());
+        function applyFuzzySuggestion(s) {
+            // 1. Use canonical name as the typed text (clean display in history)
+            medForm.custom_name = s.canonical_name;
+            // 2. Link medication_id — THE KEY FIX (was always cleared before)
+            medForm.product_id = s.medication_id;
+            // 3. Auto-fill unit + med_type directly from suggestion metadata
+            if (s.unit) medForm.unit = s.unit;
+            _applyCategory(s.category);
+            // 4. Close dropdown
+            showFuzzy.value = false;
+            fuzzySuggestions.value = [];
+            showToast(`Đã gắn vào "${s.canonical_name}"`, 'success');
+        }
+
+        // ── Initial load: products in parallel with cycle auto-select ──
+        onMounted(() => ctx.loadInitialData(loadLogs, async () => {
+            products.value = await API.products.list();
+            autoShift();
+            // Lazy-load recent med suggestions ~200ms after page interactive
+            setTimeout(loadRecentMeds, 200);
+        }));
 
         return {
-            cycles, products, feedLogs, medLogs, deathLogs, waterLogs, healthNotes, medSuggestions,
-            selectedCycleId, selectedDate, currentShift, activeTab, loading, submitting,
-            feedForm, medForm, deathForm, waterForm, healthForm,
-            selectedCycle, dayAge, aliveCount, feedPreviewKg,
-            feedProducts, medProducts,
-            todayFeedLogs, todayMedLogs, todayDeathLogs, todayWaterLogs, todayHealthNotes,
-            shiftFeedLogs, shiftMedLogs, shiftWaterLogs,
-            totalKgToday, sangHasFeed, chieuHasFeed, sangHasMed, chieuHasMed, tabCounts,
-            medMethodLabels, medTypeLabels, medTypeColour, deathCauseLabels, healthFlagLabels,
-            saveFeed, saveMedication, saveDeath, saveWater, saveHealth,
-            deleteEntry, applySuggestion, toggleHealthFlag,
-            changeDate, fmtNum, timeStr, autoShift,
-            confirmDelete, askDelete, doConfirmDelete, cancelDelete
+            // helpers
+            fmtNum,
+            // shared context state
+            cycles: ctx.cycles, activeCycles: ctx.activeCycles, selectedCycleId: ctx.selectedCycleId, selectedDate: ctx.selectedDate,
+            loading: ctx.loading, confirmDelete: ctx.confirmDelete,
+            selectedCycle: ctx.selectedCycle, dayAge: ctx.dayAge, aliveCount: ctx.aliveCount,
+            initialCount: ctx.initialCount, survivalRate: ctx.survivalRate,
+            changeDate: ctx.changeDate, timeStr: ctx.timeStr,
+            askDelete: ctx.askDelete, doConfirmDelete: ctx.doConfirmDelete, cancelDelete: ctx.cancelDelete,
+            // page-specific
+            products, feedLogs, medLogs, currentShift,
+            feedForm, medForm,
+            feedPreviewKg, feedFinalQty, medFinalName, medProducts,
+            FEED_TYPES, medMethodLabels, medTypeLabels, medTypeColour,
+            saveFeed, saveMedication, deleteEntry,
+            parsedFeedLogs,
+            // shift status
+            sangHasFeed, chieuHasFeed, sangHasMed, chieuHasMed,
+            sangHasRecord, chieuHasRecord,
+            feedTotalKg, medTotalDose,
+            // edit mode
+            editingFeedId, editingMedId,
+            editFeed, cancelFeedEdit, editMed, cancelMedEdit,
+            // recent meds (lazy)
+            recentMedSuggestions, suggestionsLoading, pickRecentMed,
+            // fuzzy dropdown (Layer 4)
+            fuzzySuggestions, showFuzzy, applyFuzzySuggestion,
         };
     },
 
@@ -395,7 +414,7 @@ export default {
                 <div class="cf-care-header-icon">🩺</div>
                 <div>
                     <h1 class="cf-care-header-title">Nhật ký chăm sóc</h1>
-                    <p class="cf-care-header-subtitle">Ghi nhận nhanh ăn, thuốc, nước, sức khỏe theo ca</p>
+                    <p class="cf-care-header-subtitle">Ghi nhận nhanh ăn &amp; thuốc — nước, tử vong, sức khỏe, cân nặng, lịch sử ở menu bên</p>
                 </div>
             </div>
             <div class="cf-care-header-right">
@@ -407,455 +426,276 @@ export default {
             </div>
         </div>
 
-        <div class="cf-care-cycle-row">
-            <select v-model="selectedCycleId" class="cf-care-cycle-select">
-                <option value="">-- Chọn đợt nuôi --</option>
-                <option v-for="c in cycles" :key="c.id" :value="c.id">
-                    {{ c.name || 'Đợt ' + c.id }} ({{ c.barn_id }})
-                </option>
-            </select>
-            <div v-if="selectedCycle" class="cf-care-cycle-info">
-                <span class="cf-care-day-age">Ngày {{ dayAge }}</span>
-                <span class="cf-care-count">{{ fmtNum(aliveCount) }} con</span>
-            </div>
-        </div>
+        <!-- Canonical cycle indicator (replaces the older care-context-card) -->
+        <care-cycle-pill
+            v-model:selectedCycleId="selectedCycleId"
+            :cycles="activeCycles"
+            :selected-cycle="selectedCycle"
+            :day-age="dayAge"
+            :alive-count="aliveCount"
+            :survival-rate="survivalRate"
+        />
 
         <!-- Shift toggle -->
-        <div class="cf-care-shift-group" style="margin-top: 0.75rem;">
+        <div class="cf-care-shift-group cf-care-mt-3">
             <button @click="currentShift = 'sang'"
-                :class="['cf-care-shift-btn', currentShift === 'sang' ? 'active sang' : '']">
+                :class="['cf-care-shift-btn',
+                         currentShift === 'sang' ? 'active sang' : '',
+                         sangHasRecord ? 'recorded' : '']">
                 ☀️ Sáng
-                <span v-if="sangHasFeed || sangHasMed" class="cf-care-shift-tick feed-tick">✓</span>
+                <span v-if="sangHasRecord" class="cf-care-shift-tick">✓</span>
+                <span v-else class="cf-care-shift-missing">⚠ Chưa ghi</span>
             </button>
             <button @click="currentShift = 'chieu'"
-                :class="['cf-care-shift-btn', currentShift === 'chieu' ? 'active chieu' : '']">
+                :class="['cf-care-shift-btn',
+                         currentShift === 'chieu' ? 'active chieu' : '',
+                         chieuHasRecord ? 'recorded' : '']">
                 🌆 Chiều
-                <span v-if="chieuHasFeed || chieuHasMed" class="cf-care-shift-tick feed-tick">✓</span>
+                <span v-if="chieuHasRecord" class="cf-care-shift-tick">✓</span>
+                <span v-else class="cf-care-shift-missing">⚠ Chưa ghi</span>
             </button>
+        </div>
+
+        <!-- Quick links to other sub-pages -->
+        <div class="cf-care-subnav">
+            <router-link to="/care/water" class="cf-care-subnav-link">
+                <span>💧</span> Nước uống
+            </router-link>
+            <router-link to="/care/death" class="cf-care-subnav-link">
+                <span>📉</span> Tử vong
+            </router-link>
+            <router-link to="/care/health" class="cf-care-subnav-link">
+                <span>🩺</span> Sức khỏe
+            </router-link>
+            <router-link to="/care/weight" class="cf-care-subnav-link">
+                <span>⚖️</span> Cân nặng
+            </router-link>
+            <router-link to="/care/vaccine" class="cf-care-subnav-link">
+                <span>💉</span> Vaccine
+            </router-link>
+            <router-link to="/care/history" class="cf-care-subnav-link">
+                <span>📋</span> Lịch sử
+            </router-link>
         </div>
 
         <!-- Loading spinner -->
-        <div v-if="loading" style="text-align:center;padding:2rem">
+        <div v-if="loading" class="cf-care-loading-center">
             <div class="cf-spinner"></div>
             <p class="cf-loading-text">Đang tải...</p>
         </div>
 
-        <!-- ── QUICK STATS ── -->
-        <div class="cf-care-stats-grid">
-            <div class="cf-care-stat-card">
-                <span class="cf-care-stat-label">Tổng ăn</span>
-                <span class="cf-care-stat-val val-amber">{{ fmtNum(totalKgToday, 1) }} kg</span>
-                <span class="cf-care-stat-sub">{{ todayFeedLogs.length }} lần hôm nay</span>
-            </div>
-            <div class="cf-care-stat-card">
-                <span class="cf-care-stat-label">Thuốc</span>
-                <span class="cf-care-stat-val val-violet">{{ todayMedLogs.length }}</span>
-                <span class="cf-care-stat-sub">lượt cấp</span>
-            </div>
-            <div class="cf-care-stat-card">
-                <span class="cf-care-stat-label">Hao hụt</span>
-                <span class="cf-care-stat-val val-rose">{{ todayDeathLogs.length }}</span>
-                <span class="cf-care-stat-sub">con chết</span>
-            </div>
-        </div>
+        <!-- ── FEED + MED side-by-side ── -->
+        <div class="cf-care-dual-grid" v-if="!loading && selectedCycle">
 
-        <!-- ── TAB BAR ── -->
-        <div class="cf-care-tabs">
-            <button @click="activeTab = 'feed'"
-                :class="['cf-care-tab-btn', activeTab === 'feed' ? 'active' : '']">
-                🌾 Ăn
-                <span class="cf-care-tab-btn-badge">{{ tabCounts.feed }}</span>
-            </button>
-            <button @click="activeTab = 'medication'"
-                :class="['cf-care-tab-btn', activeTab === 'medication' ? 'active' : '']">
-                💊 Thuốc
-                <span class="cf-care-tab-btn-badge">{{ tabCounts.medication }}</span>
-            </button>
-            <button @click="activeTab = 'death'"
-                :class="['cf-care-tab-btn', activeTab === 'death' ? 'active' : '']">
-                📉 Tử vong
-                <span class="cf-care-tab-btn-badge">{{ tabCounts.death }}</span>
-            </button>
-            <button @click="activeTab = 'water'"
-                :class="['cf-care-tab-btn', activeTab === 'water' ? 'active' : '']">
-                💧 Nước
-                <span class="cf-care-tab-btn-badge">{{ tabCounts.water }}</span>
-            </button>
-            <button @click="activeTab = 'health'"
-                :class="['cf-care-tab-btn', activeTab === 'health' ? 'active' : '']">
-                🩺 Sức khỏe
-                <span class="cf-care-tab-btn-badge">{{ tabCounts.health }}</span>
-            </button>
-        </div>
-
-        <!-- ── FEED TAB ── -->
-        <div v-if="activeTab === 'feed'" class="cf-care-tab-body">
-            <div class="cf-care-form-card">
-                <div class="cf-care-form-header">
-                    <span class="cf-care-form-icon feed-icon">🌾</span>
-                    <div>
-                        <div class="cf-care-form-title">Cho ăn ca {{ currentShift === 'sang' ? 'sáng' : 'chiều' }}</div>
-                        <div class="cf-care-form-sub">{{ selectedDate }}</div>
+            <!-- ── FEED FORM ── -->
+            <div class="cf-care-stack">
+                <!-- Feed history (PROMINENT — above form) -->
+                <div :class="['cf-care-history-card',
+                              feedLogs.length ? 'cf-care-history-prominent' : 'cf-care-history-prominent cf-care-history-empty']">
+                    <div class="cf-care-history-header">
+                        <span class="cf-care-history-title">Cho ăn hôm nay</span>
+                        <span class="cf-care-history-count">{{ feedLogs.length }} lần</span>
                     </div>
-                </div>
-                <div class="cf-care-form-body">
-                    <div class="cf-care-product-section">
-                        <div class="cf-care-product-label">Loại cám</div>
-                        <div class="cf-care-product-grid">
-                            <button v-for="p in feedProducts" :key="p.id"
-                                @click="feedForm.product_id = p.id"
-                                :class="['cf-care-product-btn', feedForm.product_id === p.id ? 'selected' : '']">
-                                <span class="cf-care-product-name">{{ p.name }}</span>
-                                <span v-if="p.kg_per_bag || p.capacity_kg" class="cf-care-product-wpb">
-                                    {{ p.kg_per_bag || p.capacity_kg }}kg/bao
-                                </span>
-                            </button>
-                        </div>
-                        <div v-if="!feedProducts.length" class="cf-care-empty-list">Chưa có cám trong danh mục</div>
+                    <div class="cf-care-history-summary" v-if="feedLogs.length">
+                        <span class="cf-care-history-summary-total">{{ fmtNum(feedTotalKg, 1) }} kg</span>
+                        <span class="cf-care-history-summary-meta">· {{ feedLogs.length }} lần</span>
+                        <span v-if="sangHasFeed && chieuHasFeed" class="cf-care-history-summary-meta">· ☀️ Sáng + 🌆 Chiều</span>
+                        <span v-else-if="sangHasFeed" class="cf-care-history-summary-meta">· ☀️ Sáng</span>
+                        <span v-else-if="chieuHasFeed" class="cf-care-history-summary-meta">· 🌆 Chiều</span>
                     </div>
-                    <div class="cf-care-qty-row">
-                        <div class="cf-care-qty-group">
-                            <label class="cf-care-qty-label">Theo bao</label>
-                            <input v-model.number="feedForm.bag_count" type="number" min="0" class="cf-care-qty-input" placeholder="0">
-                            <span v-if="feedForm.bag_count > 0" class="cf-care-qty-preview">
-                                = {{ feedPreviewKg }} kg
-                            </span>
-                        </div>
-                        <div class="cf-care-qty-group">
-                            <label class="cf-care-qty-label">Kg lẻ</label>
-                            <input v-model.number="feedForm.manual_qty" type="number" min="0" step="0.1" class="cf-care-qty-input" placeholder="0">
-                        </div>
-                    </div>
-                    <div class="cf-care-form-group">
-                        <label class="cf-care-form-label">Ghi chú</label>
-                        <input v-model="feedForm.notes" type="text" class="cf-care-form-input" placeholder="Đàn ăn khỏe...">
-                    </div>
-                </div>
-                <button @click="saveFeed" class="cf-care-save-btn feed-btn">Lưu phiếu cho ăn</button>
-            </div>
-            <!-- Feed history -->
-            <div class="cf-care-history-card">
-                <div class="cf-care-history-header">
-                    <span class="cf-care-history-title">Cho ăn hôm nay</span>
-                    <span class="cf-care-history-count">{{ shiftFeedLogs.length }} lần</span>
-                </div>
-                <div class="cf-care-history-list">
-                    <div v-if="!shiftFeedLogs.length" class="cf-care-empty-state"><span>🌾</span><p>Chưa ghi nhận ca này</p></div>
-                    <div v-for="log in shiftFeedLogs" :key="log.id" class="cf-care-log-item">
-                        <div class="cf-care-log-main">
-                            <div class="cf-care-log-info">
-                                <span class="cf-care-log-product">{{ log.product_name || 'Cám' }}</span>
-                                <span class="cf-care-log-time">{{ timeStr(log) }}</span>
-                            </div>
-                            <span class="cf-care-log-qty">+{{ fmtNum(log.quantity, 1) }} kg</span>
-                        </div>
-                        <p v-if="log.notes" class="cf-care-log-note">"{{ log.notes }}"</p>
-                        <div class="cf-care-log-footer">
-                            <span class="cf-care-log-id">ID: {{ log.id }}</span>
-                            <button @click="deleteEntry('feed', log.id)" class="cf-care-log-del">Xóa</button>
-                        </div>
-                    </div>
-                </div>
-                <div v-if="todayFeedLogs.length > 0" class="cf-care-history-agg">
-                    Tổng ngày: {{ fmtNum(totalKgToday, 1) }} kg ({{ todayFeedLogs.length }} lần)
-                </div>
-            </div>
-        </div>
-
-        <!-- ── MEDICATION TAB ── -->
-        <div v-if="activeTab === 'medication'" class="cf-care-tab-body">
-            <div class="cf-care-form-card">
-                <div class="cf-care-form-header">
-                    <span class="cf-care-form-icon med-icon">💊</span>
-                    <div>
-                        <div class="cf-care-form-title">Cấp thuốc thú y</div>
-                        <div class="cf-care-form-sub">Ca {{ currentShift === 'sang' ? 'sáng' : 'chiều' }} · {{ selectedDate }}</div>
-                    </div>
-                </div>
-                <div class="cf-care-form-body">
-                    <!-- Method -->
-                    <div class="cf-care-form-group">
-                        <label class="cf-care-form-label">Đường dùng</label>
-                        <select v-model="medForm.method" class="cf-care-form-input">
-                            <option v-for="(label, key) in medMethodLabels" :key="key" :value="key">{{ label }}</option>
-                        </select>
-                    </div>
-
-                    <!-- Suggestions -->
-                    <div v-if="medSuggestions.length" class="cf-care-suggestions">
-                        <div class="cf-care-suggestions-label">Thuốc đã dùng ({{ selectedCycle?.barn_id }})</div>
-                        <div class="cf-care-suggestion-pills">
-                            <button v-for="s in medSuggestions" :key="s.name + s.med_type"
-                                @click="applySuggestion(s)"
-                                class="cf-care-suggestion-pill">
-                                {{ s.name }}
-                                <span class="cf-care-suggestion-count">({{ s.use_count }}x)</span>
-                            </button>
-                        </div>
-                    </div>
-
-                    <!-- Product grid -->
-                    <div class="cf-care-product-section">
-                        <div class="cf-care-product-label">Chọn từ kho</div>
-                        <div class="cf-care-product-grid">
-                            <button v-for="p in medProducts" :key="p.id"
-                                @click="medForm.product_id = p.id; medForm.custom_name = ''"
-                                :class="['cf-care-product-btn', medForm.product_id === p.id && !medForm.custom_name ? 'selected' : '']">
-                                <span class="cf-care-product-name">{{ p.name }}</span>
-                            </button>
-                        </div>
-                        <div v-if="!medProducts.length" class="cf-care-empty-list">Chưa có thuốc trong kho</div>
-                    </div>
-
-                    <!-- Custom name -->
-                    <div class="cf-care-form-group">
-                        <label class="cf-care-form-label">Tên thuốc (tự khai)</label>
-                        <input v-model="medForm.custom_name" type="text" class="cf-care-form-input" placeholder="VD: Amoxicillin 500mg...">
-                    </div>
-
-                    <!-- Type -->
-                    <div class="cf-care-form-group">
-                        <label class="cf-care-form-label">Loại</label>
-                        <select v-model="medForm.med_type" class="cf-care-form-input">
-                            <option v-for="(label, key) in medTypeLabels" :key="key" :value="key">{{ label }}</option>
-                        </select>
-                    </div>
-
-                    <!-- Qty + Unit -->
-                    <div class="cf-care-qty-row">
-                        <div class="cf-care-qty-group">
-                            <label class="cf-care-qty-label">Liều lượng</label>
-                            <input v-model.number="medForm.quantity" type="number" min="0" class="cf-care-qty-input" placeholder="0">
-                        </div>
-                        <div class="cf-care-qty-group">
-                            <label class="cf-care-qty-label">Đơn vị</label>
-                            <select v-model="medForm.unit" class="cf-care-qty-input">
-                                <option value="g">Gam (g)</option>
-                                <option value="ml">ml</option>
-                                <option value="viên">Viên</option>
-                                <option value="liều">Liều</option>
-                            </select>
-                        </div>
-                    </div>
-
-                    <div class="cf-care-form-group">
-                        <label class="cf-care-form-label">Ghi chú</label>
-                        <input v-model="medForm.notes" type="text" class="cf-care-form-input" placeholder="Pha loãng kỹ...">
-                    </div>
-                </div>
-                <button @click="saveMedication" class="cf-care-save-btn med-btn">Xác nhận cấp thuốc</button>
-            </div>
-            <!-- Med history -->
-            <div class="cf-care-history-card">
-                <div class="cf-care-history-header">
-                    <span class="cf-care-history-title">Thuốc hôm nay</span>
-                    <span class="cf-care-history-count">{{ shiftMedLogs.length }} lần</span>
-                </div>
-                <div class="cf-care-history-list">
-                    <div v-if="!shiftMedLogs.length" class="cf-care-empty-state"><span>💊</span><p>Chưa dùng thuốc ca này</p></div>
-                    <div v-for="log in shiftMedLogs" :key="log.id" class="cf-care-log-item">
-                        <div class="cf-care-log-main">
-                            <div class="cf-care-log-info">
-                                <span class="cf-care-log-product">{{ log.custom_name || log.product_name || log.med_type }}</span>
-                                <div class="cf-care-log-meta">
-                                    <span v-if="log.med_type" :class="['cf-care-med-type-badge', medTypeColour[log.med_type] || 'cf-care-med-default']">
-                                        {{ medTypeLabels[log.med_type] || log.med_type }}
-                                    </span>
+                    <div class="cf-care-history-list">
+                        <div v-if="!feedLogs.length" class="cf-care-empty-state"><span>🌾</span><p>Chưa ghi nhận hôm nay</p></div>
+                        <div v-for="(log, i) in feedLogs" :key="log.id" class="cf-care-log-item">
+                            <div class="cf-care-log-main">
+                                <div class="cf-care-log-info">
+                                    <span class="cf-care-log-product">{{ parsedFeedLogs[i].feedCode || 'Cám' }}</span>
                                     <span class="cf-care-log-time">{{ timeStr(log) }}</span>
                                 </div>
+                                <span class="cf-care-log-qty">+{{ fmtNum(log.quantity, 1) }} kg</span>
                             </div>
-                            <span class="cf-care-log-qty med-qty">{{ fmtNum(log.quantity) }} {{ log.unit }}</span>
-                        </div>
-                        <p v-if="log.notes" class="cf-care-log-note">"{{ log.notes }}"</p>
-                        <div class="cf-care-log-footer">
-                            <span class="cf-care-log-id">{{ medMethodLabels[log.method] || log.method || '' }}</span>
-                            <button @click="deleteEntry('medication', log.id)" class="cf-care-log-del">Xóa</button>
-                        </div>
-                    </div>
-                </div>
-            </div>
-        </div>
-
-        <!-- ── DEATH TAB ── -->
-        <div v-if="activeTab === 'death'" class="cf-care-tab-body">
-            <div class="cf-care-form-card">
-                <div class="cf-care-form-header">
-                    <span class="cf-care-form-icon death-icon">📉</span>
-                    <div>
-                        <div class="cf-care-form-title">Ghi nhận tử vong</div>
-                        <div class="cf-care-form-sub">{{ selectedDate }}</div>
-                    </div>
-                </div>
-                <div class="cf-care-form-body">
-                    <div class="cf-care-form-group">
-                        <label class="cf-care-form-label">Số lượng chết</label>
-                        <input v-model.number="deathForm.count" type="number" min="1" class="cf-care-qty-input" placeholder="0">
-                    </div>
-                    <div class="cf-care-form-group">
-                        <label class="cf-care-form-label">Nguyên nhân</label>
-                        <select v-model="deathForm.cause" class="cf-care-form-input">
-                            <option value="">-- Không rõ --</option>
-                            <option v-for="(label, key) in deathCauseLabels" :key="key" :value="key">{{ label }}</option>
-                        </select>
-                    </div>
-                    <div class="cf-care-form-group">
-                        <label class="cf-care-form-label">Triệu chứng</label>
-                        <input v-model="deathForm.symptoms" type="text" class="cf-care-form-input" placeholder="Mô tả triệu chứng...">
-                    </div>
-                    <div class="cf-care-form-group">
-                        <label class="cf-care-form-label">Ghi chú</label>
-                        <input v-model="deathForm.notes" type="text" class="cf-care-form-input" placeholder="Ghi chú thêm...">
-                    </div>
-                </div>
-                <button @click="saveDeath" class="cf-care-save-btn death-btn">Ghi nhận tử vong</button>
-            </div>
-            <!-- Death history -->
-            <div class="cf-care-history-card">
-                <div class="cf-care-history-header">
-                    <span class="cf-care-history-title">Tử vong hôm nay</span>
-                    <span class="cf-care-history-count">{{ todayDeathLogs.length }}</span>
-                </div>
-                <div class="cf-care-history-list">
-                    <div v-if="!todayDeathLogs.length" class="cf-care-empty-state"><span>📉</span><p>Không có tử vong hôm nay</p></div>
-                    <div v-for="log in todayDeathLogs" :key="log.id" class="cf-care-log-item">
-                        <div class="cf-care-log-main">
-                            <div class="cf-care-log-info">
-                                <span class="cf-care-log-product">{{ log.count }} con{{ log.cause ? ' · ' + deathCauseLabels[log.cause] : '' }}</span>
-                                <span class="cf-care-log-time">{{ timeStr(log) }}</span>
+                            <p v-if="parsedFeedLogs[i].userNotes" class="cf-care-log-note">"{{ parsedFeedLogs[i].userNotes }}"</p>
+                            <div class="cf-care-log-footer">
+                                <span class="cf-care-log-id">{{ log.meal === 'sang' ? '☀️ Sáng' : log.meal === 'chieu' ? '🌆 Chiều' : 'Cả ngày' }}</span>
+                                <div class="cf-care-log-actions">
+                                    <button @click="editFeed(log)" class="cf-care-log-edit">Sửa</button>
+                                    <button @click="deleteEntry('feed', log.id)" class="cf-care-log-del">Xóa</button>
+                                </div>
                             </div>
                         </div>
-                        <p v-if="log.symptoms" class="cf-care-log-note">Triệu chứng: {{ log.symptoms }}</p>
-                        <div class="cf-care-log-footer">
-                            <span class="cf-care-log-id">ID: {{ log.id }}</span>
-                            <button @click="deleteEntry('death', log.id)" class="cf-care-log-del">Xóa</button>
+                    </div>
+                </div>
+                <div class="cf-care-form-card">
+                    <div v-if="editingFeedId" class="cf-care-form-editing-banner">
+                        ✏️ Đang sửa phiếu cám
+                        <button @click="cancelFeedEdit" class="cf-care-form-editing-cancel">Huỷ</button>
+                    </div>
+                    <div class="cf-care-form-header">
+                        <span class="cf-care-form-icon feed-icon">🌾</span>
+                        <div>
+                            <div class="cf-care-form-title">Cho ăn ca {{ currentShift === 'sang' ? 'sáng' : 'chiều' }}</div>
+                            <div class="cf-care-form-sub">{{ selectedDate }}</div>
                         </div>
                     </div>
-                </div>
-            </div>
-        </div>
-
-        <!-- ── WATER TAB ── -->
-        <div v-if="activeTab === 'water'" class="cf-care-tab-body">
-            <div class="cf-care-form-card">
-                <div class="cf-care-form-header">
-                    <span class="cf-care-form-icon water-icon">💧</span>
-                    <div>
-                        <div class="cf-care-form-title">Nước uống</div>
-                        <div class="cf-care-form-sub">Ca {{ currentShift === 'sang' ? 'sáng' : 'chiều' }} · {{ selectedDate }}</div>
-                    </div>
-                </div>
-                <div class="cf-care-form-body">
-                    <div class="cf-care-form-group">
-                        <label class="cf-care-form-label">Lượng nước (lít)</label>
-                        <input v-model.number="waterForm.consumption_liters" type="number" min="0" step="0.5" class="cf-care-qty-input" placeholder="0">
-                    </div>
-                    <div class="cf-care-form-group">
-                        <div class="cf-care-checkbox-row">
-                            <input type="checkbox" v-model="waterForm.medicated" id="water-medicated" class="cf-care-checkbox">
-                            <label for="water-medicated" class="cf-care-form-label cf-care-checkbox-label">Có pha thuốc</label>
-                        </div>
-                    </div>
-                    <div class="cf-care-form-group">
-                        <label class="cf-care-form-label">Ghi chú</label>
-                        <input v-model="waterForm.notes" type="text" class="cf-care-form-input" placeholder="VD: Thêm điện giải...">
-                    </div>
-                </div>
-                <button @click="saveWater" class="cf-care-save-btn water-btn">Lưu nước uống</button>
-            </div>
-            <!-- Water history -->
-            <div class="cf-care-history-card">
-                <div class="cf-care-history-header">
-                    <span class="cf-care-history-title">Nước hôm nay</span>
-                    <span class="cf-care-history-count">{{ shiftWaterLogs.length }} lần</span>
-                </div>
-                <div class="cf-care-history-list">
-                    <div v-if="!shiftWaterLogs.length" class="cf-care-empty-state"><span>💧</span><p>Chưa ghi nhận ca này</p></div>
-                    <div v-for="log in shiftWaterLogs" :key="log.id" class="cf-care-log-item">
-                        <div class="cf-care-log-main">
-                            <div class="cf-care-log-info">
-                                <span class="cf-care-log-product">{{ log.consumption_liters }} lít{{ log.medicated ? ' (có thuốc)' : '' }}</span>
-                                <span class="cf-care-log-time">{{ timeStr(log) }}</span>
+                    <div class="cf-care-form-body">
+                        <div class="cf-care-form-group">
+                            <label class="cf-care-form-label">Loại cám <span class="cf-care-form-required">*</span></label>
+                            <div class="cf-care-product-grid cf-care-feed-grid">
+                                <button v-for="code in FEED_TYPES" :key="code"
+                                    @click="feedForm.feed_name = code"
+                                    :class="['cf-care-product-btn', 'cf-care-feed-btn', feedForm.feed_name === code ? 'selected' : '']">
+                                    <span class="cf-care-product-name">{{ code }}</span>
+                                </button>
                             </div>
                         </div>
-                        <p v-if="log.notes" class="cf-care-log-note">"{{ log.notes }}"</p>
-                        <div class="cf-care-log-footer">
-                            <span class="cf-care-log-id">ID: {{ log.id }}</span>
-                            <button @click="deleteEntry('water', log.id)" class="cf-care-log-del">Xóa</button>
-                        </div>
-                    </div>
-                </div>
-            </div>
-        </div>
-
-        <!-- ── HEALTH TAB ── -->
-        <div v-if="activeTab === 'health'" class="cf-care-tab-body">
-            <div class="cf-care-form-card">
-                <div class="cf-care-form-header">
-                    <span class="cf-care-form-icon health-icon">🩺</span>
-                    <div>
-                        <div class="cf-care-form-title">Đánh giá sức khỏe</div>
-                        <div class="cf-care-form-sub">Ngày {{ dayAge }} · {{ selectedDate }}</div>
-                    </div>
-                </div>
-                <div class="cf-care-form-body">
-                    <!-- Severity -->
-                    <div class="cf-care-form-group">
-                        <label class="cf-care-form-label">Mức độ</label>
-                        <div class="cf-care-product-grid cf-care-severity-grid">
-                            <button v-for="opt in [{v:'normal',l:'Bình thường'},{v:'mild',l:'Nhẹ'},{v:'severe',l:'Nặng'}]" :key="opt.v"
-                                @click="healthForm.severity = opt.v"
-                                :class="['cf-care-product-btn', 'cf-care-severity-btn', healthForm.severity === opt.v ? 'selected' : '']">
-                                <span class="cf-care-product-name">{{ opt.l }}</span>
-                            </button>
-                        </div>
-                    </div>
-                    <!-- Flags -->
-                    <div class="cf-care-form-group">
-                        <label class="cf-care-form-label">Triệu chứng</label>
-                        <div class="cf-care-suggestion-pills">
-                            <button v-for="(label, flag) in healthFlagLabels" :key="flag"
-                                @click="toggleHealthFlag(flag)"
-                                :class="['cf-care-suggestion-pill', healthForm.health_flags.includes(flag) ? 'selected' : '']">
-                                {{ label }}
-                            </button>
-                        </div>
-                    </div>
-                    <!-- Symptoms -->
-                    <div class="cf-care-form-group">
-                        <label class="cf-care-form-label">Mô tả triệu chứng</label>
-                        <textarea v-model="healthForm.symptoms" rows="2" class="cf-care-form-input" placeholder="Mô tả thêm..." style="resize: none;"></textarea>
-                    </div>
-                    <!-- Notes -->
-                    <div class="cf-care-form-group">
-                        <label class="cf-care-form-label">Ghi chú</label>
-                        <input v-model="healthForm.notes" type="text" class="cf-care-form-input" placeholder="Ghi chú thêm...">
-                    </div>
-                </div>
-                <button @click="saveHealth" class="cf-care-save-btn health-btn">Lưu đánh giá</button>
-            </div>
-            <!-- Health history -->
-            <div class="cf-care-history-card">
-                <div class="cf-care-history-header">
-                    <span class="cf-care-history-title">Sức khỏe hôm nay</span>
-                    <span class="cf-care-history-count">{{ todayHealthNotes.length }}</span>
-                </div>
-                <div class="cf-care-history-list">
-                    <div v-if="!todayHealthNotes.length" class="cf-care-empty-state"><span>🩺</span><p>Chưa ghi nhận hôm nay</p></div>
-                    <div v-for="log in todayHealthNotes" :key="log.id" class="cf-care-log-item">
-                        <div class="cf-care-log-main">
-                            <div class="cf-care-log-info">
-                                <span class="cf-care-log-product">
-                                    {{ log.severity === 'normal' ? 'Bình thường' : log.severity === 'mild' ? 'Nhẹ' : 'Nặng' }}
+                        <div class="cf-care-qty-row">
+                            <div class="cf-care-qty-group">
+                                <label class="cf-care-qty-label">Theo bao</label>
+                                <input v-model.number="feedForm.bag_count" type="number" min="0" class="cf-care-qty-input" placeholder="0">
+                                <span v-if="feedForm.bag_count > 0" class="cf-care-qty-preview">
+                                    = {{ feedPreviewKg }} kg
                                 </span>
-                                <span class="cf-care-log-time">{{ timeStr(log) }}</span>
+                            </div>
+                            <div class="cf-care-qty-group">
+                                <label class="cf-care-qty-label">Kg lẻ</label>
+                                <input v-model.number="feedForm.manual_qty" type="number" min="0" step="0.1" class="cf-care-qty-input" placeholder="0">
                             </div>
                         </div>
-                        <p v-if="log.symptoms" class="cf-care-log-note">{{ log.symptoms }}</p>
-                        <div class="cf-care-log-footer">
-                            <span class="cf-care-log-id">ID: {{ log.id }}</span>
-                            <button @click="deleteEntry('health', log.id)" class="cf-care-log-del">Xóa</button>
+                        <div class="cf-care-form-group">
+                            <label class="cf-care-form-label">Ghi chú</label>
+                            <input v-model="feedForm.notes" type="text" class="cf-care-form-input" placeholder="Đàn ăn khỏe...">
                         </div>
                     </div>
+                    <button @click="saveFeed" class="cf-care-save-btn feed-btn">{{ editingFeedId ? 'Cập nhật' : 'Lưu phiếu cho ăn' }}</button>
+                </div>
+            </div>
+
+            <!-- ── MEDICATION FORM ── -->
+            <div class="cf-care-stack">
+                <!-- Med history (PROMINENT — above form) -->
+                <div :class="['cf-care-history-card',
+                              'cf-care-history-med',
+                              medLogs.length ? 'cf-care-history-prominent' : 'cf-care-history-prominent cf-care-history-empty']">
+                    <div class="cf-care-history-header">
+                        <span class="cf-care-history-title">Thuốc hôm nay</span>
+                        <span class="cf-care-history-count">{{ medLogs.length }} lần</span>
+                    </div>
+                    <div class="cf-care-history-summary" v-if="medLogs.length">
+                        <span class="cf-care-history-summary-total">{{ medTotalDose }} lần</span>
+                        <span class="cf-care-history-summary-meta">· đã cấp thuốc</span>
+                        <span v-if="sangHasMed && chieuHasMed" class="cf-care-history-summary-meta">· ☀️ + 🌆</span>
+                        <span v-else-if="sangHasMed" class="cf-care-history-summary-meta">· ☀️ Sáng</span>
+                        <span v-else-if="chieuHasMed" class="cf-care-history-summary-meta">· 🌆 Chiều</span>
+                    </div>
+                    <div class="cf-care-history-list">
+                        <div v-if="!medLogs.length" class="cf-care-empty-state"><span>💊</span><p>Chưa dùng thuốc hôm nay</p></div>
+                        <div v-for="log in medLogs" :key="log.id" class="cf-care-log-item">
+                            <div class="cf-care-log-main">
+                                <div class="cf-care-log-info">
+                                    <span class="cf-care-log-product">{{ log.custom_name || log.product_name || log.med_type }}</span>
+                                    <div class="cf-care-log-meta">
+                                        <span v-if="log.med_type" :class="['cf-care-med-type-badge', medTypeColour[log.med_type] || 'cf-care-med-default']">
+                                            {{ medTypeLabels[log.med_type] || log.med_type }}
+                                        </span>
+                                        <span class="cf-care-log-time">{{ timeStr(log) }}</span>
+                                    </div>
+                                </div>
+                                <span class="cf-care-log-qty med-qty">{{ fmtNum(log.quantity) }} {{ log.unit }}</span>
+                            </div>
+                            <p v-if="log.notes" class="cf-care-log-note">"{{ log.notes }}"</p>
+                            <div class="cf-care-log-footer">
+                                <span class="cf-care-log-id">{{ medMethodLabels[log.method] || log.method || '' }}</span>
+                                <div class="cf-care-log-actions">
+                                    <button @click="editMed(log)" class="cf-care-log-edit">Sửa</button>
+                                    <button @click="deleteEntry('medication', log.id)" class="cf-care-log-del">Xóa</button>
+                                </div>
+                            </div>
+                        </div>
+                    </div>
+                </div>
+                <div class="cf-care-form-card">
+                    <div v-if="editingMedId" class="cf-care-form-editing-banner">
+                        ✏️ Đang sửa phiếu thuốc
+                        <button @click="cancelMedEdit" class="cf-care-form-editing-cancel">Huỷ</button>
+                    </div>
+                    <div class="cf-care-form-header">
+                        <span class="cf-care-form-icon med-icon">💊</span>
+                        <div>
+                            <div class="cf-care-form-title">Cấp thuốc thú y</div>
+                            <div class="cf-care-form-sub">Ca {{ currentShift === 'sang' ? 'sáng' : 'chiều' }} · {{ selectedDate }}</div>
+                        </div>
+                    </div>
+                    <div class="cf-care-form-body">
+                        <div class="cf-care-form-group">
+                            <label class="cf-care-form-label">Tên thuốc</label>
+                            <input v-model="medForm.custom_name" type="text" class="cf-care-form-input"
+                                placeholder="VD: Amoxicillin 500mg — bắt buộc">
+                            <div v-if="showFuzzy && fuzzySuggestions.length" class="cf-care-fuzzy-dropdown">
+                                <div class="cf-care-fuzzy-hint">💡 Ý bạn là:</div>
+                                <button v-for="s in fuzzySuggestions" :key="s.medication_id"
+                                    type="button"
+                                    @click="applyFuzzySuggestion(s)"
+                                    class="cf-care-fuzzy-item">
+                                    <span class="cf-care-fuzzy-name">{{ s.canonical_name }}</span>
+                                    <span v-if="s.unit" class="cf-care-fuzzy-unit">{{ s.unit }}</span>
+                                    <span class="cf-care-fuzzy-score">{{ s.reason === 'fuzzy' ? 'gần đúng' : 'tương tự' }}</span>
+                                </button>
+                            </div>
+                        </div>
+                        <div v-if="medProducts.length" class="cf-care-product-section">
+                            <div class="cf-care-product-label">Hoặc chọn từ kho</div>
+                            <div class="cf-care-product-grid">
+                                <button v-for="p in medProducts" :key="p.id"
+                                    @click="medForm.product_id = p.id; medForm.custom_name = ''"
+                                    :class="['cf-care-product-btn', medForm.product_id === p.id && !medForm.custom_name ? 'selected' : '']">
+                                    <span class="cf-care-product-name">{{ p.name }}</span>
+                                </button>
+                            </div>
+                        </div>
+                        <div v-if="suggestionsLoading" class="cf-care-recent-loading">⏳ Đang tải gợi ý…</div>
+                        <div v-else-if="recentMedSuggestions.length" class="cf-care-recent-meds">
+                            <div class="cf-care-product-label">Đã dùng gần đây</div>
+                            <div class="cf-care-product-grid">
+                                <button v-for="s in recentMedSuggestions" :key="s.canonical_name"
+                                    @click="pickRecentMed(s)"
+                                    :class="['cf-care-product-btn', 'cf-care-recent-btn', medForm.custom_name === s.canonical_name ? 'selected' : '']">
+                                    <span class="cf-care-product-name">{{ s.canonical_name }}</span>
+                                    <span v-if="s.usage_count" class="cf-care-recent-count">×{{ s.usage_count }}</span>
+                                </button>
+                            </div>
+                        </div>
+                        <div class="cf-care-form-group">
+                            <label class="cf-care-form-label">Đường dùng</label>
+                            <select v-model="medForm.method" class="cf-care-form-input">
+                                <option v-for="(label, key) in medMethodLabels" :key="key" :value="key">{{ label }}</option>
+                            </select>
+                        </div>
+                        <div class="cf-care-form-group">
+                            <label class="cf-care-form-label">Loại</label>
+                            <select v-model="medForm.med_type" class="cf-care-form-input">
+                                <option v-for="(label, key) in medTypeLabels" :key="key" :value="key">{{ label }}</option>
+                            </select>
+                        </div>
+                        <div class="cf-care-qty-row">
+                            <div class="cf-care-qty-group">
+                                <label class="cf-care-qty-label">Liều lượng</label>
+                                <input v-model.number="medForm.quantity" type="number" min="0" class="cf-care-qty-input" placeholder="0">
+                            </div>
+                            <div class="cf-care-qty-group">
+                                <label class="cf-care-qty-label">Đơn vị</label>
+                                <select v-model="medForm.unit" class="cf-care-qty-input">
+                                    <option value="g">Gam (g)</option>
+                                    <option value="ml">ml</option>
+                                    <option value="viên">Viên</option>
+                                    <option value="liều">Liều</option>
+                                </select>
+                            </div>
+                        </div>
+                        <div class="cf-care-form-group">
+                            <label class="cf-care-form-label">Ghi chú</label>
+                            <input v-model="medForm.notes" type="text" class="cf-care-form-input" placeholder="Pha loãng kỹ...">
+                        </div>
+                    </div>
+                    <button @click="saveMedication" class="cf-care-save-btn med-btn">{{ editingMedId ? 'Cập nhật' : 'Xác nhận cấp thuốc' }}</button>
                 </div>
             </div>
         </div>
@@ -871,10 +711,10 @@ export default {
 
         <!-- Confirm delete modal -->
         <div v-if="confirmDelete" class="cf-modal-overlay" @click.self="cancelDelete">
-            <div class="cf-modal-box" style="max-width:20rem">
-                <div class="cf-modal-body" style="text-align:center;padding:1.5rem">
-                    <p style="margin-bottom:1rem">{{ confirmDelete.message }}</p>
-                    <div style="display:flex;gap:0.5rem;justify-content:center">
+            <div class="cf-modal-box cf-modal-narrow">
+                <div class="cf-modal-body cf-care-modal-centered">
+                    <p class="cf-care-modal-text">{{ confirmDelete.message }}</p>
+                    <div class="cf-care-modal-actions">
                         <button @click="cancelDelete" class="cf-btn-secondary">Huỷ</button>
                         <button @click="doConfirmDelete" class="cf-btn-danger">Xoá</button>
                     </div>

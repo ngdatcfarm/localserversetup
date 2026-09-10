@@ -66,6 +66,7 @@ No build step. Vanilla ES modules loaded via native `import()`.
 - **`static/css/app.css`** — All custom styles (~150KB). Tailwind is in `static/vendor/tailwind.min.css`.
 - **`static/vendor/`** — Vendored libs (Vue 3, Vue Router, Tailwind). No npm/node.
 - **`src/server/templates/farm.html`** — HTML shell that loads Vue 3, Vue Router, Tailwind, api.js, app.js.
+- 📐 **UX/UI conventions**: see [`docs/ui_style_guide.md`](docs/ui_style_guide.md) — single source of truth for design tokens, CSS class taxonomy, layout/component/state patterns, iconography, naming conventions, and Do's/Don'ts. **Read this BEFORE creating or refactoring any page.**
 
 ### Infrastructure
 
@@ -105,6 +106,19 @@ Pages use `API.get()`/`API.post()` from `api.js` for backend calls. UI text is i
 ### Dashboard → Detail Pattern
 Dashboards (inventory, bats) use two pages: a dashboard page showing cards per entity, and a detail page receiving the parent ID as a route prop (`props: true` in `app.js`). Detail pages use `router.replace()` to keep URL in sync.
 
+### UX/UI Style Guide
+**MANDATORY**: Before creating a new page or refactoring existing UI, read [`docs/ui_style_guide.md`](docs/ui_style_guide.md). It defines:
+- Design tokens (colors, spacing, radius, shadows, typography) — always use CSS variables from `:root`
+- CSS class taxonomy: primitives (`.btn`, `.card`, `.badge-*`) vs feature-specific (`.cf-{feature}-*`)
+- Layout patterns (page shell, dashboard, detail page, form)
+- Component patterns (buttons, forms, cards, badges, modals, data tables)
+- State patterns (skeleton first load → spinner refresh → button submitting)
+- Interaction patterns (NO native `confirm()`/`prompt()`/`alert()` — use `.cf-modal-*`; ESC + focus trap + scroll lock are TODOs)
+- Iconography (emoji → Lucide migration, sprint 1)
+- Do's and Don'ts (12+12 anti-patterns to avoid)
+
+When in doubt, the style guide wins over personal preference. If a pattern isn't covered, propose an addition to the guide FIRST.
+
 ### Template Literal Pitfall
 Page templates are JS template literals. `\n` inside them becomes a real newline. To produce the literal JS escape `'\n'` in a Vue directive, write `'\\n'` in the source:
 ```html
@@ -116,6 +130,24 @@ Page templates are JS template literals. `\n` inside them becomes a real newline
 
 ### Database Operations
 Use `db.transaction()` for multi-statement atomic operations — never chain separate `db.execute()` calls expecting atomicity. Each `db.execute()` acquires an independent connection from the pool.
+
+### Cloud DB Sync (archived)
+**Cloud DB sync to `app.cfarm.vn` is archived as of 2026-09-07** — replaced by Cloudflare Worker (`cfarm-relay/` in repo, src/iot/cf_relay.py for HMAC client).
+
+State (DB `sync_config`):
+- `archived='true'`, `cloud_url=''`, `enabled='false'`
+
+Code changes (kept reversible):
+- `src/server/main.py` line ~159: `await sync_service.start()` commented out
+- `src/sync/sync_service.py`: module docstring marked ARCHIVED; all 16 routes preserved
+- `static/js/app.js`: `/sync` removed from sidebar navItems (route still works)
+- `static/js/pages/sync.js`: archive banner added
+- PostgreSQL trigger functions (`fn_sync_queue_change`, `sync_queue_trigger`, etc.) bail early when `sync_config.archived='true'`
+
+Reactivation (3 steps):
+1. `DELETE FROM sync_config WHERE key='archived'`
+2. Uncomment `await sync_service.start()` in `main.py`
+3. Fix cloud PHP autoloader (missing `app/domains/cycle/entities/cycle.php`) OR set `cloud_url` to working server
 
 ### Auth System
 - Session cookie `cfarm_session` (HttpOnly, SameSite=Lax, 7-day rolling TTL)

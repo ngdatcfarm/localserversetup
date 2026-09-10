@@ -9,6 +9,7 @@ from datetime import datetime
 from typing import Optional
 
 from src.services.database.db import db
+from src.utils.timezone import now_hcm
 
 logger = logging.getLogger(__name__)
 
@@ -206,8 +207,8 @@ class TrainingService:
             train_path = "images/train"
             val_path = "images/val"
 
-        # Write dataset YAML
-        yaml_content = f"""# Chick Detection Dataset - exported {datetime.now().isoformat()}
+        # Write dataset YAML — HCM offset so the timestamp is unambiguous
+        yaml_content = f"""# Chick Detection Dataset - exported {now_hcm().isoformat()}
 path: {str(EXPORT_DIR)}
 train: {train_path}
 val: {val_path}
@@ -298,7 +299,9 @@ nc: 2
                 copy_paste=TRAINING_CONFIG['copy_paste'],
             )
 
-            self._last_training_time = datetime.now()
+            # HCM so the "last trained" timestamp the user sees matches the
+            # farm's local day, not UTC (which could be the previous day).
+            self._last_training_time = now_hcm()
             best_path = MODEL_DIR / "weights" / "best.pt"
             if best_path.exists():
                 self._last_model_path = str(best_path)

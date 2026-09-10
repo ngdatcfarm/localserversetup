@@ -1,4 +1,20 @@
-"""Cloud Sync Service - Bidirectional sync between local server and cfarm.vn cloud."""
+"""Cloud Sync Service - Bidirectional sync between local server and cfarm.vn cloud.
+
+ARCHIVED 2026-09-07:
+    Cloud DB sync was replaced by the Cloudflare Worker (`cfarm-relay` in
+    `cfarm-relay/`) for Telegram notifications. The local server is now
+    purely local-first with no external cloud DB dependency.
+
+Archive state (in DB `sync_config`):
+    - archived = 'true'
+    - cloud_url = '' (all guards no-op)
+    - enabled = 'false'
+    - archive_reason = 'cloud_db_sync_replaced_by_cloudflare_worker_2026-09-07'
+
+Trigger gates (`fn_sync_queue_change*` functions): bail early when archived,
+so updates do NOT enqueue. To re-activate: clear `archived` row + uncomment
+`sync_service.start()` in `src/server/main.py`. Code paths preserved intact.
+"""
 
 import asyncio
 import json
@@ -219,7 +235,13 @@ class SyncService:
     # ── Sync Queue Management ────────────────────────
 
     async def queue_change(self, table_name: str, record_id: str, action: str, payload: dict):
-        """Add a change to the sync queue for pushing to cloud."""
+        """Add a change to the sync queue for pushing to cloud.
+
+        No-op when sync is disabled (saves DB writes and prevents the
+        sync_queue table from ballooning when the cloud is unreachable).
+        """
+        if not self.config.get("enabled", False):
+            return
         import json
         await db.execute(
             """INSERT INTO sync_queue (table_name, record_id, action, payload)

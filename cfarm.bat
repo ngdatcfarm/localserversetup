@@ -45,6 +45,22 @@ echo [2/4] Starting Docker containers (if not running)...
 docker-compose up -d 2>nul
 if errorlevel 1 (
     echo   WARNING: docker-compose not found or failed. Continuing anyway...
+) else (
+    echo   Waiting for database to be ready...
+    set /a "_db_try=0"
+    :WAIT_DB
+    set /a "_db_try+=1"
+    if !_db_try! gtr 40 (
+        echo   WARNING: DB not ready after 40 attempts, continuing anyway...
+        goto DB_DONE
+    )
+    docker exec cfarm-db pg_isready -U cfarm >nul 2>&1
+    if errorlevel 1 (
+        timeout /t 3 /nobreak >nul
+        goto WAIT_DB
+    )
+    echo   Database is ready!
+    :DB_DONE
 )
 
 echo [3/4] Stopping existing services on ports 8002, 8003, 2000...
@@ -77,17 +93,43 @@ goto :EOF
 echo Stopping all services...
 echo.
 
-echo [1/3] Stopping Guardian...
+echo [1/5] Stopping Guardian...
 python "%APP_DIR%\scripts\guardian_control.py" stop >nul 2>&1
 timeout /t 3 /nobreak >nul
 
-echo [2/3] Force stopping any remaining processes...
+echo [2/5] Force stopping any remaining processes...
 for /f "tokens=5" %%a in ('netstat -ano ^| findstr :8002 ^| findstr LISTENING') do taskkill /PID %%a /F >nul 2>&1
 for /f "tokens=5" %%a in ('netstat -ano ^| findstr :8003 ^| findstr LISTENING') do taskkill /PID %%a /F >nul 2>&1
 for /f "tokens=5" %%a in ('netstat -ano ^| findstr :2000 ^| findstr LISTENING') do taskkill /PID %%a /F >nul 2>&1
+for /f "tokens=5" %%a in ('netstat -ano ^| findstr :8443 ^| findstr LISTENING') do taskkill /PID %%a /F >nul 2>&1
 taskkill //F //IM python.exe //IM cloudflared.exe >nul 2>&1
 
-echo [3/3] Stopping Docker containers...
+echo [3/5] Stopping watchdog (pythonw.exe running guardian_watchdog.py)...
+REM Only kill pythonw.exe whose command line contains guardian_watchdog.py.
+REM Without this filter, we'd nuke unrelated pythonw processes (B7 fix).
+set "_wd_killed=0"
+for /f "tokens=2" %%p in ('wmic process where "Name='pythonw.exe' and CommandLine like '%%guardian_watchdog.py%%'" get ProcessId /FORMAT:LIST 2^>nul') do (
+    if not "%%p"=="" if not "%%p"=="ProcessId" (
+        echo   Killing watchdog PID %%p
+        taskkill /F /PID %%p >nul 2>&1
+        set /a "_wd_killed+=1"
+    )
+)
+if !_wd_killed!==0 (
+    echo   No watchdog process found
+)
+
+echo [4/5] Force stopping any pythonw.exe that still references cfarm...
+REM Belt-and-braces: kill any orphan pythonw whose CommandLine touches
+REM cfarm paths. Prevents the next start_guardian from seeing a stale
+REM port-bound process and looping.
+for /f "tokens=2" %%p in ('wmic process where "Name='pythonw.exe' and (CommandLine like '%%E:\\cfarm%%' or CommandLine like '%%cfarm%%')" get ProcessId /FORMAT:LIST 2^>nul') do (
+    if not "%%p"=="" if not "%%p"=="ProcessId" (
+        taskkill /F /PID %%p >nul 2>&1
+    )
+)
+
+echo [5/5] Stopping Docker containers...
 docker-compose down 2>nul
 
 echo.

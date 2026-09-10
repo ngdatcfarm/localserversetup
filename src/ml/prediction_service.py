@@ -101,9 +101,13 @@ class TempPredictionService:
         """
         Predict temperature for current time based on sensor data.
         Automatically uses current hour, day_of_week, day_of_month.
+
+        Note: hour/day_of_week/day_of_month are taken in HCM (the barn's local
+        time), matching how the barn physically experiences the day. If the
+        host ever moves to a different TZ, this stays correct.
         """
-        from datetime import datetime
-        now = datetime.now()
+        from src.utils.timezone import now_hcm
+        now = now_hcm()
 
         temp = self.predict(
             hour=now.hour,

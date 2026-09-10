@@ -18,6 +18,7 @@ from datetime import datetime
 
 import joblib
 from src.services.database.db import db
+from src.utils.timezone import now_hcm
 
 logger = logging.getLogger(__name__)
 
@@ -178,7 +179,8 @@ class MLGasService:
         """
         features = self.compute_features(device_id, sensor_type, value)
         result = self.predict(features)
-        result["timestamp"] = datetime.now().isoformat()
+        # HCM offset so the client renders in farm-local time
+        result["timestamp"] = now_hcm().isoformat()
         return result
 
     async def get_status(self) -> dict:

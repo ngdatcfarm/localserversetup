@@ -11,6 +11,7 @@ from fastapi import APIRouter, HTTPException, Depends
 from pydantic import BaseModel
 from typing import Optional
 from src.server.auth import require_auth
+from src.utils.timezone import now_hcm
 
 logger = logging.getLogger(__name__)
 router = APIRouter(prefix="/api/chat", tags=["chat"], dependencies=[Depends(require_auth)])
@@ -402,7 +403,9 @@ async def _fetch_barn_status() -> str:
         for r in rows:
             age = ""
             if r['start_date']:
-                days = (datetime.now() - r['start_date']).days
+                # HCM-aware so a cycle that started "yesterday HCM" reports
+                # 1 ngày tuổi regardless of host TZ.
+                days = (now_hcm().date() - r['start_date']).days
                 age = f", {days} ngày tuổi"
             bird_count = r['bird_count'] or 0
             lines.append(
@@ -508,6 +511,19 @@ async def _report_device_issue(device_code: str, issue_type: str, description: s
             from src.iot.notification_service import notification_service
             icon = {"danger": "🔴", "warning": "🟡"}.get(config["severity"], "⚪")
             await notification_service.send_alert(config["severity"], f"{icon} {msg}")
+        except Exception:
+            pass
+
+        # Forward to Cloudflare Worker relay (Telegram etc.) — fire-and-forget
+        try:
+            from src.iot.cf_relay import cf_relay
+            await cf_relay.relay(
+                alert_type="CHAT_ISSUE",
+                title=f"{icon} {msg}",
+                body=msg,
+                severity=config["severity"],
+                url="/chat",
+            )
         except Exception:
             pass
 

@@ -178,6 +178,20 @@ class WeightNotificationService:
             except Exception as cloud_err:
                 logger.debug(f"Weight cloud notification skipped: {cloud_err}")
 
+            # Forward to Cloudflare Worker relay (Telegram etc.) — fire-and-forget
+            try:
+                from src.iot.cf_relay import cf_relay
+                await cf_relay.relay(
+                    alert_type="WEIGHT_REMINDER",
+                    title=title,
+                    body=body,
+                    severity="warning",
+                    cycle_id=cycle["cycle_id"],
+                    url=f"/?tab=care&cycle={cycle['cycle_id']}&highlight=weight",
+                )
+            except Exception as relay_err:
+                logger.debug(f"Weight CfRelay skipped: {relay_err}")
+
         except Exception as e:
             logger.error(f"Failed to send weight reminder: {e}")
 

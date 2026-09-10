@@ -8,6 +8,13 @@ consecutive checks (3 minutes), it:
   3. Relaunches Docker Desktop
   4. Waits for containers to come back
 
+Namespace mismatch detection (Docker Desktop 4.80.0 bug):
+  wsl-bootstrap (outer mount namespace) waits for /run/containerd/containerd.sock
+  but containerd creates the socket in an inner namespace (created by
+  unshare -mpf --propagation=unchanged). The socket never propagates back.
+  If detected, the watchdog skips restart cycles and enters hibernation
+  immediately — only a Windows restart can fix this. Data is never deleted.
+
 Run as: pythonw scripts/docker_watchdog.py
 (start_guardian.bat can launch this alongside the guardian watchdog)
 """
@@ -31,6 +38,11 @@ POLL_INTERVAL = 60        # seconds between checks
 FAIL_THRESHOLD = 3        # consecutive failures before restart
 DOCKER_DESKTOP = r"C:\Program Files\Docker\Docker\Docker Desktop.exe"
 RESTART_COOLDOWN = 300    # don't restart more than once per 5 minutes
+
+# Hyper-V corruption detection: if this many consecutive restart cycles
+# fail (Docker still dead after kill+relaunch), enter hibernation.
+MAX_FAILED_RESTARTS = 3
+HIBERNATION_LOG_INTERVAL = 600  # log warning every 10 min during hibernation
 
 # Critical ports that must be accessible from LAN for ESP devices + server
 CRITICAL_PORTS = [1884, 5432]  # MQTT broker, TimescaleDB
@@ -112,6 +124,66 @@ def ports_accessible() -> tuple[bool, str]:
     return True, "OK"
 
 
+def detect_namespace_mismatch() -> bool:
+    """Detect Docker Desktop mount namespace bug (Docker 4.80.0).
+
+    wsl-bootstrap (PID ~13, outer namespace) waits for
+    /run/containerd/containerd.sock, but containerd (PID ~116, inner
+    namespace created by unshare -mpf) creates the socket where
+    wsl-bootstrap can't see it.
+
+    Returns True if namespace mismatch is confirmed (restart is pointless).
+    """
+    try:
+        # Find wsl-bootstrap PID (first child of init, runs "wsl-bootstrap run")
+        r = sp.run(
+            ["wsl", "-d", "docker-desktop", "--", "sh", "-c",
+             "ps -o pid=,args= | grep 'wsl-bootstrap run' | head -1 | awk '{print $1}'"],
+            capture_output=True, text=True, timeout=10, creationflags=NO_WINDOW,
+        )
+        bootstrap_pid = r.stdout.strip().split()[0] if r.stdout.strip() else ""
+        if not bootstrap_pid or not bootstrap_pid.isdigit():
+            return False
+
+        # Find containerd PID
+        r = sp.run(
+            ["wsl", "-d", "docker-desktop", "--", "sh", "-c",
+             "ps -o pid=,args= | grep '/usr/bin/containerd' | grep -v grep | head -1 | awk '{print $1}'"],
+            capture_output=True, text=True, timeout=10, creationflags=NO_WINDOW,
+        )
+        containerd_pid = r.stdout.strip().split()[0] if r.stdout.strip() else ""
+        if not containerd_pid or not containerd_pid.isdigit():
+            return False
+
+        # Check: does containerd's socket exist in containerd's namespace?
+        r1 = sp.run(
+            ["wsl", "-d", "docker-desktop", "--", "sh", "-c",
+             f"test -S /proc/{containerd_pid}/root/run/containerd/containerd.sock && echo yes || echo no"],
+            capture_output=True, text=True, timeout=10, creationflags=NO_WINDOW,
+        )
+        socket_in_containerd_ns = "yes" in r1.stdout
+
+        # Check: does the same socket exist in wsl-bootstrap's namespace?
+        r2 = sp.run(
+            ["wsl", "-d", "docker-desktop", "--", "sh", "-c",
+             f"test -S /proc/{bootstrap_pid}/root/run/containerd/containerd.sock && echo yes || echo no"],
+            capture_output=True, text=True, timeout=10, creationflags=NO_WINDOW,
+        )
+        socket_in_bootstrap_ns = "yes" in r2.stdout
+
+        if socket_in_containerd_ns and not socket_in_bootstrap_ns:
+            log(f"NAMESPACE MISMATCH: containerd socket exists in PID {containerd_pid} "
+                f"namespace but not in wsl-bootstrap PID {bootstrap_pid} namespace. "
+                f"Restart is pointless — only Windows restart can fix this.")
+            return True
+
+        return False
+
+    except Exception as e:
+        log(f"Namespace check failed: {e}")
+        return False
+
+
 def kill_docker():
     """Kill all Docker-related processes."""
     for name in ["Docker Desktop", "com.docker.backend", "com.docker.build",
@@ -160,8 +232,11 @@ def wait_for_docker(timeout: int = 120) -> bool:
     return False
 
 
-def restart_docker():
-    """Full restart sequence: kill → WSL shutdown → relaunch → wait."""
+def restart_docker() -> bool:
+    """Full restart sequence: kill → WSL shutdown → relaunch → wait.
+    Returns True if Docker recovered, False otherwise.
+    NEVER deletes Docker data (images/containers/volumes are preserved).
+    """
     log("=== RESTARTING DOCKER ===")
     kill_docker()
     shutdown_wsl()
@@ -178,8 +253,10 @@ def restart_docker():
             log(f"Containers: {r.stdout.strip()}")
         except Exception:
             pass
+        return True
     else:
         log("WARNING: Docker did not recover within 120s")
+        return False
 
 
 def main():
@@ -188,7 +265,9 @@ def main():
 
     log(f"Watchdog started, PID={os.getpid()}")
     consecutive_failures = 0
+    failed_restart_cycles = 0   # consecutive restart cycles that failed
     last_restart = 0
+    last_hibernation_log = 0    # timestamp of last hibernation warning
 
     try:
         while _running:
@@ -196,6 +275,30 @@ def main():
 
             if os.path.exists(INHIBIT_FILE):
                 consecutive_failures = 0
+                failed_restart_cycles = 0
+                continue
+
+            # --- Hibernation mode: Hyper-V likely corrupted ---
+            # Stop restarting entirely. Log a warning periodically.
+            # Docker data is SAFE — only a Windows restart can fix this.
+            if failed_restart_cycles >= MAX_FAILED_RESTARTS:
+                now = time.time()
+                if now - last_hibernation_log >= HIBERNATION_LOG_INTERVAL:
+                    log(
+                        f"HIBERNATION: {failed_restart_cycles} consecutive restart cycles "
+                        f"failed. Hyper-V VM state is likely corrupted. "
+                        f"Docker data is SAFE — restart Windows to fix. "
+                        f"Will auto-recover when Docker becomes responsive."
+                    )
+                    last_hibernation_log = now
+                # Still check if Docker recovered (e.g. after manual Windows restart)
+                if docker_responsive():
+                    ports_ok, _ = ports_accessible()
+                    if ports_ok:
+                        log(f"Docker recovered after hibernation (likely Windows restart). "
+                            f"Resetting all counters.")
+                        consecutive_failures = 0
+                        failed_restart_cycles = 0
                 continue
 
             # Check 1: Docker daemon responsive?
@@ -214,6 +317,7 @@ def main():
                     if consecutive_failures > 0:
                         log(f"Docker recovered after {consecutive_failures} failures")
                     consecutive_failures = 0
+                    failed_restart_cycles = 0  # reset on full recovery
                     continue
 
             if consecutive_failures >= FAIL_THRESHOLD:
@@ -223,9 +327,24 @@ def main():
                     consecutive_failures = 0
                     continue
 
+                # Early detection: skip useless restart cycles if namespace
+                # mismatch is confirmed (Docker Desktop 4.80.0 bug).
+                if detect_namespace_mismatch():
+                    log("Skipping restart — namespace mismatch detected. "
+                        "Entering hibernation. Restart Windows to fix.")
+                    failed_restart_cycles = MAX_FAILED_RESTARTS
+                    consecutive_failures = 0
+                    continue
+
                 last_restart = now
-                restart_docker()
+                recovered = restart_docker()
                 consecutive_failures = 0
+
+                if not recovered:
+                    failed_restart_cycles += 1
+                    log(f"Restart cycle {failed_restart_cycles}/{MAX_FAILED_RESTARTS} failed")
+                else:
+                    failed_restart_cycles = 0
 
     finally:
         try:

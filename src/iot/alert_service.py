@@ -155,6 +155,19 @@ class AlertService:
         except Exception as e:
             logger.debug(f"Cloud notification skipped: {e}")
 
+        # Forward to Cloudflare Worker relay (Telegram etc.) — fire-and-forget
+        try:
+            from src.iot.cf_relay import cf_relay
+            await cf_relay.relay(
+                alert_type=f"ALERT_{rule['severity'].upper()}",
+                title=f"{icon} CFarm Alert",
+                body=message,
+                severity=rule["severity"],
+                url="/alerts",
+            )
+        except Exception as e:
+            logger.debug(f"CfRelay skipped: {e}")
+
     # ── CRUD: Alert Rules ─────────────────────────────
 
     async def list_rules(self, barn_id: str = None) -> list[dict]:

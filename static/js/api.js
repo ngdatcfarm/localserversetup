@@ -91,8 +91,19 @@ const API = {
         get(id) { return API.get(`/api/farm/cycles/${id}`); },
         create(d) { return API.post('/api/farm/cycles', d); },
         update(id, d) { return API.put(`/api/farm/cycles/${id}`, d); },
-        close(id, d) { return API.post(`/api/farm/cycles/${id}/close`, d); },
+        // Close endpoint — sends JSON body {end_date, notes, force}
+        close(id, d) {
+            return API.post(`/api/farm/cycles/${id}/close`, {
+                end_date: d?.end_date,
+                notes: d?.notes,
+                force: d?.force || false,
+            });
+        },
+        reopen(id, confirm = true) {
+            return API.post(`/api/farm/cycles/${id}/reopen`, { confirm });
+        },
         dashboard(id) { return API.get(`/api/farm/cycles/${id}/dashboard`); },
+        summary(id) { return API.get(`/api/farm/cycles/${id}/summary`); },
     },
 
     // Devices
@@ -243,21 +254,51 @@ const API = {
     // Care
     care: {
         logFeed(d) { return API.post('/api/farm/care/feed', d); },
-        feedHistory(cycleId) { return API.get(`/api/farm/care/feed/${cycleId}`); },
+        feedHistory(cycleId, dateFrom, dateTo) {
+            const p = new URLSearchParams();
+            if (dateFrom) p.set('date_from', dateFrom);
+            if (dateTo) p.set('date_to', dateTo);
+            const q = p.toString();
+            return API.get(`/api/farm/care/feed/${cycleId}${q ? '?' + q : ''}`);
+        },
         logDeath(d) { return API.post('/api/farm/care/death', d); },
-        deathHistory(cycleId) { return API.get(`/api/farm/care/death/${cycleId}`); },
+        deathHistory(cycleId, dateFrom, dateTo) {
+            const p = new URLSearchParams();
+            if (dateFrom) p.set('date_from', dateFrom);
+            if (dateTo) p.set('date_to', dateTo);
+            const q = p.toString();
+            return API.get(`/api/farm/care/death/${cycleId}${q ? '?' + q : ''}`);
+        },
         logMedication(d) { return API.post('/api/farm/care/medication', d); },
-        medHistory(cycleId) { return API.get(`/api/farm/care/medication/${cycleId}`); },
+        medHistory(cycleId, dateFrom, dateTo) {
+            const p = new URLSearchParams();
+            if (dateFrom) p.set('date_from', dateFrom);
+            if (dateTo) p.set('date_to', dateTo);
+            const q = p.toString();
+            return API.get(`/api/farm/care/medication/${cycleId}${q ? '?' + q : ''}`);
+        },
         logWeight(d) { return API.post('/api/farm/care/weight', d); },
         weightHistory(cycleId) { return API.get(`/api/farm/care/weight/${cycleId}`); },
         logSale(d) { return API.post('/api/farm/care/sale', d); },
         saleHistory(cycleId) { return API.get(`/api/farm/care/sale/${cycleId}`); },
         // Water logs
         logWater(d) { return API.post('/api/farm/care/water', d); },
-        waterHistory(cycleId) { return API.get(`/api/farm/care/water/${cycleId}`); },
+        waterHistory(cycleId, dateFrom, dateTo) {
+            const p = new URLSearchParams();
+            if (dateFrom) p.set('date_from', dateFrom);
+            if (dateTo) p.set('date_to', dateTo);
+            const q = p.toString();
+            return API.get(`/api/farm/care/water/${cycleId}${q ? '?' + q : ''}`);
+        },
         // Health notes
         logHealth(d) { return API.post('/api/farm/care/health', d); },
-        healthHistory(cycleId) { return API.get(`/api/farm/care/health/${cycleId}`); },
+        healthHistory(cycleId, dateFrom, dateTo) {
+            const p = new URLSearchParams();
+            if (dateFrom) p.set('date_from', dateFrom);
+            if (dateTo) p.set('date_to', dateTo);
+            const q = p.toString();
+            return API.get(`/api/farm/care/health/${cycleId}${q ? '?' + q : ''}`);
+        },
         resolveHealth(noteId) { return API.post(`/api/farm/care/health/${noteId}/resolve`); },
         // DELETE methods (using API.del)
         delFeed(id) { return API.del(`/api/farm/care/feed/${id}`); },
@@ -265,6 +306,27 @@ const API = {
         delDeath(id) { return API.del(`/api/farm/care/death/${id}`); },
         delWeight(id) { return API.del(`/api/farm/care/weight/${id}`); },
         delSale(id) { return API.del(`/api/farm/care/sale/${id}`); },
+        delWater(id) { return API.del(`/api/farm/care/water/${id}`); },
+        delHealth(id) { return API.del(`/api/farm/care/health/${id}`); },
+        medSuggestions(barnId, limit) { return API.get(`/api/farm/care/medication/suggestions?barn_id=${encodeURIComponent(barnId)}&limit=${limit || 20}`); },
+        timeline(cycleId, opts) {
+            const p = new URLSearchParams({ cycle_id: cycleId });
+            if (opts?.type) p.set('type', opts.type);
+            if (opts?.date_from) p.set('date_from', opts.date_from);
+            if (opts?.date_to) p.set('date_to', opts.date_to);
+            if (opts?.limit) p.set('limit', opts.limit);
+            return API.get('/api/farm/care/timeline?' + p.toString());
+        },
+        // Calendar heatmap (per-day classification for a month)
+        calendar(cycleId, month) {
+            const p = new URLSearchParams({ cycle_id: cycleId });
+            if (month) p.set('month', month);
+            return API.get('/api/farm/care/calendar?' + p.toString());
+        },
+        // Day detail (feeds/meds/deaths/water bucketed by shift)
+        dayDetail(cycleId, date) {
+            return API.get('/api/farm/care/day?' + new URLSearchParams({ cycle_id: cycleId, date }));
+        },
     },
 
     // Sensors
@@ -325,6 +387,41 @@ const API = {
         create(d) { return API.post('/api/farm/medications', d); },
         update(id, d) { return API.put(`/api/farm/medications/${id}`, d); },
         del(id) { return API.del(`/api/farm/medications/${id}`); },
+        // AI-assisted medication name aliases (admin / care chip suggestions)
+        aiSuggestAliases(maxDistinct = 100, minUsageCount = 2) {
+            return API.post('/api/farm/medication-aliases/ai-suggest-aliases', {
+                max_distinct: maxDistinct, min_usage_count: minUsageCount
+            });
+        },
+        applyAliases(items, updateExisting = true) {
+            return API.post('/api/farm/medication-aliases/apply-aliases', {
+                items, update_existing: updateExisting
+            });
+        },
+        nameSuggestions(limit = 20) {
+            return API.get(`/api/farm/medication-aliases/name-suggestions?limit=${limit}`);
+        },
+        // Admin manual cleanup — list distinct free-text names + alias status
+        freeTextNames(limit = 500) {
+            return API.get(`/api/farm/medication-aliases/free-text-names?limit=${limit}`);
+        },
+        deleteAlias(aliasName) {
+            return API.del(`/api/farm/medication-aliases/aliases/${encodeURIComponent(aliasName)}`);
+        },
+        // Real-time per-keystroke resolve for /care custom_name dropdown
+        resolve(text) {
+            return API.post('/api/farm/medication-aliases/resolve', { text });
+        },
+        // Suggest NEW catalog medications from repeated free-text names (admin)
+        autoSuggestCatalog(minUsage = 2, limit = 50) {
+            return API.get(
+                `/api/farm/medication-aliases/auto-suggest-catalog?min_usage=${minUsage}&limit=${limit}`
+            );
+        },
+        // Admin creates new catalog medication + aliases for variants (one-shot)
+        createFromFreetext(payload) {
+            return API.post('/api/farm/medication-aliases/create-from-freetext', payload);
+        },
     },
 
     // Suppliers
@@ -390,6 +487,10 @@ const API = {
     relay: {
         send(d) { return API.post('/api/iot/relay', d); },
         timed(d) { return API.post('/api/iot/relay/timed', d); },
+        // CFarm → Worker → multi-channel notifications (added 2026-08-26)
+        status() { return API.get('/api/relay/status'); },
+        bindToken(userLabel) { return API.post('/api/relay/bind-token', { user_label: userLabel || 'admin' }); },
+        test() { return API.post('/api/relay/test', {}); },
     },
 
     // Notifications / Push
@@ -513,5 +614,39 @@ const API = {
         deleteImage(id) { return API.del(`/api/ml/dataset/images/${id}`); },
         export() { return fetch('/api/ml/dataset/export'); },
         stats() { return API.get('/api/ml/dataset/stats'); },
+    },
+
+    // Luxpower inverter telemetry (Phase 1: read-only monitoring)
+    inverter: {
+        current() { return API.get('/api/inverter/current'); },
+        history(hours = 24, bucket = 'auto') {
+            return API.get(`/api/inverter/history?hours=${hours}&bucket=${bucket}`);
+        },
+        status() { return API.get('/api/inverter/status'); },
+    },
+
+    // Security / Anti-theft (Phase 1: motion-triggered YOLOv8n person detection)
+    security: {
+        status() { return API.get('/api/security/status'); },
+        zones() { return API.get('/api/security/zones'); },
+        createZone(d) { return API.post('/api/security/zones', d); },
+        updateZone(id, d) { return API.put(`/api/security/zones/${id}`, d); },
+        deleteZone(id) { return API.del(`/api/security/zones/${id}`); },
+        arm(id) { return API.post(`/api/security/zones/${id}/arm`); },
+        disarm(id) { return API.post(`/api/security/zones/${id}/disarm`); },
+        events(opts = {}) {
+            const p = new URLSearchParams();
+            if (opts.limit) p.set('limit', opts.limit);
+            if (opts.camera_id) p.set('camera_id', opts.camera_id);
+            if (opts.since) p.set('since', opts.since);
+            if (opts.acknowledged !== undefined && opts.acknowledged !== null) {
+                p.set('acknowledged', String(opts.acknowledged));
+            }
+            const q = p.toString();
+            return API.get('/api/security/events' + (q ? '?' + q : ''));
+        },
+        ackEvent(id) { return API.post(`/api/security/events/${id}/ack`); },
+        unackEvent(id) { return API.post(`/api/security/events/${id}/unack`); },
+        testAlert(id) { return API.post(`/api/security/test-alert/${id}`); },
     },
 };

@@ -4,10 +4,12 @@ Decoupled from inventory: care is a pure log (notebook). No automatic
 stock deduction. Inventory module operates independently.
 """
 
+import asyncio
 from datetime import date
 from typing import Optional
 from src.services.database.db import db
 from src.sync.sync_service import sync_service
+from src.utils.timezone import now_hcm
 
 
 class CareService:
@@ -158,18 +160,46 @@ class CareService:
     # ── Medication (Thuốc/Vaccine) ────────────────────
 
     async def log_medication(self, data: dict) -> dict:
-        """Log a medication/vaccination event (pure log, no inventory deduction)."""
-        row = await db.fetchrow(
-            """INSERT INTO care_medications
-            (cycle_id, barn_id, med_date, med_type, product_id, quantity,
-             method, warehouse_id, purpose, notes, unit, custom_name, shift)
-            VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10, $11, $12, $13) RETURNING *""",
-            data["cycle_id"], data["barn_id"], data["med_date"],
-            data["med_type"], data.get("product_id"), data.get("quantity"),
-            data.get("method"), data.get("warehouse_id"),
-            data.get("purpose"), data.get("notes"),
-            data.get("unit"), data.get("custom_name"), data.get("shift"),
-        )
+        """Log a medication/vaccination event (pure log, no inventory deduction).
+
+        Save-time alias normalization: after INSERT, if `custom_name` matches an
+        approved alias, atomically set medication_id + medication_name so the row
+        counts as canonical in queries — prevents free-text drift.
+        """
+        async with db.transaction() as conn:
+            row = await conn.fetchrow(
+                """INSERT INTO care_medications
+                (cycle_id, barn_id, med_date, med_type, product_id, quantity,
+                 method, warehouse_id, purpose, notes, unit, custom_name, shift)
+                VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10, $11, $12, $13)
+                RETURNING *""",
+                data["cycle_id"], data["barn_id"], data["med_date"],
+                data["med_type"], data.get("product_id"), data.get("quantity"),
+                data.get("method"), data.get("warehouse_id"),
+                data.get("purpose"), data.get("notes"),
+                data.get("unit"), data.get("custom_name"), data.get("shift"),
+            )
+
+            # Save-time alias normalization (skip if product_id already set)
+            custom_name = (data.get("custom_name") or "").strip()
+            if custom_name and not data.get("product_id"):
+                alias = await conn.fetchrow("""
+                    SELECT mna.canonical_medication_id, m.name AS canonical_name
+                    FROM medication_name_aliases mna
+                    JOIN medications m ON m.id = mna.canonical_medication_id
+                    WHERE LOWER(TRIM(mna.alias_name)) = LOWER($1)
+                      AND mna.approved_by IS NOT NULL
+                    LIMIT 1
+                """, custom_name)
+                if alias:
+                    await conn.execute("""
+                        UPDATE care_medications
+                        SET medication_id = $1, medication_name = $2
+                        WHERE id = $3
+                    """, alias["canonical_medication_id"], alias["canonical_name"], row["id"])
+                    # Refresh row dict so payload sent to sync has linked IDs
+                    row["medication_id"] = alias["canonical_medication_id"]
+                    row["medication_name"] = alias["canonical_name"]
 
         # Queue sync to cloud - map local field names to cloud schema
         payload = {
@@ -178,7 +208,7 @@ class CareService:
             "barn_id": row["barn_id"],
             "med_date": row["med_date"].isoformat() if row.get("med_date") else None,
             "med_type": row["med_type"],
-            "medication_id": row.get("product_id"),  # local product_id -> cloud medication_id
+            "medication_id": row.get("medication_id") or row.get("product_id"),
             "medication_name": row.get("medication_name"),
             "quantity": row["quantity"],
             "dosage": row.get("dosage"),
@@ -321,6 +351,8 @@ class CareService:
             "gender": row.get("gender"),
             "sample_male": row.get("sample_male"),
             "sample_female": row.get("sample_female"),
+            "total_weight_male": row.get("total_weight_male"),
+            "total_weight_female": row.get("total_weight_female"),
             "avg_weight_male": row.get("avg_weight_male"),
             "avg_weight_female": row.get("avg_weight_female"),
         }
@@ -840,6 +872,228 @@ class CareService:
             result.append(d)
 
         return result
+
+    # ── Calendar Heatmap ───────────────────────────────
+
+    async def get_calendar(self, cycle_id: int, month: str) -> dict:
+        """Return per-day classification for a calendar heatmap.
+
+        `month` is an ISO date string (any day in the target month, e.g.
+        '2026-09-01'). All four care tables are aggregated per-day for the
+        month, then bucketed by [cycle.start_date, COALESCE(end_date, today_HCM)].
+
+        Returns: dict with 'cycle_start', 'range_end', 'days' (list of
+        day dicts with classification booleans).
+        """
+        # asyncpg needs a Python date object (not str), despite the
+        # SQL $2::date cast. Convert here so the bind works.
+        month_date = date.fromisoformat(month)
+
+        rows = await db.fetch(
+            """
+            WITH cycle AS (
+                SELECT id, start_date, actual_end_date FROM cycles WHERE id = $1
+            ),
+            date_range AS (
+                SELECT
+                    date_trunc('month', ($2::date))::date AS month_start,
+                    (date_trunc('month', ($2::date)) + INTERVAL '1 month'
+                        - INTERVAL '1 day')::date AS month_end,
+                    cycle.start_date AS cycle_start,
+                    COALESCE(cycle.actual_end_date,
+                             (NOW() AT TIME ZONE 'Asia/Ho_Chi_Minh')::date) AS range_end
+                FROM cycle
+            ),
+            feed_days AS (
+                SELECT feed_date AS d,
+                       BOOL_OR(meal IN ('sang','all_day')) AS has_feed_sang,
+                       BOOL_OR(meal = 'chieu') AS has_feed_chieu
+                FROM care_feeds
+                WHERE cycle_id = $1
+                  AND feed_date BETWEEN (SELECT month_start FROM date_range)
+                                    AND (SELECT month_end FROM date_range)
+                GROUP BY feed_date
+            ),
+            med_days AS (
+                SELECT med_date AS d,
+                       BOOL_OR(shift IN ('sang','all_day')) AS has_med_sang,
+                       BOOL_OR(shift = 'chieu') AS has_med_chieu,
+                       BOOL_OR(method = 'feed') AS has_mixed_med,
+                       COUNT(*) FILTER (WHERE method = 'feed') AS mixed_med_count
+                FROM care_medications
+                WHERE cycle_id = $1
+                  AND med_date BETWEEN (SELECT month_start FROM date_range)
+                                    AND (SELECT month_end FROM date_range)
+                GROUP BY med_date
+            ),
+            death_days AS (
+                SELECT death_date AS d, SUM(count)::int AS death_count
+                FROM care_deaths
+                WHERE cycle_id = $1
+                  AND death_date BETWEEN (SELECT month_start FROM date_range)
+                                    AND (SELECT month_end FROM date_range)
+                GROUP BY death_date
+            ),
+            water_days AS (
+                SELECT water_date AS d,
+                       SUM(consumption_liters)::numeric AS water_liters
+                FROM care_water_logs
+                WHERE cycle_id = $1
+                  AND water_date BETWEEN (SELECT month_start FROM date_range)
+                                    AND (SELECT month_end FROM date_range)
+                GROUP BY water_date
+            ),
+            month_grid AS (
+                SELECT generate_series(
+                    (SELECT month_start FROM date_range),
+                    (SELECT month_end FROM date_range),
+                    INTERVAL '1 day'
+                )::date AS d
+            )
+            SELECT to_char(mg.d, 'YYYY-MM-DD') AS date,
+                   COALESCE(fd.has_feed_sang,false) AS has_feed_sang,
+                   COALESCE(fd.has_feed_chieu,false) AS has_feed_chieu,
+                   COALESCE(md.has_med_sang,false) AS has_med_sang,
+                   COALESCE(md.has_med_chieu,false) AS has_med_chieu,
+                   COALESCE(md.has_mixed_med,false) AS has_mixed_med,
+                   COALESCE(md.mixed_med_count,0) AS mixed_med_count,
+                   COALESCE(dd.death_count,0) AS death_count,
+                   wd.water_liters,
+                   (mg.d >= (SELECT cycle_start FROM date_range)
+                    AND mg.d <= (SELECT range_end FROM date_range)) AS in_range
+            FROM month_grid mg
+            LEFT JOIN feed_days fd ON fd.d = mg.d
+            LEFT JOIN med_days md ON md.d = mg.d
+            LEFT JOIN death_days dd ON dd.d = mg.d
+            LEFT JOIN water_days wd ON wd.d = mg.d
+            ORDER BY mg.d
+            """,
+            cycle_id, month_date,
+        )
+
+        # Convert rows → dict, dec/water safely to float for JSON
+        from decimal import Decimal
+        days = []
+        for r in rows:
+            d = dict(r)
+            if isinstance(d.get("water_liters"), Decimal):
+                d["water_liters"] = float(d["water_liters"])
+            days.append(d)
+
+        # Get cycle bounds for client (single round-trip)
+        meta = await db.fetchrow(
+            "SELECT start_date, actual_end_date FROM cycles WHERE id = $1",
+            cycle_id,
+        )
+        return {
+            "cycle_id": cycle_id,
+            "cycle_start": meta["start_date"].isoformat() if meta else None,
+            "cycle_end": meta["actual_end_date"].isoformat() if meta and meta["actual_end_date"] else None,
+            "today_hcm": now_hcm().date().isoformat(),
+            "days": days,
+        }
+
+    async def get_day_detail(self, cycle_id: int, date_iso: str) -> dict:
+        """Return feeds/meds/deaths/water for one calendar day, bucketed by shift.
+
+        Each list is split into sang (morning) / chieu (afternoon) buckets.
+        Medications with method='feed' (trộn cám) are surfaced separately as
+        mixed_med_sang / mixed_med_chieu so the UI can render them in a
+        highlighted block.
+        """
+        d = date.fromisoformat(date_iso)
+
+        feeds_task = db.fetch(
+            """SELECT cf.id, cf.meal, cf.quantity, cf.notes,
+                      p.name AS product_name
+            FROM care_feeds cf
+            LEFT JOIN products p ON cf.product_id = p.id
+            WHERE cf.cycle_id = $1 AND cf.feed_date = $2
+            ORDER BY cf.created_at""",
+            cycle_id, d,
+        )
+        meds_task = db.fetch(
+            """SELECT cm.id, cm.shift, cm.method, cm.med_type, cm.custom_name,
+                      cm.quantity, cm.unit, cm.notes, cm.purpose,
+                      p.name AS product_name
+            FROM care_medications cm
+            LEFT JOIN products p ON cm.product_id = p.id
+            WHERE cm.cycle_id = $1 AND cm.med_date = $2
+            ORDER BY cm.created_at""",
+            cycle_id, d,
+        )
+        deaths_task = db.fetch(
+            """SELECT id, count, cause, symptoms, notes
+            FROM care_deaths
+            WHERE cycle_id = $1 AND death_date = $2
+            ORDER BY created_at""",
+            cycle_id, d,
+        )
+        water_task = db.fetch(
+            """SELECT id, shift, consumption_liters, medicated, notes
+            FROM care_water_logs
+            WHERE cycle_id = $1 AND water_date = $2
+            ORDER BY created_at""",
+            cycle_id, d,
+        )
+
+        feeds_raw, meds_raw, deaths_raw, water_raw = await asyncio.gather(
+            feeds_task, meds_task, deaths_task, water_task,
+        )
+
+        from decimal import Decimal
+        def _water_clean(w):
+            wd = dict(w)
+            if isinstance(wd.get("consumption_liters"), Decimal):
+                wd["consumption_liters"] = float(wd["consumption_liters"])
+            return wd
+
+        # Bucket feeds: 'sang' (sang/all_day) vs 'chieu'
+        feeds_sang, feeds_chieu = [], []
+        for f in feeds_raw:
+            meal = f["meal"]
+            if meal == "chieu":
+                feeds_chieu.append(dict(f))
+            else:
+                feeds_sang.append(dict(f))
+
+        # Bucket meds + extract mixed_med (trộn cám)
+        meds_sang, meds_chieu = [], []
+        mixed_med_sang, mixed_med_chieu = [], []
+        for m in meds_raw:
+            md = dict(m)
+            shift = md["shift"]
+            is_mixed = md.get("method") == "feed"
+            if shift == "chieu":
+                meds_chieu.append(md)
+                if is_mixed:
+                    mixed_med_chieu.append(md)
+            else:
+                meds_sang.append(md)
+                if is_mixed:
+                    mixed_med_sang.append(md)
+
+        # Bucket water: shift IN (sang/all_day) → sang, 'chieu' → chieu
+        water_sang, water_chieu = [], []
+        for w in water_raw:
+            wd = _water_clean(w)
+            if wd["shift"] == "chieu":
+                water_chieu.append(wd)
+            else:
+                water_sang.append(wd)
+
+        return {
+            "date": d.isoformat(),
+            "feeds_sang": feeds_sang,
+            "feeds_chieu": feeds_chieu,
+            "meds_sang": meds_sang,
+            "meds_chieu": meds_chieu,
+            "mixed_med_sang": mixed_med_sang,
+            "mixed_med_chieu": mixed_med_chieu,
+            "deaths": [dict(r) for r in deaths_raw],
+            "water_sang": water_sang,
+            "water_chieu": water_chieu,
+        }
 
 
 care_service = CareService()

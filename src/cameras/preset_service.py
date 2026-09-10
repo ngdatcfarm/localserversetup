@@ -213,6 +213,7 @@ class PresetService:
         import cv2
         from pathlib import Path
         from datetime import datetime
+        from src.utils.timezone import now_hcm
 
         count = config.get('count', 1)
         interval = config.get('interval_sec', 2)
@@ -234,8 +235,8 @@ class PresetService:
 
             jpeg_bytes = cv2.imencode('.jpg', raw_frame, [cv2.IMWRITE_JPEG_QUALITY, 85])[1].tobytes()
 
-            # Save to disk
-            ts = datetime.now().strftime("%Y%m%d_%H%M%S")
+            # Save to disk — filename uses HCM so files group by farm-day, not UTC-day
+            ts = now_hcm().strftime("%Y%m%d_%H%M%S")
             filename = f"{camera_id}_{ts}_{i+1}.jpg"
             filepath = snapshot_dir / filename
             Path(filepath).write_bytes(jpeg_bytes)

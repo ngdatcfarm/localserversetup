@@ -31,6 +31,19 @@ set "WATCHDOG_PID_FILE=%LOG_DIR%\guardian.watchdog.pid"
 
 if not exist "%LOG_DIR%" mkdir "%LOG_DIR%"
 
+REM --- Clear stale "intentional shutdown" flag ---
+REM The flag is touched by guardian.py's "stop" CLI right before sending
+REM SIGTERM to itself. The watchdog reads it and exits so it doesn't
+REM respawn guardian. BUT if the flag persists across a subsequent start,
+REM the watchdog refuses to launch guardian again — the stack stays down
+REM forever, even after a system reboot. Clear it here because this
+REM script is the SINGLE entry point for: cfarm.bat, shell:startup
+REM shortcut, and Task Scheduler.
+if exist "%LOG_DIR%\guardian.intentional_shutdown" (
+    echo [start_guardian] Clearing stale intentional-shutdown flag
+    del /F /Q "%LOG_DIR%\guardian.intentional_shutdown" 2>nul
+)
+
 REM --- Detect / clean stale pid files ---
 if exist "%WATCHDOG_PID_FILE%" (
     for /f %%p in ('type "%WATCHDOG_PID_FILE%" 2^>nul') do (
@@ -69,11 +82,14 @@ if errorlevel 1 (
 
 set "DOCKER_WATCHDOG=%APP_DIR%\scripts\docker_watchdog.py"
 set "DOCKER_WATCHDOG_PID=%LOG_DIR%\docker_watchdog.pid"
+set "TUNNEL_WATCHDOG=%APP_DIR%\scripts\tunnel_watchdog.py"
+set "TUNNEL_WATCHDOG_PID=%LOG_DIR%\tunnel.watchdog.pid"
 
 echo [start_guardian] Launching watchdog from %WATCHDOG_SCRIPT%
 echo [start_guardian] Python:        %PYEXE%
 echo [start_guardian] Watchdog log:  %LOG_DIR%\guardian.watchdog.log
 echo [start_guardian] Docker watchdog: %DOCKER_WATCHDOG%
+echo [start_guardian] Tunnel watchdog: %TUNNEL_WATCHDOG%
 
 REM `start ""` creates a new process; with pythonw (no console),
 REM the child is fully detached and survives our exit.
@@ -92,6 +108,19 @@ if exist "%DOCKER_WATCHDOG_PID%" (
 start "" "%PYEXE%" "%DOCKER_WATCHDOG%"
 :skip_docker_watchdog
 
+REM Launch Tunnel watchdog (skip if already running)
+if exist "%TUNNEL_WATCHDOG_PID%" (
+    for /f %%p in ('type "%TUNNEL_WATCHDOG_PID%" 2^>nul') do (
+        tasklist /FI "PID eq %%p" 2>nul | findstr /C:"%%p" >nul
+        if not errorlevel 1 (
+            echo [start_guardian] Tunnel watchdog already running (PID %%p^)
+            goto :skip_tunnel_watchdog
+        )
+    )
+)
+start "" "%PYEXE%" "%TUNNEL_WATCHDOG%"
+:skip_tunnel_watchdog
+
 REM Give watchdog a moment to spawn guardian and write PID files
 ping -n 6 127.0.0.1 >nul
 
@@ -109,6 +138,14 @@ if exist "%GUARDIAN_PID_FILE%" (
     )
 ) else (
     echo [start_guardian] WARNING: guardian PID file not written yet - check logs
+)
+
+if exist "%TUNNEL_WATCHDOG_PID%" (
+    for /f %%p in ('type "%TUNNEL_WATCHDOG_PID%"') do (
+        echo [start_guardian] Tunnel watchdog started, PID=%%p
+    )
+) else (
+    echo [start_guardian] Tunnel watchdog PID file not yet written
 )
 
 endlocal

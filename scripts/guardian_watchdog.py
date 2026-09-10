@@ -68,6 +68,14 @@ GUARDIAN_SCRIPT = os.path.join(APP_DIR, "scripts", "guardian.py")
 GUARDIAN_PID_FILE = os.path.join(LOG_DIR, "guardian.pid")
 WATCHDOG_PID_FILE = os.path.join(LOG_DIR, "guardian.watchdog.pid")
 WATCHDOG_LOG = os.path.join(LOG_DIR, "guardian.watchdog.log")
+# Anchored to LOG_DIR (absolute) — matches guardian.py's INHIBIT_FILE.
+# Without anchoring, watchdog's CWD changes (e.g. scheduled task) would
+# hide the inhibit file and silently ignore the developer's intent.
+INHIBIT_FILE = os.path.join(LOG_DIR, "guardian.inhibit")
+# New flag set by guardian.py's "stop" CLI: prevents the watchdog from
+# respawning guardian after an intentional shutdown. Removed when
+# cfarm.bat start runs.
+INTENTIONAL_SHUTDOWN_FILE = os.path.join(LOG_DIR, "guardian.intentional_shutdown")
 POLL_INTERVAL = 5  # seconds
 MAX_RESPAWNS_PER_HOUR = 20  # hard cap to prevent infinite loops
 
@@ -116,18 +124,52 @@ def is_process_alive(pid: int) -> bool:
 
 
 def is_guardian_intentionally_stopped() -> bool:
-    """If the inhibit file exists OR there's no PID file, treat as intentional stop."""
-    if os.path.exists(os.path.join(APP_DIR, "guardian.inhibit")):
+    """The ONLY ways to stop the watchdog are via the inhibit file or
+    the intentional-shutdown flag.
+
+    A missing PID file is NOT a stop signal — it can happen for many reasons:
+      - Guardian crashed before writing its PID file
+      - Antivirus / file-system event removed the file
+      - Disk-full or power-loss between launch and PID write
+      - Manual cleanup of stale files
+
+    In all those cases the right behaviour is to LAUNCH a fresh guardian,
+    not to exit. Otherwise we end up with no supervisor for days
+    (which is exactly what happened on 2026-07-06: watchdog exited
+    because PID file vanished, no one restarted guardian for 4 days).
+    """
+    if os.path.exists(INHIBIT_FILE):
         return True
-    if not os.path.exists(GUARDIAN_PID_FILE):
-        # PID file gone — either never started or was intentionally stopped
+    # guardian.py's "stop" CLI touches this file right before sending
+    # SIGTERM to itself. Without this check, the watchdog would observe
+    # guardian exit and immediately respawn it — making cfarm.bat stop
+    # a no-op.
+    if os.path.exists(INTENTIONAL_SHUTDOWN_FILE):
         return True
     return False
 
 
+def pid_file_is_stale() -> bool:
+    """PID file is stale when it's gone OR when its PID isn't a running process.
+    Used to decide whether to attempt a fresh launch (vs adopt existing PID)."""
+    pid = read_pid_file(GUARDIAN_PID_FILE)
+    if pid is None:
+        return True
+    return not is_process_alive(pid)
+
+
 def launch_guardian() -> int:
-    """Launch guardian.py as a fully detached subprocess. Returns PID or 0 on fail."""
+    """Launch guardian.py as a fully detached subprocess. Returns PID or 0 on fail.
+
+    CRITICAL: kills any orphan guardian.py processes first to prevent zombies.
+    """
     try:
+        # Kill orphan guardians before spawning (singleton enforcement)
+        orphans = _kill_orphan_guardians()
+        if orphans > 0:
+            log(f"Cleaned {orphans} orphan guardian(s) before launch")
+            time.sleep(2)  # Let OS release ports
+
         flags = 0
         if hasattr(sp, "CREATE_NEW_PROCESS_GROUP"):
             flags |= sp.CREATE_NEW_PROCESS_GROUP
@@ -149,6 +191,47 @@ def launch_guardian() -> int:
     except Exception as e:
         log(f"Failed to launch guardian: {e}")
         return 0
+
+
+def _kill_orphan_guardians(exclude_pid: int = 0) -> int:
+    """Kill all guardian.py processes except exclude_pid.
+
+    This prevents zombie guardian accumulation when multiple layers
+    (self-respawn, watchdog, Task Scheduler) try to start guardian.
+    Returns number of orphans killed.
+    """
+    my_pid = os.getpid()
+    killed = 0
+    try:
+        wmic = sp.run(
+            ["wmic", "process", "where",
+             "Name='pythonw.exe' and CommandLine like '%guardian.py%'",
+             "get", "ProcessId", "/FORMAT:LIST"],
+            capture_output=True, text=True, timeout=10,
+            creationflags=NO_WINDOW,
+        )
+        for line in wmic.stdout.splitlines():
+            if line.startswith("ProcessId="):
+                try:
+                    pid = int(line.split("=", 1)[1].strip())
+                except ValueError:
+                    continue
+                # Skip ourselves and the guardian we're trying to keep
+                if pid == my_pid or pid == exclude_pid:
+                    continue
+                try:
+                    sp.run(
+                        ["taskkill", "/F", "/PID", str(pid)],
+                        capture_output=True, timeout=5,
+                        creationflags=NO_WINDOW,
+                    )
+                    log(f"Killed orphan guardian PID={pid}")
+                    killed += 1
+                except Exception:
+                    pass
+    except Exception as e:
+        log(f"Warning: orphan guardian cleanup error: {e}")
+    return killed
 
 
 def _which(cmd: str) -> bool:
@@ -275,14 +358,22 @@ def main():
     log("Cleaning up orphan processes from previous runs...")
     stale_pid = read_pid_file(GUARDIAN_PID_FILE) or 0
     _kill_orphans(stale_pid)
+    # Also kill any orphan guardian.py processes (zombie prevention)
+    _kill_orphan_guardians()
     time.sleep(2)  # Let the OS release the ports
 
-    # If guardian is already running, adopt it
+    # If guardian is already running, adopt it; otherwise launch fresh.
+    # IMPORTANT: do NOT remove the PID file when stale — we'll let the
+    # main loop do that and write a fresh one when the new guardian
+    # announces itself.
     current_pid = read_pid_file(GUARDIAN_PID_FILE)
     if current_pid and is_process_alive(current_pid):
         log(f"Adopting existing guardian PID={current_pid}")
     else:
-        log("No guardian running, launching fresh")
+        if current_pid:
+            log(f"Stale guardian PID={current_pid} (process dead). Launching fresh...")
+        else:
+            log("No guardian PID file. Launching fresh...")
         new_pid = launch_guardian()
         if new_pid == 0:
             log("FATAL: could not launch guardian on first attempt; exiting")
@@ -291,30 +382,49 @@ def main():
         current_pid = read_pid_file(GUARDIAN_PID_FILE) or new_pid
 
     respawn_times = []  # timestamps of recent respawns (last hour)
+    last_orphan_scan = 0  # timestamp of last periodic orphan scan
+    ORPHAN_SCAN_INTERVAL = 300  # scan for orphan guardians every 5 minutes
 
     try:
         while _running:
             time.sleep(POLL_INTERVAL)
 
             if is_guardian_intentionally_stopped():
-                log("Guardian intentionally stopped (no PID file or inhibit set). Exiting watchdog.")
+                log("Guardian intentionally stopped (inhibit file set). Exiting watchdog.")
                 break
 
-            if not is_process_alive(current_pid):
+            # Periodic orphan guardian scan (every 5 min)
+            # Catches zombies spawned by self-respawn or Task Scheduler
+            now_scan = time.time()
+            if now_scan - last_orphan_scan >= ORPHAN_SCAN_INTERVAL:
+                last_orphan_scan = now_scan
+                orphans = _kill_orphan_guardians(exclude_pid=current_pid or 0)
+                if orphans > 0:
+                    log(f"Periodic scan: killed {orphans} orphan guardian(s)")
+
+            if pid_file_is_stale():
+                # Either PID file is missing, or its PID points to a dead process.
+                # This is NOT a stop signal — we always attempt a relaunch.
                 now = time.time()
-                # Trim old respawn timestamps (last hour only)
                 respawn_times = [t for t in respawn_times if now - t < 3600]
                 if len(respawn_times) >= MAX_RESPAWNS_PER_HOUR:
                     log(f"ERROR: Guardian has died {len(respawn_times)} times in the last hour. "
                         f"Refusing to respawn — manual intervention required.")
                     break
 
-                log(f"Guardian (PID={current_pid}) is DEAD. Respawning...")
+                if current_pid:
+                    log(f"Guardian (PID={current_pid}) is DEAD. Respawning...")
+                else:
+                    log(f"Guardian PID file missing/stale. Relaunching guardian...")
                 respawn_times.append(now)
-                # Clean up any orphan children before launching new guardian
+
+                # Clean up any orphan children of the previous (dead) guardian
                 # (Windows doesn't auto-kill children when parent dies)
-                _kill_orphans(current_pid)
+                _kill_orphans(current_pid or 0)
+                # Also kill any orphan guardian.py processes (zombie prevention)
+                _kill_orphan_guardians()
                 time.sleep(2)
+
                 current_pid = launch_guardian()
                 if current_pid:
                     # Wait a bit for guardian to write its PID file

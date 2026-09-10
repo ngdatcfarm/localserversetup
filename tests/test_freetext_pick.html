@@ -1,0 +1,73 @@
+<!DOCTYPE html>
+<html>
+<head><meta charset="utf-8"><title>FreeText Pick Test</title></head>
+<body>
+<div id="app"></div>
+<script src="/static/vendor/vue.global.prod.js"></script>
+<script>
+const { createApp, reactive, ref } = Vue;
+
+const app = createApp({
+    setup() {
+        const rows = ref([
+            { name: 'Amox' },
+            { name: 'VTM C' },
+            { name: 'Vitamiin C' }
+        ]);
+        const medsAll = ref([
+            { id: 2, name: 'Vitamin C', category: 'vitamin' },
+            { id: 5, name: 'BMD', category: 'disinfectant' }
+        ]);
+        const freeTextPick = reactive({});
+        const freeTextAssigning = reactive({});
+
+        function assign(row) {
+            if (!freeTextPick[row.name]) {
+                alert('Toast: Chọn thuốc chuẩn cho "' + row.name + '" trước khi gán');
+                return;
+            }
+            alert('Assigning: ' + row.name + ' → med ' + freeTextPick[row.name]);
+        }
+
+        return { rows, medsAll, freeTextPick, freeTextAssigning, assign };
+    },
+    template: `
+    <table border="1" cellpadding="6" style="border-collapse:collapse;font-family:sans-serif">
+        <thead>
+            <tr><th>Name</th><th>Pick</th><th>Action</th><th>freeTextPick[name]</th></tr>
+        </thead>
+        <tbody>
+            <tr v-for="(r, idx) in rows" :key="r.name">
+                <td>{{ r.name }}</td>
+                <td>
+                    <select v-model="freeTextPick[r.name]" :data-row="r.name">
+                        <option value="">-- Chọn --</option>
+                        <option v-for="m in medsAll" :key="m.id" :value="String(m.id)">
+                            {{ m.name }}
+                        </option>
+                    </select>
+                </td>
+                <td>
+                    <button @click="assign(r)"
+                        :disabled="freeTextAssigning[idx]"
+                        :class="freeTextPick[r.name] ? 'btn-on' : 'btn-off'">
+                        <span v-if="freeTextAssigning[idx]">⏳</span>
+                        <span v-else-if="!freeTextPick[r.name]">Chọn thuốc →</span>
+                        <span v-else>Gán</span>
+                    </button>
+                </td>
+                <td><code>{{ freeTextPick[r.name] || 'undefined' }}</code></td>
+            </tr>
+        </tbody>
+    </table>
+    <style>
+        .btn-on { background: #15803d; color: white; padding: 6px 12px; border: none; border-radius: 4px; cursor: pointer; }
+        .btn-off { background: white; color: #475569; padding: 6px 12px; border: 1px solid #cbd5e1; border-radius: 4px; cursor: pointer; }
+    </style>
+    `
+});
+
+app.mount('#app');
+</script>
+</body>
+</html>

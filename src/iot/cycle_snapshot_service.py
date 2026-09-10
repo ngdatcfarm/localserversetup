@@ -18,6 +18,7 @@ Usage:
 
 import json
 import logging
+import asyncio
 from datetime import datetime, timezone, timedelta
 from typing import Optional
 
@@ -28,6 +29,10 @@ logger = logging.getLogger(__name__)
 
 # Snapshot schema version
 SCHEMA_VERSION = "1.0"
+
+# Vietnam timezone (UTC+7) — server + farm both run in VN,
+# so "today" and sensor day boundaries should follow VN local time.
+VN_TZ = timezone(timedelta(hours=7))
 
 
 class CycleSnapshotService:
@@ -48,7 +53,7 @@ class CycleSnapshotService:
             dict with snapshot data or error
         """
         if snapshot_date is None:
-            snapshot_date = datetime.now(timezone.utc).strftime("%Y-%m-%d")
+            snapshot_date = datetime.now(VN_TZ).strftime("%Y-%m-%d")
 
         try:
             # Get cycle info
@@ -83,6 +88,11 @@ class CycleSnapshotService:
             mortality_rate = self._calculate_mortality_rate(
                 cycle["initial_count"], cycle["current_count"]
             )
+            # Compute stage from day_age rather than copying from cycles.stage:
+            # cycle.stage column is set once at create and never updated, so a
+            # 5-month-old cycle still shows 'chick'. Use the day_age directly
+            # for the snapshot — it's always in sync with reality.
+            stage = self._compute_stage(day_age)
 
             # Build snapshot
             snapshot = {
@@ -91,7 +101,7 @@ class CycleSnapshotService:
                 "barn_name": cycle["barn_name"],
                 "snapshot_date": snapshot_date,
                 "day_age": day_age,
-                "stage": cycle.get("stage", "unknown"),
+                "stage": stage,
 
                 # Bird counts
                 "initial_count": cycle["initial_count"],
@@ -190,7 +200,7 @@ class CycleSnapshotService:
             dict with results
         """
         if snapshot_date is None:
-            snapshot_date = datetime.now(timezone.utc).strftime("%Y-%m-%d")
+            snapshot_date = datetime.now(VN_TZ).strftime("%Y-%m-%d")
 
         # Get all active cycles
         active_cycles = await db.fetch(
@@ -220,12 +230,41 @@ class CycleSnapshotService:
         }
 
     async def _get_sensor_aggregates(self, barn_id: str, cycle_id: int, date: str) -> dict:
-        """Get aggregated sensor data for a day."""
-        from datetime import datetime as dt
-        start_time = dt.strptime(f"{date} 00:00:00", "%Y-%m-%d %H:%M:%S")
-        end_time = dt.strptime(f"{date} 23:59:59", "%Y-%m-%d %H:%M:%S")
+        """Get aggregated sensor data for a day.
 
-        sensor_types = ["temperature", "humidity", "mq137_raw", "mq135_raw"]
+        Day boundaries are interpreted in VN local time (UTC+7): [00:00, next-day 00:00).
+        Sensor rows whose `time` falls in that half-open interval are included.
+        Using a half-open interval avoids missing the last second of the day and
+        avoids double-counting the boundary if ESP32 publishes exactly at 00:00.
+
+        Why we do NOT filter zero/negative values:
+        ------------------------------------------
+        MQ-series gas sensors (mq135_raw, mq137_raw) read near zero in clean air
+        — a 0 ADC reading is a legitimate measurement, not noise. The absolute
+        value (avg) tells you the typical level, but the *variation around it*
+        (std, range) is what reveals whether the sensor is actually responding
+        to environmental changes. A stuck sensor that reports the same value
+        24h a day will have std≈0 and range≈0, which itself is a recognizable
+        pattern in downstream ML — filtering zeros would silently destroy that
+        signal. Same logic applies to all sensor types.
+
+        Each sensor returns its own scale (ppm, °C, %, raw ADC etc.). We capture
+        both location (avg, min, max) and variability (std, range, cv) so the
+        ML pipeline can use either or both.
+        """
+        from datetime import datetime as dt
+        date_obj = dt.strptime(date, "%Y-%m-%d").date()
+        start_dt = dt.combine(date_obj, dt.min.time()).replace(tzinfo=VN_TZ)
+        end_dt = start_dt + timedelta(days=1)
+
+        # `co2` and `light` are pre-wired for forward-compatibility: if any
+        # sensor publishes them later, snapshots pick them up automatically
+        # without code change. Empty days produce no entry (intentional).
+        sensor_types = [
+            "temperature", "humidity",
+            "mq137_raw", "mq135_raw",
+            "co2", "light",
+        ]
         result = {}
 
         for sensor_type in sensor_types:
@@ -240,16 +279,29 @@ class CycleSnapshotService:
                 WHERE barn_id = $1
                     AND sensor_type = $2
                     AND time >= $3
-                    AND time <= $4""",
-                barn_id, sensor_type, start_time, end_time
+                    AND time < $4""",
+                barn_id, sensor_type, start_dt, end_dt
             )
 
             if agg and agg["sample_count"] > 0:
+                # Pull raw values once; coercion '' or None → 0 is intentional
+                avg = float(agg["avg_value"] or 0)
+                mn = float(agg["min_value"] or 0)
+                mx = float(agg["max_value"] or 0)
+                std = float(agg["std_value"] or 0)
+                # Coefficient of variation: relative variability, scale-free.
+                # 0/0 when avg is 0 (e.g. sensor stuck at zero) — left as 0.
+                cv = round((std / avg) * 100, 2) if avg != 0 else 0
                 result[sensor_type] = {
-                    "avg": round(agg["avg_value"], 2) if agg["avg_value"] else 0,
-                    "min": round(agg["min_value"], 2) if agg["min_value"] else 0,
-                    "max": round(agg["max_value"], 2) if agg["max_value"] else 0,
-                    "std": round(agg["std_value"], 2) if agg["std_value"] else 0,
+                    "avg":     round(avg, 2),
+                    "min":     round(mn, 2),
+                    "max":     round(mx, 2),
+                    "std":     round(std, 2),
+                    # Variation emphasis: range = full spread, cv = relative.
+                    # These make "did the sensor actually move today?" trivially
+                    # visible to the ML pipeline and to dashboards.
+                    "range":   round(mx - mn, 2),
+                    "cv":      cv,
                     "samples": agg["sample_count"],
                 }
 
@@ -337,7 +389,15 @@ class CycleSnapshotService:
         return {"avg_weight": 0, "sample_count": 0, "min_weight": 0, "max_weight": 0, "uniformity": 0}
 
     async def _get_environment_state(self, barn_id: str, cycle_id: int, date: str) -> dict:
-        """Get barn environment state."""
+        """Get barn environment state.
+
+        Queries:
+        - latest device heartbeat (wifi rssi, uptime) — best-effort signal of
+          whether the barn's primary controller is online right now;
+        - latest curtain_configs row by last_moved_at — only populated if the
+          barn has at least one curtain configured. Barns without curtains
+          return curtain_state=None (intentional; do not synthesize).
+        """
         # Get latest device states for this barn
         latest = await db.fetchrow(
             """SELECT
@@ -350,10 +410,34 @@ class CycleSnapshotService:
             barn_id
         )
 
+        # Get latest curtain state for this barn. A barn may have multiple
+        # curtains; we surface only the most-recently-moved one. If the barn
+        # has none configured, the result is None (do not fabricate state).
+        curtain = await db.fetchrow(
+            """SELECT current_position, moving_state, last_moved_at,
+                      moving_target_pct, moving_started_at, moving_duration_seconds
+               FROM curtain_configs
+               WHERE barn_id = $1
+               ORDER BY last_moved_at DESC NULLS LAST, curtain_code
+               LIMIT 1""",
+            barn_id
+        )
+        curtain_state = None
+        if curtain:
+            curtain_state = {
+                "current_position":       curtain["current_position"],
+                "moving_state":           curtain["moving_state"],
+                "moving_target_pct":      curtain["moving_target_pct"],
+                # Surface ISO strings (JSONB-safe) instead of datetime objects
+                "last_moved_at":          curtain["last_moved_at"].isoformat() if curtain["last_moved_at"] else None,
+                "moving_started_at":      curtain["moving_started_at"].isoformat() if curtain["moving_started_at"] else None,
+                "moving_duration_seconds": curtain["moving_duration_seconds"],
+            }
+
         return {
             "wifi_rssi": latest["wifi_rssi"] if latest else None,
             "uptime_hours": round(latest["uptime_seconds"] / 3600, 1) if latest and latest["uptime_seconds"] else 0,
-            "curtain_state": None,
+            "curtain_state": curtain_state,
         }
 
     def _calculate_day_age(self, start_date, snapshot_date) -> int:
@@ -372,6 +456,30 @@ class CycleSnapshotService:
         deaths = initial_count - (current_count or 0)
         return round((deaths / initial_count) * 100, 2)
 
+    def _compute_stage(self, day_age: int) -> str:
+        """Derive broiler stage from day_age using industry conventions.
+
+        Stages (broiler, standard):
+          - chick / brooding : day 1-7   (post-hatch, heat lamp required)
+          - starter          : day 8-21  (rapid growth, starter feed)
+          - grower           : day 22-35 (continued growth, grower feed)
+          - finisher         : day 36+   (final grow-out, finisher feed)
+
+        Why we compute from day_age instead of copying from cycles.stage:
+        The ``cycles.stage`` column is set once at create-time and never
+        updated by the app, so a 5-month-old batch still shows 'chick'.
+        Every snapshot uses day_age instead — always in sync with reality.
+        """
+        if day_age is None or day_age < 1:
+            return "unknown"
+        if day_age <= 7:
+            return "chick"
+        if day_age <= 21:
+            return "starter"
+        if day_age <= 35:
+            return "grower"
+        return "finisher"
+
 
 # Singleton
 _snapshot_service: Optional[CycleSnapshotService] = None
@@ -388,6 +496,135 @@ async def run_snapshot(date: str = None) -> dict:
     """Convenience function to run snapshots."""
     service = get_snapshot_service()
     return await service.create_all_snapshots(date)
+
+
+async def _backfill_snapshots(days_back: int) -> int:
+    """One-shot backfill at scheduler startup.
+
+    For each cycle (active + closed), find days in [start_date, today)
+    that have no snapshot row yet and create one. Idempotent via UPSERT.
+
+    Returns the number of snapshots created.
+    """
+    from datetime import date as date_cls
+
+    if days_back <= 0:
+        return 0
+
+    today = datetime.now(VN_TZ).date()
+    cutoff = today - timedelta(days=days_back)
+
+    # All cycles — both active and closed. Closed cycles still need
+    # historical snapshots so cycle-summary KPIs work for past batches.
+    cycles = await db.fetch("SELECT id, start_date FROM cycles")
+    if not cycles:
+        return 0
+
+    service = get_snapshot_service()
+    created = 0
+
+    for c in cycles:
+        cycle_start = c["start_date"]
+        if isinstance(cycle_start, str):
+            cycle_start = date_cls.fromisoformat(cycle_start)
+        if cycle_start is None or cycle_start >= today:
+            continue
+        if cycle_start < cutoff:
+            cycle_start = cutoff
+
+        # Find which days already have snapshots for this cycle
+        snap_rows = await db.fetch(
+            """SELECT snapshot_date FROM cycle_daily_snapshots
+               WHERE cycle_id = $1
+                 AND snapshot_date >= $2
+                 AND snapshot_date < $3""",
+            c["id"], cycle_start, today,
+        )
+        existing = {r["snapshot_date"] for r in snap_rows}
+
+        # Walk day by day and fill missing
+        d = cycle_start
+        while d < today:
+            if d not in existing:
+                try:
+                    result = await service.create_snapshot(c["id"], d.isoformat())
+                    if result.get("ok"):
+                        created += 1
+                        logger.info(f"Backfilled snapshot: cycle={c['id']} date={d.isoformat()}")
+                    else:
+                        logger.warning(
+                            f"Backfill skipped cycle={c['id']} date={d.isoformat()}: "
+                            f"{result.get('error')}"
+                        )
+                except Exception as e:
+                    logger.warning(f"Backfill failed cycle={c['id']} date={d.isoformat()}: {e}")
+            d += timedelta(days=1)
+
+    return created
+
+
+async def start_snapshot_scheduler(
+    hour: int = 0,
+    minute: int = 30,
+    backfill_days: int = 30,
+) -> None:
+    """Long-running asyncio task: create daily snapshots for all active cycles.
+
+    Schedule (VN local time, UTC+7):
+    - On startup: backfill up to `backfill_days` of missing snapshots for all cycles.
+    - Every day at `hour:minute`: snapshot for "yesterday VN" (the day that just
+      ended), so any care logs from that day are already in the DB.
+    - The task is cancellable; raises asyncio.CancelledError to exit cleanly.
+
+    Wire into main.py startup with:
+        task = asyncio.create_task(start_snapshot_scheduler())
+        app.state.snapshot_task = task
+    And cancel in shutdown.
+    """
+    logger.info(
+        f"Snapshot scheduler starting: daily at {hour:02d}:{minute:02d} VN, "
+        f"backfill={backfill_days} days"
+    )
+
+    # One-shot backfill at startup. Idempotent via UPSERT.
+    if backfill_days > 0:
+        try:
+            n = await _backfill_snapshots(backfill_days)
+            logger.info(f"Snapshot backfill complete: {n} snapshot(s) created")
+        except Exception as e:
+            logger.error(f"Snapshot backfill failed: {e}", exc_info=True)
+
+    while True:
+        try:
+            now = datetime.now(VN_TZ)
+            target_today = now.replace(hour=hour, minute=minute, second=0, microsecond=0)
+            if now >= target_today:
+                target = target_today + timedelta(days=1)
+            else:
+                target = target_today
+
+            sleep_seconds = (target - now).total_seconds()
+            logger.info(
+                f"Next snapshot run at {target.isoformat()} "
+                f"(in {sleep_seconds:.0f}s, sleep={sleep_seconds/3600:.1f}h)"
+            )
+            await asyncio.sleep(sleep_seconds)
+
+            # Snapshot for the day that just ended in VN local time.
+            snapshot_date = (datetime.now(VN_TZ) - timedelta(days=1)).strftime("%Y-%m-%d")
+            result = await run_snapshot(snapshot_date)
+            logger.info(
+                f"Daily snapshot for {snapshot_date}: "
+                f"{result.get('successful', 0)}/{result.get('total_cycles', 0)} cycles"
+            )
+
+        except asyncio.CancelledError:
+            logger.info("Snapshot scheduler cancelled — exiting")
+            raise
+        except Exception as e:
+            # Don't tight-loop on persistent errors — back off 60s.
+            logger.error(f"Snapshot scheduler error: {e}", exc_info=True)
+            await asyncio.sleep(60)
 
 
 if __name__ == "__main__":

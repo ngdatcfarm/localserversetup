@@ -3,6 +3,8 @@
 from datetime import date, datetime, timedelta
 from typing import Optional
 from src.services.database.db import db
+from src.sync.sync_service import sync_service
+from src.utils.timezone import now_hcm
 
 
 class CycleService:
@@ -61,10 +63,10 @@ class CycleService:
                 "message": f"Barn '{data['barn_id']}' already has an active cycle. Close or complete it first."
             }
 
-        # Auto-generate name if not provided
+        # Auto-generate name if not provided (HCM-local display string)
         cycle_name = data.get("name")
         if not cycle_name or not cycle_name.strip():
-            now = datetime.now()
+            now = now_hcm()
             cycle_name = f"Lứa {barn_row['name']} {now.strftime('%d/%m/%Y %H:%M')}"
 
         row = await db.fetchrow(
@@ -101,16 +103,24 @@ class CycleService:
         )
         return {"ok": True}
 
-    async def close(self, cycle_id: int, notes: str = None, force: bool = False) -> dict:
+    async def close(self, cycle_id: int, end_date: date = None, notes: str = None, force: bool = False) -> dict:
         """Close a cycle (kết thúc đợt nuôi).
 
-        Business rules:
-        - If force=False, validates that feeding records exist
-        - Updates final_quantity based on initial_count - deaths - sales
+        Args:
+            cycle_id: Cycle to close
+            end_date: User-selected close date (defaults to today)
+            notes: Optional close notes (replaces existing notes if provided)
+            force: Skip validation checks (no feed records check)
+
+        Returns:
+            {"ok": True, "final_quantity": int, "actual_end_date": "YYYY-MM-DD"} on success
+            {"ok": False, "message": str} on failure
         """
         cycle = await self.get(cycle_id)
         if not cycle:
             return {"ok": False, "message": "Cycle not found"}
+        if cycle.get("status") == "closed":
+            return {"ok": False, "message": "Cycle đã được đóng trước đó"}
 
         # Validate feeds recorded (unless force=True)
         if not force:
@@ -146,16 +156,165 @@ class CycleService:
         ) or 0
         final_quantity = cycle["initial_count"] - total_deaths - total_sold
 
-        await db.execute(
-            """UPDATE cycles SET
-                status = 'closed', actual_end_date = CURRENT_DATE,
-                notes = COALESCE($1, notes),
-                final_quantity = $2,
-                updated_at = NOW()
-            WHERE id = $3""",
-            notes, final_quantity, cycle_id,
+        # Use user-supplied end_date, default to today
+        actual_end = end_date or date.today()
+
+        # Validate end_date >= start_date
+        if cycle.get("start_date") and actual_end < cycle["start_date"]:
+            return {"ok": False, "message": "Ngày kết thúc phải lớn hơn hoặc bằng ngày bắt đầu"}
+
+        async with db.transaction() as conn:
+            await conn.execute(
+                """UPDATE cycles SET
+                    status = 'closed',
+                    actual_end_date = $1,
+                    notes = COALESCE($2, notes),
+                    final_quantity = $3,
+                    updated_at = NOW()
+                WHERE id = $4""",
+                actual_end, notes, final_quantity, cycle_id,
+            )
+
+        # Cloud sync — queue status change (fire-and-forget)
+        try:
+            updated = await self.get(cycle_id)
+            await sync_service.queue_change("cycles", cycle_id, "update", dict(updated))
+        except Exception:
+            pass  # sync may fail offline — never block the close
+
+        return {
+            "ok": True,
+            "final_quantity": final_quantity,
+            "actual_end_date": actual_end.isoformat(),
+        }
+
+    async def reopen(self, cycle_id: int, confirm: bool = False) -> dict:
+        """Reopen a closed cycle (mở lại đợt nuôi). Admin only.
+
+        Resets status='active', clears actual_end_date and final_quantity.
+        Care records (feeds, deaths, sales, etc.) are NOT deleted.
+
+        Args:
+            cycle_id: Cycle to reopen
+            confirm: Required to be True to actually reopen (safety check)
+        """
+        cycle = await self.get(cycle_id)
+        if not cycle:
+            return {"ok": False, "message": "Cycle not found"}
+        if cycle.get("status") != "closed":
+            return {"ok": False, "message": "Cycle chưa được đóng, không cần mở lại"}
+        if not confirm:
+            return {
+                "ok": False,
+                "message": "Cần xác nhận để mở lại. Gọi với confirm=true.",
+            }
+
+        async with db.transaction() as conn:
+            await conn.execute(
+                """UPDATE cycles SET
+                    status = 'active',
+                    actual_end_date = NULL,
+                    final_quantity = NULL,
+                    updated_at = NOW()
+                WHERE id = $1""",
+                cycle_id,
+            )
+
+        # Cloud sync — queue status change
+        try:
+            updated = await self.get(cycle_id)
+            await sync_service.queue_change("cycles", cycle_id, "update", dict(updated))
+        except Exception:
+            pass
+
+        return {"ok": True, "message": "Đã mở lại đợt nuôi"}
+
+    async def get_summary(self, cycle_id: int) -> Optional[dict]:
+        """Get aggregate KPIs for a cycle (works for both active & closed).
+
+        Aggregates: deaths, feed (kg), medications, water (L), weight sessions,
+        sales (count, kg, revenue), latest weight, mortality rate, FCR, duration.
+        """
+        cycle = await self.get(cycle_id)
+        if not cycle:
+            return None
+
+        # Aggregate deaths
+        total_deaths = await db.fetchval(
+            "SELECT COALESCE(SUM(count), 0) FROM care_deaths WHERE cycle_id = $1", cycle_id
+        ) or 0
+
+        # Aggregate feed (kg)
+        total_feed = await db.fetchval(
+            "SELECT COALESCE(SUM(quantity), 0) FROM care_feeds WHERE cycle_id = $1", cycle_id
+        ) or 0
+
+        # Aggregate medications (record count)
+        total_meds = await db.fetchval(
+            "SELECT COUNT(*) FROM care_medications WHERE cycle_id = $1", cycle_id
+        ) or 0
+
+        # Aggregate water (liters)
+        total_water = await db.fetchval(
+            "SELECT COALESCE(SUM(consumption_liters), 0) FROM care_water_logs WHERE cycle_id = $1", cycle_id
+        ) or 0
+
+        # Aggregate weight sessions
+        total_weights = await db.fetchval(
+            "SELECT COUNT(*) FROM care_weights WHERE cycle_id = $1", cycle_id
+        ) or 0
+
+        # Aggregate sales (count, kg, revenue)
+        sales_row = await db.fetchrow(
+            """SELECT
+                COALESCE(SUM(count), 0) AS total_sold,
+                COALESCE(SUM(total_weight), 0) AS total_weight_kg,
+                COALESCE(SUM(total_amount), 0) AS total_revenue
+            FROM care_sales WHERE cycle_id = $1""",
+            cycle_id,
+        ) or {}
+        total_sold = sales_row.get("total_sold") or 0 if hasattr(sales_row, "get") else (sales_row["total_sold"] or 0)
+        total_weight_kg = sales_row.get("total_weight_kg") or 0 if hasattr(sales_row, "get") else (sales_row["total_weight_kg"] or 0)
+        total_revenue = sales_row.get("total_revenue") or 0 if hasattr(sales_row, "get") else (sales_row["total_revenue"] or 0)
+
+        # Latest weight
+        latest_weight = await db.fetchrow(
+            """SELECT avg_weight, weigh_date, day_age FROM care_weights
+            WHERE cycle_id = $1 ORDER BY weigh_date DESC LIMIT 1""",
+            cycle_id,
         )
-        return {"ok": True, "final_quantity": final_quantity}
+
+        # Derived KPIs
+        alive = cycle["initial_count"] - total_deaths - total_sold
+        mortality_rate = (total_deaths / cycle["initial_count"] * 100) if cycle["initial_count"] > 0 else 0
+
+        # FCR (Feed Conversion Ratio) = total_feed / total_meat_kg
+        # Where total_meat_kg = alive_count * avg_weight (latest)
+        fcr = None
+        if latest_weight and latest_weight["avg_weight"] and alive > 0:
+            total_meat_kg = alive * latest_weight["avg_weight"]
+            fcr = total_feed / total_meat_kg if total_meat_kg > 0 else None
+
+        # Duration in days
+        end_ref = cycle.get("actual_end_date") or date.today()
+        duration_days = (end_ref - cycle["start_date"]).days if cycle.get("start_date") else None
+
+        return {
+            **cycle,
+            "alive_count": alive,
+            "total_deaths": total_deaths,
+            "total_feed_kg": round(float(total_feed), 1),
+            "total_med_count": int(total_meds),
+            "total_water_liters": round(float(total_water), 1),
+            "total_weight_sessions": int(total_weights),
+            "total_sold": int(total_sold),
+            "total_weight_kg": round(float(total_weight_kg), 1),
+            "total_revenue": round(float(total_revenue), 0),
+            "mortality_rate": round(float(mortality_rate), 2),
+            "fcr": round(float(fcr), 2) if fcr else None,
+            "latest_weight": dict(latest_weight) if latest_weight else None,
+            "duration_days": duration_days,
+        }
 
     async def get_dashboard(self, cycle_id: int) -> dict:
         """Get cycle overview with KPIs."""

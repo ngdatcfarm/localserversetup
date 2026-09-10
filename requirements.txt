@@ -13,6 +13,10 @@ opencv-python==4.9.0.80
 # Storage
 pyyaml==6.0.1
 
+# Bundled ffmpeg binary (used by RecordingService for MP4 faststart remux
+# so recorded files are seekable in the browser without buffering the whole file)
+imageio-ffmpeg==0.6.0
+
 # HTTP Client (PTZ control)
 httpx==0.27.0
 
@@ -30,3 +34,8 @@ croniter==2.0.1
 
 # Push notifications (optional - server works without it)
 pywebpush==2.0.1
+
+# Remote terminal (WebSocket → ConPTY) — Windows only, optional elsewhere
+# Used by /terminal for in-browser shell access via xterm.js
+pywinpty==3.0.5   ; sys_platform == "win32"
+

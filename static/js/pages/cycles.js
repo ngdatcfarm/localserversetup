@@ -507,9 +507,9 @@ export default{
                                     <button v-if="c.status === 'active'" @click="openCloseModal(c)" class="cf-btn-close-cycle">
                                         Khóa sổ / Kết thúc
                                     </button>
-                                    <span v-else class="cf-done-text">
-                                        ✓ Hoàn thành
-                                    </span>
+                                    <router-link v-else :to="'/cycles/' + c.id + '/summary'" class="cf-btn-view-summary">
+                                        📊 Xem tổng kết
+                                    </router-link>
                                 </div>
                             </td>
                         </tr>
@@ -568,6 +568,9 @@ export default{
                     <button v-if="c.status === 'active'" @click="openCloseModal(c)" class="cf-mobile-card-btn">
                         Kết thúc chu kỳ nuôi
                     </button>
+                    <router-link v-else :to="'/cycles/' + c.id + '/summary'" class="cf-mobile-card-link">
+                        📊 Xem tổng kết đợt nuôi
+                    </router-link>
                 </div>
             </div>
         </div>

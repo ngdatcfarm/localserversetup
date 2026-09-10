@@ -97,6 +97,20 @@ class VaccineNotificationService:
             except Exception as cloud_err:
                 logger.debug(f"Vaccine cloud notification skipped: {cloud_err}")
 
+            # Forward to Cloudflare Worker relay (Telegram etc.) — fire-and-forget
+            try:
+                from src.iot.cf_relay import cf_relay
+                await cf_relay.relay(
+                    alert_type="VACCINE_REMINDER",
+                    title=title,
+                    body=body_cloud,
+                    severity="warning",
+                    cycle_id=vaccines[0]["cycle_id"] if vaccines else None,
+                    url="/vaccines",
+                )
+            except Exception as relay_err:
+                logger.debug(f"Vaccine CfRelay skipped: {relay_err}")
+
             # Mark all as notified
             for v in vaccines:
                 await vaccine_service.mark_notified(v["id"])

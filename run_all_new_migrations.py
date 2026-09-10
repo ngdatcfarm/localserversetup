@@ -43,9 +43,17 @@ SCRIPTS = [
     "029_create_equipment_types.sql",
     "030_expand_sync_queue.sql",
     "031_add_version_columns.sql",
+    "052_cycle_daily_snapshots.sql",
     "053_mq_tare.sql",
     "054_users.sql",
     "055_transfer_to_warehouse.sql",
+    "056_care_schema_gaps.sql",
+    "057_medication_name_aliases.sql",
+    "058_inverter_runtime.sql",
+    "059_security.sql",
+    "060_telegram_chat_ids.sql",
+    "061_cloud_sync_archive_gates.sql",
+    "062_care_calendar_indexes.sql",
 ]
 
 SCRIPTS_DIR = Path(__file__).parent / "scripts"
@@ -74,7 +82,7 @@ async def run_migration(script_name: str, conn: asyncpg.Connection) -> tuple[boo
 async def main():
     """Main entry point."""
     print("=" * 60)
-    print("Running Local Server Migrations (013-031)")
+    print("Running Local Server Migrations (013-031 + 052 + 053-060)")
     print("=" * 60)
     print()
 

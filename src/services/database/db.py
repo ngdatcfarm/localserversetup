@@ -1,4 +1,12 @@
-"""Database connection manager using asyncpg."""
+"""Database connection manager using asyncpg.
+
+Timestamp convention
+--------------------
+All TIMESTAMPTZ columns store UTC. Use ``src.utils.timezone.now_utc()`` (or
+any aware UTC datetime) when writing — never naive ``datetime.now()``, which
+asyncpg would silently coerce and risk TZ drift. See ``src/utils/timezone.py``
+for the full convention (UTC storage, HCM at the edge).
+"""
 
 import logging
 from contextlib import asynccontextmanager

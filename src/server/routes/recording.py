@@ -2,8 +2,8 @@
 
 import os
 from pathlib import Path
-from fastapi import APIRouter, HTTPException, Query, Depends
-from fastapi.responses import FileResponse
+from fastapi import APIRouter, HTTPException, Query, Depends, Request, Response
+from fastapi.responses import FileResponse, StreamingResponse
 from pydantic import BaseModel
 from typing import Optional, List
 
@@ -135,8 +135,22 @@ async def list_recording_dates(camera_id: Optional[str] = Query(None)):
 
 
 @router.get("/play/{camera_id}/{date}/{filename}")
-async def play_recording(camera_id: str, date: str, filename: str):
-    """Serve a recorded video file for playback."""
+async def play_recording(camera_id: str, date: str, filename: str, request: Request):
+    """Serve a recorded video file for playback.
+
+    - **Content-Disposition: inline** — so the browser plays the video in the
+      <video> element instead of triggering a download dialog. (We pass
+      `filename` to FileResponse so Starlette actually emits the header; the
+      `content_disposition_type="inline"` parameter alone is a no-op without it.)
+    - **Accept-Ranges: bytes** + manual Range handling — Starlette 0.35.1's
+      FileResponse streams the whole file without honoring Range requests,
+      which would force the browser to download the entire recording before it
+      can seek. We parse `Range: bytes=START-END` and return 206 Partial Content
+      with `Content-Range` + `Content-Length` so seeking works on multi-MB
+      segments without buffering the whole file.
+    - **Security**: path traversal check ensures the resolved path stays inside
+      the recording directory.
+    """
     filepath = Path(recording_service.recording_dir) / camera_id / date / filename
 
     if not filepath.exists():
@@ -148,10 +162,82 @@ async def play_recording(camera_id: str, date: str, filename: str):
     except ValueError:
         raise HTTPException(status_code=403, detail="Access denied")
 
-    return FileResponse(
-        str(filepath),
+    file_size = filepath.stat().st_size
+
+    # Parse Range header if present. Format: "bytes=START-END" (END optional).
+    range_header = request.headers.get("range") or request.headers.get("Range")
+    range_match = None
+    if range_header:
+        import re as _re
+        m = _re.match(r"bytes=(\d*)-(\d*)$", range_header.strip())
+        if m:
+            start_s, end_s = m.group(1), m.group(2)
+            if start_s == "" and end_s != "":
+                # Suffix range: bytes=-N → last N bytes
+                suffix_len = int(end_s)
+                if suffix_len == 0:
+                    range_match = (0, 0)  # unsatisfiable, handled below
+                else:
+                    start = max(0, file_size - suffix_len)
+                    end = file_size - 1
+                    range_match = (start, end)
+            else:
+                start = int(start_s) if start_s else 0
+                end = int(end_s) if end_s else file_size - 1
+                end = min(end, file_size - 1)
+                range_match = (start, end)
+
+    # Common headers — present on both full and partial responses so the browser
+    # knows it can seek (Accept-Ranges: bytes).
+    base_headers = {
+        "Accept-Ranges": "bytes",
+        "Content-Disposition": f'inline; filename="{filename}"',
+    }
+
+    if range_match is None:
+        # No Range header → serve the whole file with 200 OK
+        return FileResponse(
+            str(filepath),
+            media_type="video/mp4",
+            headers=base_headers,
+        )
+
+    start, end = range_match
+
+    # Validate range
+    if start >= file_size or start > end:
+        # 416 Range Not Satisfiable
+        return Response(
+            status_code=416,
+            headers={
+                **base_headers,
+                "Content-Range": f"bytes */{file_size}",
+            },
+        )
+
+    chunk_size = 64 * 1024  # 64 KB chunks — matches Starlette default
+
+    async def _range_stream():
+        """Stream bytes [start, end] from the file."""
+        remaining = end - start + 1
+        with open(filepath, "rb") as f:
+            f.seek(start)
+            while remaining > 0:
+                data = f.read(min(chunk_size, remaining))
+                if not data:
+                    break
+                remaining -= len(data)
+                yield data
+
+    return StreamingResponse(
+        _range_stream(),
+        status_code=206,
         media_type="video/mp4",
-        filename=f"{camera_id}_{date}_{filename}",
+        headers={
+            **base_headers,
+            "Content-Range": f"bytes {start}-{end}/{file_size}",
+            "Content-Length": str(end - start + 1),
+        },
     )
 
 

@@ -1,8 +1,8 @@
 """Farm management API routes - barns, cycles, inventory, care operations."""
 
 import asyncio
-from datetime import date
-from fastapi import APIRouter, HTTPException, Depends
+from datetime import date as _date, date
+from fastapi import APIRouter, HTTPException, Depends, Body
 from pydantic import BaseModel, Field
 from typing import Optional
 from enum import Enum
@@ -16,7 +16,8 @@ from src.farm.care_service import care_service
 from src.farm.feed_service import feed_service
 from src.services.database.db import db
 from src.sync.sync_service import sync_service
-from src.server.auth import require_auth
+from src.server.auth import require_auth, require_admin
+from src.utils.timezone import now_hcm
 
 router = APIRouter(prefix="/api/farm", tags=["farm"], dependencies=[Depends(require_auth)])
 
@@ -110,6 +111,14 @@ class CycleRequest(BaseModel):
     weight_remind_days: int = Field(default=7, ge=1, le=30)
 
 
+class UpdateCycleRequest(BaseModel):
+    """Body for PUT /cycles/{id} — all fields optional for partial updates (e.g. editing notes)."""
+    name: Optional[str] = Field(None, max_length=200)
+    breed: Optional[str] = Field(None, max_length=100)
+    expected_end_date: Optional[date] = None
+    notes: Optional[str] = Field(None, max_length=1000)
+
+
 class WarehouseRequest(BaseModel):
     code: str = Field(..., min_length=1, max_length=50)
     name: str = Field(..., min_length=1, max_length=200)
@@ -196,6 +205,13 @@ class MedicationLogRequest(BaseModel):
     purpose: Optional[str] = Field(None, max_length=200)
     notes: Optional[str] = Field(None, max_length=500)
     shift: Optional[ShiftType] = Field(default=ShiftType.ALL_DAY)
+    unit: Optional[str] = Field(None, max_length=20)
+    custom_name: Optional[str] = Field(None, max_length=200)
+
+
+class WeightSample(BaseModel):
+    weight_g: float = Field(..., gt=0)
+    gender: Optional[str] = Field(None, max_length=20)
 
 
 class WeightLogRequest(BaseModel):
@@ -207,6 +223,7 @@ class WeightLogRequest(BaseModel):
     min_weight: Optional[float] = Field(None, ge=0)
     max_weight: Optional[float] = Field(None, ge=0)
     uniformity: Optional[float] = Field(None, ge=0, le=100)
+    samples: Optional[list[WeightSample]] = Field(default_factory=list)
     notes: Optional[str] = Field(None, max_length=500)
 
 
@@ -243,6 +260,18 @@ class HealthLogRequest(BaseModel):
     symptoms: Optional[str] = Field(None, max_length=1000)
     health_flags: Optional[list[str]] = Field(default_factory=list)  # cough, diarrhea, lethargy, respiratory
     notes: Optional[str] = Field(None, max_length=500)
+
+
+class CloseCycleRequest(BaseModel):
+    """Body for POST /cycles/{id}/close — replaces old query-param contract."""
+    end_date: Optional[date] = None
+    notes: Optional[str] = Field(None, max_length=1000)
+    force: bool = False
+
+
+class ReopenCycleRequest(BaseModel):
+    """Body for POST /cycles/{id}/reopen — requires explicit confirm=True."""
+    confirm: bool = False
 
 
 # ══════════════════════════════════════════════════════
@@ -305,6 +334,22 @@ async def _send_local_notification(severity: str, title: str, message: str):
         logger.debug(f"Local notification skipped: {e}")
 
 
+async def _send_relay_notification(severity: str, title: str, message: str):
+    """Forward to Cloudflare Worker relay (Telegram etc.) — fire-and-forget."""
+    try:
+        from src.iot.cf_relay import cf_relay
+        await cf_relay.relay(
+            alert_type="FARM",
+            title=f"{title}: {message}",
+            body=message,
+            severity=severity,
+            url="/farm",
+        )
+    except Exception as e:
+        logger = __import__('logging').getLogger(__name__)
+        logger.debug(f"Farm CfRelay skipped: {e}")
+
+
 # ══════════════════════════════════════════════════════
 # BARNS
 # ══════════════════════════════════════════════════════
@@ -331,6 +376,12 @@ async def create_barn(req: BarnRequest):
         ))
     # Send local push notification
     asyncio.create_task(_send_local_notification(
+        "info",
+        "Chuồng mới",
+        f"Chuồng '{req.name}' ({req.id}) đã được thêm"
+    ))
+    # Forward to Cloudflare Worker relay (Telegram etc.) — fire-and-forget
+    asyncio.create_task(_send_relay_notification(
         "info",
         "Chuồng mới",
         f"Chuồng '{req.name}' ({req.id}) đã được thêm"
@@ -400,6 +451,12 @@ async def create_cycle(req: CycleRequest):
         "Cycle mới",
         f"Cycle '{cycle_name}' đã được tạo cho chuồng {req.barn_id}"
     ))
+    # Forward to Cloudflare Worker relay (Telegram etc.) — fire-and-forget
+    asyncio.create_task(_send_relay_notification(
+        "info",
+        "Cycle mới",
+        f"Cycle '{cycle_name}' đã được tạo cho chuồng {req.barn_id}"
+    ))
 
     return cycle
 
@@ -417,6 +474,12 @@ async def _check_barn_bat_config(barn_id: str):
             )
             # Also send local notification
             await _send_local_notification(
+                "warning",
+                "Chuồng chưa cấu hình bạt",
+                f"Chuồng {barn_id} chưa có cấu hình bạt thông gió"
+            )
+            # Forward to Cloudflare Worker relay (Telegram etc.) — fire-and-forget
+            await _send_relay_notification(
                 "warning",
                 "Chuồng chưa cấu hình bạt",
                 f"Chuồng {barn_id} chưa có cấu hình bạt thông gió"
@@ -444,17 +507,48 @@ async def get_cycle_dashboard(cycle_id: int):
 
 
 @router.put("/cycles/{cycle_id}")
-async def update_cycle(cycle_id: int, req: CycleRequest):
+async def update_cycle(cycle_id: int, req: UpdateCycleRequest):
     return await cycle_service.update(cycle_id, req.model_dump(exclude_none=True))
 
 
 @router.post("/cycles/{cycle_id}/close")
-async def close_cycle(cycle_id: int, notes: str = None, force: bool = False):
-    """Close a cycle. Validates feeds recorded unless force=true."""
-    result = await cycle_service.close(cycle_id, notes, force)
+async def close_cycle(cycle_id: int, req: CloseCycleRequest):
+    """Close a cycle. Sets status='closed', actual_end_date, final_quantity.
+
+    Body: { end_date?: YYYY-MM-DD, notes?: str, force?: bool }
+    """
+    result = await cycle_service.close(
+        cycle_id,
+        end_date=req.end_date,
+        notes=req.notes,
+        force=req.force,
+    )
     if not result.get("ok"):
         raise HTTPException(status_code=400, detail=result.get("message"))
     return result
+
+
+@router.post("/cycles/{cycle_id}/reopen", dependencies=[Depends(require_admin)])
+async def reopen_cycle(cycle_id: int, req: ReopenCycleRequest = Body(default_factory=ReopenCycleRequest)):
+    """Reopen a closed cycle (admin only). Resets status='active', clears end_date + final_quantity."""
+    result = await cycle_service.reopen(cycle_id, confirm=req.confirm)
+    if not result.get("ok"):
+        raise HTTPException(status_code=400, detail=result.get("message"))
+    return result
+
+
+@router.get("/cycles/{cycle_id}/summary")
+async def get_cycle_summary(cycle_id: int):
+    """Get aggregate KPIs + condensed view for a cycle (active or closed).
+
+    Returns the cycle row enriched with: alive_count, total_deaths, total_feed_kg,
+    total_med_count, total_water_liters, total_weight_sessions, total_sold,
+    total_weight_kg, total_revenue, mortality_rate, fcr, latest_weight, duration_days.
+    """
+    data = await cycle_service.get_summary(cycle_id)
+    if not data:
+        raise HTTPException(status_code=404, detail="Cycle not found")
+    return data
 
 
 @router.get("/cycles/{cycle_id}/snapshots")
@@ -592,8 +686,9 @@ async def log_feed(req: FeedLogRequest):
 
 
 @router.get("/care/feed/{cycle_id}")
-async def get_feeds(cycle_id: int, days: int = 30):
-    return await care_service.get_feeds(cycle_id, days)
+async def get_feeds(cycle_id: int, days: int = 30,
+                    date_from: Optional[str] = None, date_to: Optional[str] = None):
+    return await care_service.get_feeds(cycle_id, days, date_from, date_to)
 
 
 @router.get("/care/feed/{cycle_id}/daily")
@@ -621,8 +716,9 @@ async def log_death(req: DeathLogRequest):
 
 
 @router.get("/care/death/{cycle_id}")
-async def get_deaths(cycle_id: int, days: int = 30):
-    return await care_service.get_deaths(cycle_id, days)
+async def get_deaths(cycle_id: int, days: int = 30,
+                     date_from: Optional[str] = None, date_to: Optional[str] = None):
+    return await care_service.get_deaths(cycle_id, days, date_from, date_to)
 
 
 @router.get("/care/death/{cycle_id}/daily")
@@ -651,9 +747,16 @@ async def log_medication(req: MedicationLogRequest):
     return result
 
 
+@router.get("/care/medication/suggestions")
+async def get_medication_suggestions(barn_id: str, limit: int = 20):
+    """Get distinct medication names used in a barn for suggestions."""
+    return await care_service.get_medication_suggestions(barn_id, limit)
+
+
 @router.get("/care/medication/{cycle_id}")
-async def get_medications(cycle_id: int):
-    return await care_service.get_medications(cycle_id)
+async def get_medications(cycle_id: int,
+                          date_from: Optional[str] = None, date_to: Optional[str] = None):
+    return await care_service.get_medications(cycle_id, date_from, date_to)
 
 
 @router.delete("/care/medication/{med_id}")
@@ -740,8 +843,9 @@ async def log_water(req: WaterLogRequest):
 
 
 @router.get("/care/water/{cycle_id}")
-async def get_water_logs(cycle_id: int, days: int = 30):
-    return await care_service.get_water_logs(cycle_id, days)
+async def get_water_logs(cycle_id: int, days: int = 30,
+                         date_from: Optional[str] = None, date_to: Optional[str] = None):
+    return await care_service.get_water_logs(cycle_id, days, date_from, date_to)
 
 
 @router.delete("/care/water/{water_id}")
@@ -764,8 +868,9 @@ async def log_health(req: HealthLogRequest):
 
 
 @router.get("/care/health/{cycle_id}")
-async def get_health_notes(cycle_id: int, days: int = 30):
-    return await care_service.get_health_notes(cycle_id, days)
+async def get_health_notes(cycle_id: int, days: int = 30,
+                           date_from: Optional[str] = None, date_to: Optional[str] = None):
+    return await care_service.get_health_notes(cycle_id, days, date_from, date_to)
 
 
 @router.post("/care/health/{note_id}/resolve")
@@ -775,6 +880,83 @@ async def resolve_health_note(note_id: int):
     if not result.get("ok"):
         raise HTTPException(status_code=404, detail=result.get("message"))
     return result
+
+
+@router.delete("/care/health/{note_id}")
+async def delete_health(note_id: int):
+    """Delete a health note."""
+    result = await care_service.delete_health(note_id)
+    if not result.get("ok"):
+        raise HTTPException(status_code=404, detail=result.get("message"))
+    return result
+
+
+# ══════════════════════════════════════════════════════
+# CARE: TIMELINE (Merged view)
+# ══════════════════════════════════════════════════════
+
+@router.get("/care/timeline")
+async def get_timeline(cycle_id: int, type: str = None,
+                       date_from: str = None, date_to: str = None,
+                       limit: int = 100):
+    """Get a merged timeline of all care events for a cycle."""
+    return await care_service.get_timeline(cycle_id, type, date_from, date_to, limit)
+
+
+# ══════════════════════════════════════════════════════
+# CARE: CALENDAR HEATMAP
+# ══════════════════════════════════════════════════════
+
+@router.get("/care/calendar")
+async def get_care_calendar(cycle_id: int, month: str = None):
+    """Per-day classification for a calendar heatmap.
+
+    `month` is an ISO date string (any day in target month, e.g. '2026-09-01').
+    Defaults to the current HCM month if not supplied.
+
+    Each day has: has_feed_sang, has_feed_chieu, has_med_sang, has_med_chieu,
+    has_mixed_med (trộn cám), death_count, water_liters, in_range.
+    """
+    # Validate cycle exists
+    cycle = await db.fetchrow(
+        "SELECT id FROM cycles WHERE id = $1", cycle_id,
+    )
+    if not cycle:
+        raise HTTPException(status_code=404, detail="Cycle not found")
+
+    # Default month to current HCM month
+    if not month:
+        today = now_hcm()
+        month = f"{today.year}-{today.month:02d}-01"
+
+    try:
+        # Validate month format (use _date alias; the param name 'month' is safe)
+        _date.fromisoformat(month)
+    except ValueError:
+        raise HTTPException(status_code=400, detail="Invalid month format (use YYYY-MM-DD)")
+
+    return await care_service.get_calendar(cycle_id, month)
+
+
+@router.get("/care/day")
+async def get_care_day_detail(cycle_id: int, date: str):
+    """Get feeds/meds/deaths/water bucketed by sang/chieu for one day.
+
+    NOTE: The `date` param name shadows the imported `date` class inside this
+    function. Use `_date` (alias) to access the class.
+    """
+    cycle = await db.fetchrow(
+        "SELECT id FROM cycles WHERE id = $1", cycle_id,
+    )
+    if not cycle:
+        raise HTTPException(status_code=404, detail="Cycle not found")
+
+    try:
+        _date.fromisoformat(date)
+    except ValueError:
+        raise HTTPException(status_code=400, detail="Invalid date format (use YYYY-MM-DD)")
+
+    return await care_service.get_day_detail(cycle_id, date)
 
 
 # ══════════════════════════════════════════════════════

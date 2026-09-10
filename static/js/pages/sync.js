@@ -114,6 +114,15 @@ export default{
     <div>
         <h2 class="text-xl font-bold mb-4">Cloud Sync</h2>
 
+        <!-- ARCHIVED 2026-09-07: cloud DB sync replaced by Cloudflare Worker (cfarm-relay) -->
+        <div class="mb-4 p-4 bg-amber-50 border-l-4 border-amber-500 rounded">
+            <div class="font-bold text-amber-900 mb-1">⚠️ Đã ngưng — Cloud DB Sync đã được archive</div>
+            <div class="text-sm text-amber-800">
+                Tính năng này đã được thay thế bằng <strong>Cloudflare Worker</strong> (cfarm-relay) cho thông báo Telegram.
+                Trang này vẫn còn để tham khảo. Để kích hoạt lại, xem <code>CLAUDE.md</code> mục "Cloud DB Sync (archived)".
+            </div>
+        </div>
+
         <!-- Status Cards -->
         <div class="grid grid-cols-2 lg:grid-cols-4 gap-3 mb-4" v-if="status">
             <div class="card p-3 text-center">

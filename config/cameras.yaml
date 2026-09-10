@@ -27,6 +27,18 @@ push_notifications:
 
     '
   vapid_subject: mailto:admin@cfarm.local
+
+# Cloudflare Worker relay — optional third notification channel
+# See cfarm-relay/README.md for setup. Worker fans out to Telegram (and
+# future Discord/Email/APNs). Local WebPush + cloud sync notifications still
+# run in parallel — this is a fan-out, not a replacement.
+cf_relay:
+  enabled: false
+  worker_url: "https://cfarm-relay.YOUR_SUBDOMAIN.workers.dev"
+  shared_secret: "REPLACE_WITH_OPENSSL_RAND_HEX_32_SAME_AS_WORKER_SECRET"
+  timeout_seconds: 5.0
+  severity_threshold: "info"          # "info" | "warning" | "danger" — minimum severity to forward
+  snapshot_base_url: "https://doihong.io.vn"   # prepend to relative /snapshots/... paths
 cameras:
 - id: cam_001
   name: Camera c?ng
@@ -49,6 +61,15 @@ cameras:
 - id: cam-10
   name: Camera 10
   ip: 192.168.1.39
+  port: 554
+  username: admin
+  password: Abc@@1234
+  rtsp_path: /unicast/c1/s0/live
+  enabled: true
+  stream_type: main
+- id: '11'
+  name: Camera11
+  ip: 192.168.1.102
   port: 554
   username: admin
   password: Abc@@1234
@@ -105,9 +126,31 @@ storage:
   export_dir: data\exports
 recording:
   enabled: false
-  recording_dir: F:\Camera
+  recording_dir: G:\Camera
   segment_duration: 600
   auto_record_cameras: []
 stream:
   hls_dir: data/hls
   segment_duration: 2
+inverter:
+  enabled: true
+  host: 192.168.1.50
+  port: 8000
+  dongle_serial: DG55140363
+  inverter_serial: 60104F0324
+  poll_interval_seconds: 5
+  reconnect_interval_seconds: 10
+  timeout_seconds: 5.0
+security:
+  enabled: true                          # master kill-switch
+  model_name: "yolov8n.pt"               # YOLO model (auto-downloaded on first run)
+  inference_queue_size: 4                # drop frames if worker behind
+  motion_history: 500                    # MOG2 history
+  motion_var_threshold: 32               # MOG2 sensitivity
+  default_cooldown_seconds: 60
+  default_yolo_confidence: 0.30
+  default_motion_threshold: 0.05
+  snapshot_dir: "E:\\AI\\Snapshots\\security"
+  snapshot_url_prefix: "/snapshots/security"
+  snapshot_retention_days: 30
+  worker_threads: 1                      # Phase 1: single worker

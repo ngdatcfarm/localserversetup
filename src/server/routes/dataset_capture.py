@@ -11,6 +11,7 @@ from pydantic import BaseModel
 from src.services.storage.config_service import ConfigService
 from src.services.database.db import db
 from src.server.auth import require_auth
+from src.utils.timezone import now_hcm
 
 router = APIRouter(prefix="/api/ml/dataset", tags=["dataset-capture"], dependencies=[Depends(require_auth)])
 
@@ -81,7 +82,7 @@ async def capture_for_dataset(data: CaptureRequest):
                 continue
 
             # Save image file
-            timestamp = datetime.now().strftime("%Y%m%d_%H%M%S_%f")
+            timestamp = now_hcm().strftime("%Y%m%d_%H%M%S_%f")
             filename = f"cap_p{preset_id}_{timestamp}_{shot:02d}.jpg"
             filepath = DATASET_DIR / filename
 
@@ -146,7 +147,7 @@ async def capture_single(camera_id: str, preset_id: int = 1):
                 pass  # Continue even if movement fails
 
     # Save image
-    timestamp = datetime.now().strftime("%Y%m%d_%H%M%S_%f")
+    timestamp = now_hcm().strftime("%Y%m%d_%H%M%S_%f")
     filename = f"single_p{preset_id}_{timestamp}.jpg"
     filepath = DATASET_DIR / filename
     cv2.imwrite(str(filepath), frame)

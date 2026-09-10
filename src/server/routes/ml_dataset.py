@@ -13,6 +13,7 @@ from fastapi.responses import StreamingResponse
 from pydantic import BaseModel
 
 from src.services.database.db import db
+from src.utils.timezone import now_hcm
 from src.server.auth import require_auth
 
 router = APIRouter(prefix="/api/ml/dataset", tags=["ml-dataset"], dependencies=[Depends(require_auth)])
@@ -62,7 +63,7 @@ async def upload_image(file: UploadFile = File(...)):
         raise HTTPException(status_code=400, detail="Only image files allowed")
 
     # Save file
-    timestamp = datetime.now().strftime("%Y%m%d_%H%M%S")
+    timestamp = now_hcm().strftime("%Y%m%d_%H%M%S")
     safe_name = "".join(c for c in file.filename if c.isalnum() or c in "._-")
     filename = f"{timestamp}_{safe_name}"
     filepath = DATASET_DIR / filename
@@ -101,7 +102,7 @@ async def upload_batch(files: list[UploadFile] = File(...)):
                 errors.append({"file": file.filename, "error": "Not an image"})
                 continue
 
-            timestamp = datetime.now().strftime("%Y%m%d_%H%M%S")
+            timestamp = now_hcm().strftime("%Y%m%d_%H%M%S")
             safe_name = "".join(c for c in file.filename if c.isalnum() or c in "._-")
             filename = f"{timestamp}_{safe_name}"
             filepath = DATASET_DIR / filename

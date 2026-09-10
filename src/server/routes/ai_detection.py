@@ -13,6 +13,7 @@ from src.cameras.ptz.ptz_controller import get_ptz_controller
 from src.ai.chicken_detect_service import chicken_detect_service
 from src.ai.heatmap_service import heatmap_service
 from src.server.auth import require_auth
+from src.utils.timezone import now_hcm
 
 router = APIRouter(prefix="/api/ai", tags=["ai-detection"], dependencies=[Depends(require_auth)])
 
@@ -84,8 +85,8 @@ async def detect_chickens(data: DetectRequest):
     if frame is None:
         raise HTTPException(status_code=400, detail="Failed to capture frame from camera")
 
-    # Save temp frame for detection
-    timestamp = Path("E:/AI/Snapshots") / f"{data.camera_id}_temp_{datetime.now().strftime('%Y%m%d_%H%M%S')}.jpg"
+    # Save temp frame for detection — HCM offset for unambiguous filename
+    timestamp = Path("E:/AI/Snapshots") / f"{data.camera_id}_temp_{now_hcm().strftime('%Y%m%d_%H%M%S')}.jpg"
     Path("E:/AI/Snapshots").mkdir(parents=True, exist_ok=True)
     cv2.imwrite(str(timestamp), frame)
 
@@ -136,8 +137,8 @@ async def generate_heatmap(data: HeatmapRequest):
     if frame is None:
         raise HTTPException(status_code=400, detail="Failed to capture frame")
 
-    # Save temp frame
-    timestamp = Path("E:/AI/Snapshots") / f"{data.camera_id}_hm_{datetime.now().strftime('%Y%m%d_%H%M%S')}.jpg"
+    # Save temp frame — HCM offset
+    timestamp = Path("E:/AI/Snapshots") / f"{data.camera_id}_hm_{now_hcm().strftime('%Y%m%d_%H%M%S')}.jpg"
     Path("E:/AI/Snapshots").mkdir(parents=True, exist_ok=True)
     cv2.imwrite(str(timestamp), frame)
 
@@ -216,8 +217,8 @@ async def auto_tune_threshold(data: AutoTuneRequest):
         if frame is None:
             continue
 
-        # Save temp frame
-        tmp_path = Path("E:/AI/Snapshots") / f"tune_{datetime.now().strftime('%Y%m%d_%H%M%S')}.jpg"
+        # Save temp frame — HCM offset
+        tmp_path = Path("E:/AI/Snapshots") / f"tune_{now_hcm().strftime('%Y%m%d_%H%M%S')}.jpg"
         cv2.imwrite(str(tmp_path), frame)
 
         detect_result = chicken_detect_service.detect_from_image(
@@ -248,7 +249,7 @@ async def auto_tune_threshold(data: AutoTuneRequest):
             if frame is None:
                 continue
 
-            tmp_path = Path("E:/AI/Snapshots") / f"tune_r_{datetime.now().strftime('%Y%m%d_%H%M%S')}.jpg"
+            tmp_path = Path("E:/AI/Snapshots") / f"tune_r_{now_hcm().strftime('%Y%m%d_%H%M%S')}.jpg"
             cv2.imwrite(str(tmp_path), frame)
 
             detect_result = chicken_detect_service.detect_from_image(

@@ -10,6 +10,7 @@ from typing import Optional
 
 from src.cameras.capture.camera_manager import camera_manager
 from src.services.storage.config_service import ConfigService
+from src.utils.timezone import now_hcm
 
 logger = logging.getLogger(__name__)
 
@@ -73,7 +74,8 @@ class SnapshotService:
             logger.error(f"[{camera_id}] Camera not available for burst")
             return []
 
-        now = datetime.now()
+        # HCM-local so folder groups by farm-day, not UTC-day
+        now = now_hcm()
         prefix = prefix or now.strftime("%H-%M-%S")
         day_str = now.strftime("%Y-%m-%d")
 
@@ -146,7 +148,8 @@ class SnapshotService:
         if not jpeg_bytes:
             return None
 
-        now = datetime.now()
+        # HCM-local so folder groups by farm-day
+        now = now_hcm()
         day_str = now.strftime("%Y-%m-%d")
         time_str = now.strftime("%H-%M-%S")
 

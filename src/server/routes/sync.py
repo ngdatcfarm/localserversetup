@@ -7,6 +7,7 @@ from pydantic import BaseModel
 from typing import Optional
 
 from src.sync.sync_service import sync_service
+from src.utils.timezone import now_hcm
 
 logger = logging.getLogger(__name__)
 router = APIRouter(prefix="/api/sync", tags=["sync"])
@@ -130,7 +131,7 @@ async def test_notification_to_cloud():
     success = await sync_service.send_notification_to_cloud(
         alert_type="TEST",
         title="🔔 CFarm Test",
-        body="Thong bao tu local server! " + datetime.now().strftime("%H:%M:%S"),
+        body="Thong bao tu local server! " + now_hcm().strftime("%H:%M:%S"),
         cycle_id=None,
         url="/"
     )

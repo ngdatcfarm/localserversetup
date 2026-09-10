@@ -1,0 +1,691 @@
+<!doctype html>
+<html lang="vi">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1, maximum-scale=1, user-scalable=no">
+<meta name="apple-mobile-web-app-capable" content="yes">
+<meta name="mobile-web-app-capable" content="yes">
+<title>CFarm · Terminal</title>
+
+<!-- xterm.js (vendored at /static/vendor/xterm/) -->
+<link rel="stylesheet" href="/static/vendor/xterm/xterm.css">
+
+<style>
+  :root {
+    --bg: #0b0e14;
+    --bg-soft: #11151c;
+    --fg: #c9d1d9;
+    --fg-muted: #6e7681;
+    --accent: #58a6ff;
+    --danger: #f85149;
+    --ok: #3fb950;
+    --warn: #d29922;
+    --border: #30363d;
+    --font-mono: ui-monospace, SFMono-Regular, "SF Mono", Consolas, "Liberation Mono", Menlo, monospace;
+  }
+  * { box-sizing: border-box; }
+  html, body { height: 100%; margin: 0; padding: 0; }
+  body {
+    background: var(--bg);
+    color: var(--fg);
+    font-family: var(--font-mono);
+    font-size: 14px;
+    overflow: hidden;
+    overscroll-behavior: none;
+    -webkit-tap-highlight-color: transparent;
+  }
+
+  /* Top status bar */
+  .topbar {
+    display: flex;
+    align-items: center;
+    gap: 0.75rem;
+    padding: 0.5rem 0.75rem;
+    background: var(--bg-soft);
+    border-bottom: 1px solid var(--border);
+    height: 38px;
+    flex-shrink: 0;
+  }
+  .topbar .dot {
+    width: 8px;
+    height: 8px;
+    border-radius: 50%;
+    background: var(--fg-muted);
+    transition: background-color 0.15s;
+  }
+  .topbar .dot.connected { background: var(--ok); box-shadow: 0 0 8px var(--ok); }
+  .topbar .dot.connecting { background: var(--warn); }
+  .topbar .dot.error { background: var(--danger); }
+  .topbar .dot.ended { background: var(--fg-muted); }
+  .topbar .status-text {
+    font-size: 12px;
+    color: var(--fg-muted);
+    flex-grow: 1;
+  }
+  .topbar .actions {
+    display: flex;
+    gap: 0.4rem;
+  }
+  .topbar button {
+    background: transparent;
+    border: 1px solid var(--border);
+    color: var(--fg);
+    padding: 0.25rem 0.6rem;
+    border-radius: 4px;
+    font-size: 12px;
+    cursor: pointer;
+    font-family: inherit;
+  }
+  .topbar button:hover { background: var(--bg); }
+  .topbar button:active { transform: translateY(1px); }
+
+  /* Terminal area takes the rest of the viewport. */
+  #terminal-host {
+    position: absolute;
+    top: 38px;
+    left: 0;
+    right: 0;
+    bottom: 0;
+    padding: 4px;
+    overflow: hidden;
+  }
+  #terminal-host .xterm,
+  #terminal-host .xterm-viewport,
+  #terminal-host .xterm-screen {
+    width: 100% !important;
+    height: 100% !important;
+    /* Allow tap-to-focus on mobile without scroll/zoom interference */
+    touch-action: manipulation;
+  }
+  /* xterm.js's hidden textarea is positioned at left: -9999em by default,
+     which prevents mobile on-screen keyboards from engaging when the
+     user taps the terminal (off-screen elements don't get keyboard focus
+     on iOS Safari and some Android browsers). Reposition it on-screen
+     but invisible — the keyboard appears, the textarea stays focused,
+     and xterm.js still routes input via its normal handler. */
+  .xterm-helper-textarea {
+    position: fixed !important;
+    left: 0 !important;
+    bottom: 0 !important;
+    width: 1px !important;
+    height: 1px !important;
+    opacity: 0 !important;
+    pointer-events: none !important;
+    z-index: 1 !important;
+    /* keep textarea visible to AT and IME but invisible to user */
+  }
+  /* Hide the default xterm scrollbar on mobile (use native scroll) */
+  .xterm-viewport::-webkit-scrollbar { width: 6px; }
+  .xterm-viewport::-webkit-scrollbar-thumb {
+    background: var(--border);
+    border-radius: 3px;
+  }
+
+  /* Connection overlay — shown while (re)connecting. */
+  .overlay {
+    position: fixed;
+    inset: 0;
+    background: rgba(11, 14, 20, 0.95);
+    display: flex;
+    flex-direction: column;
+    align-items: center;
+    justify-content: center;
+    z-index: 10;
+    text-align: center;
+    padding: 2rem;
+  }
+  .overlay h2 {
+    margin: 0 0 0.5rem;
+    font-size: 1.1rem;
+    font-weight: 600;
+  }
+  .overlay p {
+    color: var(--fg-muted);
+    font-size: 0.9rem;
+    max-width: 30rem;
+    margin: 0.25rem 0;
+  }
+  .overlay .hint {
+    margin-top: 1.5rem;
+    font-size: 0.8rem;
+    line-height: 1.6;
+    border-top: 1px solid var(--border);
+    padding-top: 1rem;
+    max-width: 32rem;
+  }
+  .overlay code {
+    background: var(--bg-soft);
+    border: 1px solid var(--border);
+    padding: 0.1rem 0.4rem;
+    border-radius: 4px;
+    color: var(--accent);
+  }
+  .overlay button {
+    margin-top: 1rem;
+    background: var(--accent);
+    color: #0b0e14;
+    border: none;
+    padding: 0.6rem 1.2rem;
+    border-radius: 4px;
+    font-weight: 600;
+    cursor: pointer;
+    font-family: inherit;
+    font-size: 0.9rem;
+  }
+  .overlay button:hover { opacity: 0.9; }
+  .overlay.hidden { display: none; }
+  .overlay.error h2 { color: var(--danger); }
+  .overlay.connecting h2 { color: var(--warn); }
+
+  /* Mobile: taller topbar hit targets */
+  @media (max-width: 640px) {
+    .topbar { height: 44px; }
+    .topbar button { padding: 0.4rem 0.7rem; }
+    #terminal-host { top: 44px; bottom: 56px; }
+  }
+
+  /* Mobile special-keys toolbar — hidden on desktop, visible on phones.
+     Phones don't have arrow/Tab/Esc/Ctrl keys; the native virtual
+     keyboard is also missing things like Ctrl+C. Sticky bar above the
+     on-screen keyboard. */
+  .mobile-keys {
+    display: none;
+  }
+  .mobile-keys button {
+    flex: 1;
+    min-width: 40px;
+    min-height: 44px;
+    border: 1px solid var(--border);
+    background: var(--bg-soft);
+    color: var(--fg);
+    font-family: inherit;
+    font-size: 0.9rem;
+    border-radius: 4px;
+    -webkit-tap-highlight-color: transparent;
+    user-select: none;
+    touch-action: manipulation;
+  }
+  .mobile-keys button:active {
+    background: var(--accent);
+    color: var(--bg);
+  }
+  @media (max-width: 640px) {
+    .mobile-keys {
+      display: flex;
+      gap: 4px;
+      padding: 6px 8px;
+      border-top: 1px solid var(--border);
+      background: var(--bg);
+      position: fixed;
+      left: 0;
+      right: 0;
+      bottom: 0;
+      z-index: 5;
+    }
+  }
+
+  /* Pin button variants */
+  .topbar #pin-toggle.pinned {
+    color: var(--accent);
+    border-color: var(--accent);
+  }
+</style>
+</head>
+
+<body>
+
+<div class="topbar" role="banner">
+  <span id="status-dot" class="dot" aria-hidden="true"></span>
+  <span id="status-text" class="status-text">đang kết nối…</span>
+  <span id="session-meta" class="status-text" style="opacity:.6;"></span>
+  <div class="actions">
+    <button id="pin-toggle" title="Ghim phiên (giữ shell khi mất kết nối)">📌 Auto</button>
+    <button id="reconnect-btn" title="Khởi động lại shell">↻ Reset</button>
+    <button id="home-btn"      title="Về trang chính">⌂ Home</button>
+  </div>
+</div>
+
+<div id="terminal-host"></div>
+
+<!-- Connecting / error overlays -->
+<div id="overlay-connecting" class="overlay connecting" role="status">
+  <h2>Đang kết nối terminal…</h2>
+  <p>Đang mở shell <code id="shell-name">cmd.exe</code> trên máy chủ CFarm</p>
+</div>
+
+<div id="overlay-error" class="overlay error hidden" role="alert">
+  <h2 id="error-title">Lỗi kết nối</h2>
+  <p id="error-detail">Không thể mở terminal.</p>
+  <button id="retry-btn">Thử lại</button>
+  <div class="hint">
+    <strong>Phiên chỉ tồn tại trong khi tab mở.</strong> Đóng tab = shell bị tắt hẳn (kill process tree).
+    Muốn chạy lệnh mới: bấm <code>↻ Reset</code> hoặc mở lại tab.
+  </div>
+</div>
+
+<div id="overlay-ended" class="overlay hidden" role="status">
+  <h2>Shell đã đóng</h2>
+  <p>Phiên terminal kết thúc (mất kết nối mạng / tab bị đóng).</p>
+  <button id="restart-btn">Mở shell mới</button>
+  <div class="hint">
+    Bật <code>📌 Auto</code> để ghim phiên — shell sẽ sống tiếp trong 24h kể cả khi tab bị đóng / chuyển app.
+  </div>
+</div>
+
+<!-- Vendored xterm.js -->
+<script src="/static/vendor/xterm/xterm.js"></script>
+<script src="/static/vendor/xterm/xterm-addon-fit.js"></script>
+<script src="/static/vendor/xterm/xterm-addon-web-links.js"></script>
+
+<!-- Mobile special-keys toolbar (only visible at max-width: 640px) -->
+<div class="mobile-keys" id="mobilekeys" aria-label="Phím đặc biệt">
+  <button data-key="arrow_up"    title="Lên (lịch sử)">↑</button>
+  <button data-key="arrow_down"  title="Xuống (lịch sử)">↓</button>
+  <button data-key="arrow_left"  title="Trái">←</button>
+  <button data-key="arrow_right" title="Phải">→</button>
+  <button data-key="home"        title="Đầu dòng">Home</button>
+  <button data-key="end"         title="Cuối dòng">End</button>
+  <button data-key="tab"         title="Hoàn thành">Tab</button>
+  <button data-key="esc"         title="Thoát">Esc</button>
+  <button data-key="ctrl_c"      title="Hủy lệnh">Ctrl+C</button>
+</div>
+
+<script>
+(function () {
+  "use strict";
+
+  // ── State ───────────────────────────────────────────────
+  var host = document.getElementById("terminal-host");
+  var statusDot = document.getElementById("status-dot");
+  var statusText = document.getElementById("status-text");
+  var sessionMeta = document.getElementById("session-meta");
+  var overlayConnecting = document.getElementById("overlay-connecting");
+  var overlayError = document.getElementById("overlay-error");
+  var overlayEnded = document.getElementById("overlay-ended");
+  var errorTitle = document.getElementById("error-title");
+  var errorDetail = document.getElementById("error-detail");
+
+  // Optional shell override via ?shell=powershell
+  var params = new URLSearchParams(window.location.search);
+  var shellName = params.get("shell") || "cmd.exe";
+  document.getElementById("shell-name").textContent = shellName;
+
+  var term = null;
+  var fitAddon = null;
+  var ws = null;
+  var wsAttempts = 0;
+  var reconnectTimer = null;
+  var explicitlyClosed = false;
+  var resizeTimer = null;
+  var colsForBanner = 0;
+  // Pin state (mirrors server). Toggled by clicking the pin button;
+  // server confirms via a pin_status frame.
+  var pinned = false;
+  var pinIdleSec = 60;
+  var pinBtn = document.getElementById("pin-toggle");
+
+  function renderPinButton() {
+    if (!pinBtn) return;
+    if (pinned) {
+      pinBtn.textContent = "📌 Pinned (" + Math.round(pinIdleSec / 3600) + "h)";
+      pinBtn.classList.add("pinned");
+      pinBtn.title = "Bỏ ghim phiên (sẽ tự tắt shell sau 60s mất kết nối)";
+    } else {
+      pinBtn.textContent = "🔓 Auto (" + pinIdleSec + "s)";
+      pinBtn.classList.remove("pinned");
+      pinBtn.title = "Ghim phiên (giữ shell khi mất kết nối)";
+    }
+  }
+
+  // ── Terminal setup ─────────────────────────────────────
+  function buildTerminal() {
+    if (term) {
+      term.dispose();
+      term = null;
+    }
+    term = new Terminal({
+      cursorBlink: true,
+      fontFamily: 'ui-monospace, SFMono-Regular, "SF Mono", Consolas, Menlo, monospace',
+      fontSize: 14,
+      lineHeight: 1.15,
+      scrollback: 5000,
+      allowProposedApi: true,
+      theme: {
+        background:    "#0b0e14",
+        foreground:    "#c9d1d9",
+        cursor:        "#58a6ff",
+        cursorAccent:  "#0b0e14",
+        selectionBackground: "rgba(88, 166, 255, 0.35)",
+        black:         "#0b0e14",
+        red:           "#f85149",
+        green:         "#3fb950",
+        yellow:        "#d29922",
+        blue:          "#58a6ff",
+        magenta:       "#bc8cff",
+        cyan:          "#39c5cf",
+        white:         "#c9d1d9",
+        brightBlack:   "#6e7681",
+        brightRed:     "#ff7b72",
+        brightGreen:   "#7ee787",
+        brightYellow:  "#e3b341",
+        brightBlue:    "#79c0ff",
+        brightMagenta: "#d2a8ff",
+        brightCyan:    "#56d4dd",
+        brightWhite:   "#f0f6fc"
+      }
+    });
+    fitAddon = new FitAddon.FitAddon();
+    term.loadAddon(fitAddon);
+    term.loadAddon(new WebLinksAddon.WebLinksAddon());
+    term.open(host);
+    setTimeout(function () {
+      try { fitAddon.fit(); } catch (e) {}
+    }, 50);
+    colsForBanner = term.cols;
+  }
+
+  // ── Status UI ──────────────────────────────────────────
+  function setStatus(state, text, meta) {
+    statusDot.className = "dot " + state;
+    statusText.textContent = text;
+    sessionMeta.textContent = meta || "";
+  }
+
+  function showOverlay(which) {
+    [overlayConnecting, overlayError, overlayEnded].forEach(function (el) {
+      el.classList.add("hidden");
+    });
+    if (which === "connecting") overlayConnecting.classList.remove("hidden");
+    if (which === "error")      overlayError.classList.remove("hidden");
+    if (which === "ended")      overlayEnded.classList.remove("hidden");
+  }
+
+  // ── WS lifecycle ───────────────────────────────────────
+  function wsUrl() {
+    var proto = window.location.protocol === "https:" ? "wss:" : "ws:";
+    return proto + "//" + window.location.host + "/terminal/ws"
+           + (shellName ? "?shell=" + encodeURIComponent(shellName) : "");
+  }
+
+  function connect() {
+    explicitlyClosed = false;
+    buildTerminal();
+    showOverlay("connecting");
+    setStatus("connecting", "đang kết nối…", "");
+
+    try {
+      ws = new WebSocket(wsUrl());
+    } catch (e) {
+      showError("Không thể tạo kết nối WebSocket", e.message || "");
+      return;
+    }
+
+    ws.binaryType = "arraybuffer";
+
+    ws.onopen = function () {
+      wsAttempts = 0;
+      showOverlay(null);
+      term.focus();
+      setStatus("connected", "đã kết nối", shellName);
+      sendResize();
+      // Friendly banner so the user sees something even before the
+      // shell prompt arrives (cmd.exe takes ~100–300ms on cold start).
+      term.write("\x1b[38;5;110m# CFarm terminal — mỗi tab tạo shell mới.\x1b[0m\r\n");
+      term.write("\x1b[38;5;110m# Đóng tab không ghim = shell bị kill sau 60s.\x1b[0m\r\n");
+      term.write("\x1b[38;5;110m# Bấm pin để ghim — shell sống 24h kể cả khi tắt tab.\x1b[0m\r\n");
+      term.write("\x1b[38;5;110m# Gõ `claude` để vào Claude Code.\x1b[0m\r\n\r\n");
+    };
+
+    ws.onmessage = function (ev) {
+      var data = typeof ev.data === "string" ? ev.data : "";
+      if (!data) return;
+      // Server may send JSON control (resize ack, error frame).
+      if (data.charAt(0) === "{") {
+        try {
+          var obj = JSON.parse(data);
+          if (obj.type === "error") {
+            showError("Server error", obj.message || "");
+            return;
+          }
+          if (obj.type === "pin_status") {
+            pinned = !!obj.pinned;
+            if (typeof obj.idle_timeout === "number") pinIdleSec = obj.idle_timeout;
+            renderPinButton();
+            return;
+          }
+          // ignore other control frames (pong, etc.)
+          return;
+        } catch (e) {
+          // Not JSON — treat as terminal output.
+        }
+      }
+      term.write(data);
+    };
+
+    ws.onerror = function () {
+      // Most browsers don't expose detail here. Show generic.
+    };
+
+    ws.onclose = function (ev) {
+      setStatus("ended", "mất kết nối", "");
+      // 4401 = auth expired; 4400 = spawn failed — show error overlay.
+      if (ev.code === 4401) {
+        showError("Phiên đăng nhập hết hạn", "Vui lòng đăng nhập lại từ trang chính rồi quay lại đây.");
+        return;
+      }
+      if (ev.code === 4400) {
+        showError("Server không khởi tạo được shell",
+                  "Kiểm tra logs/terminal.log hoặc guardian log trên máy chủ.");
+        return;
+      }
+      // 4409 = replaced by a newer connection (e.g. second tab).
+      if (ev.code === 4409) {
+        // Don't schedule a reconnect — the new tab is in charge.
+        return;
+      }
+      // Normal close from server side (EOF / process exited).
+      if (explicitlyClosed) return;
+      // If pin is enabled, the server is keeping the shell alive — try
+      // to reconnect automatically with exponential backoff. Otherwise
+      // show the "ended" overlay.
+      if (pinned) {
+        scheduleAutoReconnect();
+      } else {
+        showOverlay("ended");
+      }
+    };
+  }
+
+  function showError(title, detail) {
+    errorTitle.textContent = title;
+    errorDetail.textContent = detail || "";
+    setStatus("error", "lỗi", "");
+    showOverlay("error");
+  }
+
+  function disconnect() {
+    explicitlyClosed = true;
+    if (ws) {
+      try { ws.close(); } catch (e) {}
+      ws = null;
+    }
+  }
+
+  function reset() {
+    disconnect();
+    if (reconnectTimer) { clearTimeout(reconnectTimer); reconnectTimer = null; }
+    connect();
+  }
+
+  // ── Pin control ────────────────────────────────────────
+  function sendControl(obj) {
+    if (ws && ws.readyState === WebSocket.OPEN) {
+      try { ws.send(JSON.stringify(obj)); } catch (e) {}
+    }
+  }
+
+  function togglePin() {
+    sendControl({ type: "pin" });
+  }
+
+  // ── Auto-reconnect (only used when pinned) ─────────────
+  // Exponential backoff: 2s → 4s → 8s … capped at 30s. Cancelled by
+  // user-driven reset() or successful connect().
+  function scheduleAutoReconnect() {
+    if (reconnectTimer) return;
+    var delayMs = Math.min(30000, 2000 * Math.pow(2, Math.max(0, wsAttempts - 1)));
+    if (wsAttempts < 1) delayMs = 2000;
+    showOverlay("connecting");
+    setStatus("connecting",
+              "đang kết nối lại sau " + Math.round(delayMs / 1000) + "s…", "");
+    reconnectTimer = setTimeout(function () {
+      reconnectTimer = null;
+      connect();
+    }, delayMs);
+  }
+
+  // ── Input handling ─────────────────────────────────────
+  // We forward keystrokes to the server verbatim. xterm.js gives us
+  // onData(e) which already combines typing, paste, and resize-aware
+  // escape sequences (arrow keys, Home/End, etc.).
+  function bindInput() {
+    // Bound after first connect — set inside onopen so term exists.
+  }
+
+  // Deferred input binding (we attach onData each time we rebuild term).
+  // xterm.js fires EVERY onData subscriber per keystroke, so we MUST
+  // dispose the previous handler before re-attaching or keystrokes get
+  // duplicated (after N reconnects "C" becomes NxC).
+  //
+  // Vietnamese IME handling
+  // ────────────────────────
+  // The previous version manually tracked composition state via
+  // `_imeActive` (set on compositionstart, cleared on compositionend).
+  // That broke Vietnamese IMEs that fire compositionstart but don't
+  // reliably fire compositionend (iOS Vietnamese, Android Gboard
+  // Vietnamese): `_imeActive` got stuck `true` and ALL subsequent
+  // keystrokes were blocked until Enter was pressed — making the user
+  // think Vietnamese typing "doesn't work".
+  //
+  // New approach: trust xterm.js's built-in IME support. xterm.js listens
+  // to the textarea's `input` event and forwards the composed result via
+  // onData. We just need to drop the raw keystroke that the IME has
+  // claimed (keyCode === 229 = universal "IME processing" sentinel). For
+  // Windows Vietnamese Telex this sentinel never fires anyway, so this
+  // only affects CJK / East Asian IMEs and is harmless for Vietnamese.
+  var _dataDisposable = null;
+  var _imeGuardDisposable = null;
+  var _origSetup = connect;
+  connect = function () {
+    _origSetup();
+    var wait = setInterval(function () {
+      if (term && ws && ws.readyState === 1) {
+        clearInterval(wait);
+        if (_dataDisposable) {
+          try { _dataDisposable.dispose(); } catch (e) {}
+          _dataDisposable = null;
+        }
+        if (_imeGuardDisposable) {
+          try { _imeGuardDisposable.dispose(); } catch (e) {}
+          _imeGuardDisposable = null;
+        }
+
+        // Ensure xterm.js's hidden textarea uses Vietnamese IME mode so
+        // the browser routes keystrokes through the Vietnamese IME
+        // instead of treating them as raw latin characters.
+        if (term.textarea) {
+          try {
+            term.textarea.setAttribute("lang", "vi");
+            term.textarea.setAttribute("inputmode", "text");
+            term.textarea.setAttribute("autocomplete", "off");
+            term.textarea.setAttribute("autocorrect", "off");
+            term.textarea.setAttribute("autocapitalize", "off");
+            term.textarea.setAttribute("spellcheck", "false");
+          } catch (e) {}
+        }
+
+        // Block only the universal IME-processing sentinel (keyCode 229).
+        // Don't track composition state manually — xterm.js handles IME
+        // via its textarea `input` event and will deliver the composed
+        // result via onData. Manual tracking was the source of the
+        // Vietnamese lockout bug.
+        _imeGuardDisposable = term.attachCustomKeyEventHandler(function (e) {
+          if (e && e.type === "keydown" && e.keyCode === 229) {
+            return false;
+          }
+          return true;
+        });
+
+        _dataDisposable = term.onData(function (data) {
+          if (ws && ws.readyState === 1) {
+            try { ws.send(data); } catch (e) {}
+          }
+        });
+      }
+    }, 50);
+  };
+
+  // ── Resize ─────────────────────────────────────────────
+  function sendResize() {
+    if (!term || !ws || ws.readyState !== 1) return;
+    var cols = term.cols;
+    var rows = term.rows;
+    if (cols < 5 || rows < 3) return;
+    ws.send(JSON.stringify({ type: "resize", cols: cols, rows: rows }));
+  }
+  function scheduleResize() {
+    if (resizeTimer) clearTimeout(resizeTimer);
+    resizeTimer = setTimeout(function () {
+      try { fitAddon.fit(); } catch (e) {}
+      sendResize();
+    }, 80);
+  }
+
+  // ── Wire UI buttons + global events ────────────────────
+  document.getElementById("reconnect-btn").addEventListener("click", reset);
+  document.getElementById("retry-btn").addEventListener("click", reset);
+  document.getElementById("restart-btn").addEventListener("click", reset);
+  document.getElementById("home-btn").addEventListener("click", function () {
+    window.location.href = "/";
+  });
+  if (pinBtn) {
+    pinBtn.addEventListener("click", togglePin);
+  }
+
+  // Mobile special-keys toolbar — emit a {type:"signal"} frame for
+  // every tap. The server's KEY_SIGNALS dict translates it to the
+  // right escape sequence for the PTY.
+  var mobileKeys = document.getElementById("mobilekeys");
+  if (mobileKeys) {
+    mobileKeys.addEventListener("click", function (e) {
+      var btn = e.target.closest("button[data-key]");
+      if (!btn) return;
+      sendControl({ type: "signal", name: btn.dataset.key });
+      // Tap-to-focus back into xterm so the next keypress goes there.
+      if (term && term.focus) { try { term.focus(); } catch (e) {} }
+    });
+  }
+
+  // Initial button label.
+  renderPinButton();
+
+  window.addEventListener("resize", scheduleResize);
+  window.addEventListener("orientationchange", scheduleResize);
+  // VisualViewport fires on mobile when the on-screen keyboard shows/hides.
+  if (window.visualViewport) {
+    window.visualViewport.addEventListener("resize", scheduleResize);
+  }
+
+  // Block accidental navigation away while typing.
+  window.addEventListener("beforeunload", function () {
+    disconnect();
+  });
+
+  // ── Boot ───────────────────────────────────────────────
+  connect();
+
+})();
+</script>
+
+</body>
+</html>
