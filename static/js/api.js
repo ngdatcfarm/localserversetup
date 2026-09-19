@@ -625,6 +625,226 @@ const API = {
         status() { return API.get('/api/inverter/status'); },
     },
 
+    // Brooder heating controller (Master-Edge PID for chicken brooder)
+    brooder: {
+        list(activeOnly = false) {
+            const q = activeOnly ? '?active_only=true' : '';
+            return API.get(`/api/brooder/nodes${q}`);
+        },
+        get(code) { return API.get(`/api/brooder/nodes/${code}`); },
+        create(d) { return API.post('/api/brooder/nodes', d); },
+        update(code, d) { return API.put(`/api/brooder/nodes/${code}`, d); },
+        delete(code, hard = false) {
+            return API.del(`/api/brooder/nodes/${code}${hard ? '?hard=true' : ''}`);
+        },
+        setSetpoint(code, setpoint, note) {
+            // setpoint=null clears manual override (back to day-age auto)
+            return API.post(`/api/brooder/nodes/${code}/setpoint`, {
+                setpoint,
+                note,
+            });
+        },
+        setFallbackDelta(code, fallbackDeltaC) {
+            // Admin-tuned offset added to local SHT40 when zone sensors go stale.
+            return API.post(`/api/brooder/nodes/${code}/fallback-delta`, {
+                fallback_delta_c: Number(fallbackDeltaC),
+            });
+        },
+        telemetry(code, hours = 24, sensorType = 'brooder_temp') {
+            return API.get(
+                `/api/brooder/nodes/${code}/telemetry`
+                + `?hours=${hours}&sensor_type=${sensorType}`
+            );
+        },
+        setpointHistory(code, limit = 50) {
+            return API.get(
+                `/api/brooder/nodes/${code}/setpoint-history?limit=${limit}`
+            );
+        },
+
+        // --- Reference / zone sensors (zone temperature blending) ---
+        listZoneSensors(code) {
+            return API.get(`/api/brooder/nodes/${code}/zone-sensors`);
+        },
+        addZoneSensor(code, payload) {
+            return API.post(`/api/brooder/nodes/${code}/zone-sensors`, payload);
+        },
+        updateZoneSensor(code, sensorCode, payload) {
+            return API.put(
+                `/api/brooder/nodes/${code}/zone-sensors/${sensorCode}`,
+                payload
+            );
+        },
+        removeZoneSensor(code, sensorCode) {
+            return API.del(`/api/brooder/nodes/${code}/zone-sensors/${sensorCode}`);
+        },
+        listAvailableSensors(barnId = null, q = null) {
+            const p = new URLSearchParams();
+            if (barnId) p.set('barn_id', barnId);
+            if (q) p.set('q', q);
+            const qs = p.toString();
+            return API.get('/api/brooder/zone-sensors/available' + (qs ? '?' + qs : ''));
+        },
+
+        // --- Zone-based model (Phase B+): 1 zone = 1 PID + N heaters + M sensors ---
+        // The /brooder/nodes/{code}/... legacy endpoints above remain live and
+        // delegate to zone handlers when the node is in a zone. New UIs use
+        // /brooder/zones/{id}/... directly.
+        zones: {
+            list() { return API.get('/api/brooder/zones'); },
+            get(id) { return API.get('/api/brooder/zones/' + id); },
+            create(d) { return API.post('/api/brooder/zones', d); },
+            update(id, d) { return API.put('/api/brooder/zones/' + id, d); },
+            delete(id) { return API.del('/api/brooder/zones/' + id); },
+            setSetpoint(id, setpoint, note) {
+                // setpoint=null clears manual override (back to day-age auto)
+                return API.post('/api/brooder/zones/' + id + '/setpoint', {
+                    setpoint,
+                    note,
+                });
+            },
+            setFallbackDelta(id, fallbackDeltaC) {
+                return API.post('/api/brooder/zones/' + id + '/fallback-delta', {
+                    fallback_delta_c: Number(fallbackDeltaC),
+                });
+            },
+            setpointHistory(id, limit = 50) {
+                return API.get(
+                    '/api/brooder/zones/' + id + '/setpoint-history?limit=' + limit
+                );
+            },
+            telemetry(id, hours = 24) {
+                return API.get(
+                    '/api/brooder/zones/' + id + '/telemetry?hours=' + hours
+                );
+            },
+
+            // Heaters (chảo nhiệt = 1 ESP32 channel with max_power_w)
+            heaters: {
+                list(zoneId) {
+                    return API.get('/api/brooder/zones/' + zoneId + '/heaters');
+                },
+                create(zoneId, d) {
+                    return API.post('/api/brooder/zones/' + zoneId + '/heaters', d);
+                },
+                update(heaterId, d) {
+                    return API.put('/api/brooder/heaters/' + heaterId, d);
+                },
+                delete(heaterId) {
+                    return API.del('/api/brooder/heaters/' + heaterId);
+                },
+                latestPower(zoneId) {
+                    return API.get(
+                        '/api/brooder/zones/' + zoneId + '/heaters/power'
+                    );
+                },
+            },
+
+            // Reference / zone sensors (weighted average → PID input)
+            sensors: {
+                list(zoneId) {
+                    return API.get('/api/brooder/zones/' + zoneId + '/sensors');
+                },
+                add(zoneId, d) {
+                    return API.post('/api/brooder/zones/' + zoneId + '/sensors', d);
+                },
+                update(zoneId, sensorCode, d) {
+                    return API.put(
+                        '/api/brooder/zones/' + zoneId + '/sensors/' + sensorCode,
+                        d
+                    );
+                },
+                remove(zoneId, sensorCode) {
+                    return API.del(
+                        '/api/brooder/zones/' + zoneId + '/sensors/' + sensorCode
+                    );
+                },
+                listAvailable(zoneId, q = null) {
+                    const p = new URLSearchParams();
+                    if (q) p.set('q', q);
+                    const qs = p.toString();
+                    return API.get(
+                        '/api/brooder/zones/' + zoneId
+                        + '/sensors/available'
+                        + (qs ? '?' + qs : '')
+                    );
+                },
+            },
+
+            // Members (ESP32 devices assigned to a zone)
+            members: {
+                list(zoneId) {
+                    return API.get('/api/brooder/zones/' + zoneId + '/members');
+                },
+                add(zoneId, deviceCode) {
+                    return API.post('/api/brooder/zones/' + zoneId + '/members', {
+                        device_code: deviceCode,
+                    });
+                },
+                remove(zoneId, deviceCode) {
+                    return API.del(
+                        '/api/brooder/zones/' + zoneId + '/members/' + deviceCode
+                    );
+                },
+                listAvailable(zoneId, opts = {}) {
+                    const p = new URLSearchParams();
+                    if (opts.barn_id) p.set('barn_id', opts.barn_id);
+                    if (opts.q) p.set('q', opts.q);
+                    const qs = p.toString();
+                    return API.get(
+                        '/api/brooder/zones/' + zoneId
+                        + '/members/available'
+                        + (qs ? '?' + qs : '')
+                    );
+                },
+            },
+        },
+    },
+
+    // Brooder profiles (Phase 1 + 2: day-age heating schedules per breed/strategy,
+    // plus time-boxed test overrides against active cycles).
+    brooderProfiles: {
+        list(activeOnly = false) {
+            const q = activeOnly ? '?active_only=true' : '';
+            return API.get('/api/brooder/profiles/profiles' + q);
+        },
+        get(id) { return API.get('/api/brooder/profiles/profiles/' + id); },
+        create(d) { return API.post('/api/brooder/profiles/profiles', d); },
+        update(id, d) { return API.put('/api/brooder/profiles/profiles/' + id, d); },
+        delete(id, hard = false) {
+            return API.del('/api/brooder/profiles/profiles/' + id
+                + (hard ? '?hard=true' : ''));
+        },
+        // Schedule (stage) CRUD — for single-stage edit UX on the detail page.
+        addStage(profileId, d) {
+            return API.post('/api/brooder/profiles/profiles/' + profileId + '/schedules', d);
+        },
+        updateStage(profileId, stageId, d) {
+            return API.put('/api/brooder/profiles/profiles/' + profileId
+                + '/schedules/' + stageId, d);
+        },
+        deleteStage(profileId, stageId) {
+            return API.del('/api/brooder/profiles/profiles/' + profileId
+                + '/schedules/' + stageId);
+        },
+        // Preview: resolve setpoint for a given day_age + night flag.
+        stagesResolved(profileId, dayAge = 1, night = false) {
+            return API.get('/api/brooder/profiles/profiles/' + profileId
+                + '/stages-resolved?day_age=' + dayAge + '&night=' + (night ? 'true' : 'false'));
+        },
+        // Time-boxed test override on a cycle.
+        applyTest(profileId, d) {
+            return API.post('/api/brooder/profiles/profiles/' + profileId
+                + '/apply-test', d);
+        },
+        getTest(cycleId) {
+            return API.get('/api/brooder/profiles/profiles/test/' + cycleId);
+        },
+        clearTest(cycleId) {
+            return API.del('/api/brooder/profiles/profiles/test/' + cycleId);
+        },
+    },
+
     // Security / Anti-theft (Phase 1: motion-triggered YOLOv8n person detection)
     security: {
         status() { return API.get('/api/security/status'); },

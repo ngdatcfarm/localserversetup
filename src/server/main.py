@@ -47,6 +47,7 @@ from src.iot.weight_notification_service import weight_notification_service
 from src.iot.ai_logic_service import ai_logic_service
 from src.iot.inverter_service import inverter_service
 from src.iot.cf_relay import cf_relay
+from src.iot.brooder_service import brooder_controller, zone_controller
 from src.server.routes.ml import router as ml_router
 from src.server.routes.ai_logic import router as ai_logic_router
 from src.server.routes.ml_dataset import router as ml_dataset_router
@@ -60,6 +61,8 @@ from src.server.routes.cycle_snapshots import router as cycle_snapshots_router
 from src.iot.cycle_snapshot_service import start_snapshot_scheduler
 from src.server.routes.terminal import router as terminal_router
 from src.server.routes.inverter import router as inverter_router
+from src.server.routes.brooder import router as brooder_router
+from src.server.routes.brooder_profiles import router as brooder_profiles_router
 from src.server.routes.security import router as security_router
 from src.server.routes.relay_bind import router as relay_bind_router
 from src.security.security_service import security_service, set_main_event_loop
@@ -204,6 +207,28 @@ async def startup_event():
     except Exception as e:
         logger.error("Inverter service start failed: %s", e)
 
+    # 5b-2. Start brooder heating PID controller. Subscribes to ESP32
+    #        telemetry topics and publishes power / setpoint back. Must
+    #        come AFTER MQTT listener start (line 137) so the subscription
+    #        call doesn't drop frames that arrive before init. Wrapped in
+    #        try/except so a broken brooder config can't block cameras.
+    try:
+        await brooder_controller.start()
+    except Exception as e:
+        logger.error("Brooder controller start failed: %s", e)
+
+    # 5b-3. Start ZoneController (Phase B) — parallel to BrooderController.
+    #        Zone is the new unit of thermal control: 1 PID per zone, output
+    #        distributed across N heaters. Runs alongside BrooderController
+    #        for backward compat (firmware v1.0.x still receives single
+    #        power payload from BrooderController; v1.1.0+ receives ch1/ch2
+    #        from ZoneController). If zone_controller fails, legacy still
+    #        keeps the farm warm.
+    try:
+        await zone_controller.start()
+    except Exception as e:
+        logger.error("Zone controller start failed: %s", e)
+
     # 5c. Configure + start security service (motion + YOLO person detection).
     #     MUST come BEFORE camera frame-callback registration so the worker is
     #     ready when frames start flowing.
@@ -320,6 +345,17 @@ async def shutdown_event():
         await inverter_service.stop()
     except Exception as e:
         logger.warning("Inverter service stop error: %s", e)
+    # Stop brooder BEFORE MQTT disconnect so it can publish a final
+    # setpoint=null if it wants to (and so the periodic task is gone
+    # before mqtt_client tears down its connection).
+    try:
+        await brooder_controller.stop()
+    except Exception as e:
+        logger.warning("Brooder controller stop error: %s", e)
+    try:
+        await zone_controller.stop()
+    except Exception as e:
+        logger.warning("Zone controller stop error: %s", e)
     recording_service.stop_all()
     for camera_id in list(camera_manager.get_all_cameras().keys()):
         camera_manager.stop_camera(camera_id)
@@ -434,6 +470,8 @@ app.include_router(chat_router)
 app.include_router(cycle_snapshots_router)
 app.include_router(terminal_router)
 app.include_router(inverter_router)
+app.include_router(brooder_router)
+app.include_router(brooder_profiles_router)
 app.include_router(security_router)
 app.include_router(relay_bind_router)
 

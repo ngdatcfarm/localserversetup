@@ -54,6 +54,15 @@ SCRIPTS = [
     "060_telegram_chat_ids.sql",
     "061_cloud_sync_archive_gates.sql",
     "062_care_calendar_indexes.sql",
+    "063_brooder.sql",
+    "064_brooder_zone_sensors.sql",
+    "065_brooder_zones.sql",
+    "066_brooder_heaters.sql",
+    "067_brooder_zone_history.sql",
+    "068_brooder_profiles.sql",
+    "069_brooder_profile_cycle_fk.sql",
+    "070_brooder_telemetry_columns.sql",
+    "071_seed_hill_chicken_standard.sql",
 ]
 
 SCRIPTS_DIR = Path(__file__).parent / "scripts"

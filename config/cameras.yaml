@@ -39,6 +39,12 @@ cf_relay:
   timeout_seconds: 5.0
   severity_threshold: "info"          # "info" | "warning" | "danger" — minimum severity to forward
   snapshot_base_url: "https://doihong.io.vn"   # prepend to relative /snapshots/... paths
+# Brooder heating profile management (Phase 1 + 2 — 2026-09-18)
+# When false, server falls back to legacy day-age SETPOINT_TABLE for every node.
+# Cache layer (CachedProfile) + 12 endpoints under /api/brooder/profiles stay
+# live regardless; only the resolver short-circuits when this is disabled.
+brooder:
+  profiles_enabled: true
 cameras:
 - id: cam_001
   name: Camera c?ng

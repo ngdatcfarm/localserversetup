@@ -91,6 +91,12 @@ const router = createRouter({
         { path: '/cameras', component: () => loadPage('cameras') },
         { path: '/sync', component: () => loadPage('sync') },
         { path: '/inverter', component: () => loadPage('inverter') },
+        { path: '/brooder', component: () => loadPage('brooder') },
+        { path: '/brooder/:id', component: () => loadPage('brooder-detail'), props: true },
+        { path: '/brooder/profiles',                          component: () => loadPage('brooder-profiles') },
+        { path: '/brooder/profiles/:id',                      component: () => loadPage('brooder-profile-detail'),  props: true },
+        { path: '/brooder/profiles/:id/simulator',            component: () => loadPage('brooder-profile-simulator'), props: true },
+        { path: '/brooder/legacy', component: () => loadPage('brooder-legacy') },
         { path: '/security', component: () => loadPage('security') },
         { path: '/density-label', component: () => loadPage('density_label') },
         { path: '/chat', component: () => loadPage('chat') },
@@ -178,6 +184,8 @@ const app = createApp({
             // ARCHIVED 2026-09-07: cloud DB sync replaced by Cloudflare Worker; hidden from sidebar nav.
             // Route at line above kept reachable for re-activation.
             { path: '/inverter', icon: '⚡', label: 'Inverter' },
+            { path: '/brooder', icon: '🔥', label: 'Brooder' },
+            { path: '/brooder/profiles', icon: '📋', label: 'Hồ sơ úm' },
             { path: '/security', icon: '🛡️', label: 'An ninh' },
             { path: '/density-label', icon: '🎯', label: 'Density Label' },
             { path: '/chat', icon: '💬', label: 'AI Chat' },
@@ -217,6 +225,18 @@ const app = createApp({
                         console.error('[App] SW registration failed:', err);
                         console.error('[App] SW Error name:', err.name, 'message:', err.message);
                     });
+                // When a new SW takes over (e.g., v20→v21 flushes a bug-fix to care.js),
+                // reload so the new module versions are fetched fresh. Without this,
+                // the page keeps using stale care.js served from the OLD SW's cache
+                // until the user manually refreshes a second time — and any save action
+                // in between re-triggers the bug we just fixed.
+                let refreshing = false;
+                navigator.serviceWorker.addEventListener('controllerchange', () => {
+                    if (refreshing) return;
+                    refreshing = true;
+                    console.log('[App] New SW took control — reloading to pick up updated modules');
+                    location.reload();
+                });
             } else {
                 console.warn('[App] ServiceWorker not supported');
             }
