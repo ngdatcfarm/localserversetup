@@ -93,11 +93,16 @@ _snapshot_task = None
 
 
 async def _offline_check_loop():
-    """Background task: check for offline devices every 60 seconds."""
+    """Background task: check for offline devices every 60 seconds.
+
+    Threshold 180s = 3× ESP32 HEARTBEAT_INTERVAL_MS (60s).
+    Lower values cause false positives — broker roundtrip + processing
+    jitter can push a heartbeat past the timeout between checks.
+    """
     while True:
         await asyncio.sleep(60)
         try:
-            newly_offline = await device_service.check_offline(timeout_seconds=90)
+            newly_offline = await device_service.check_offline(timeout_seconds=180)
             for d in newly_offline:
                 logger.warning(f"Device offline: {d['device_code']} ({d['name']})")
         except Exception as e:

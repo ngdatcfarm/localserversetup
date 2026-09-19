@@ -328,8 +328,15 @@ class DeviceService:
 
     # ── Offline Detection ─────────────────────────────
 
-    async def check_offline(self, timeout_seconds: int = 90) -> list[dict]:
-        """Mark devices offline if no heartbeat within timeout. Returns newly offline devices."""
+    async def check_offline(self, timeout_seconds: int = 180) -> list[dict]:
+        """Mark devices offline if no heartbeat within timeout.
+
+        Threshold must be >= 3× the device's heartbeat interval to avoid
+        false positives from network jitter / broker delay. ESP32 brooder
+        publishes every 60s (`HEARTBEAT_INTERVAL_MS` in firmware), so 180s
+        gives 2 missed-heartbeats of grace before declaring offline.
+        Returns newly offline devices.
+        """
         cutoff = datetime.now(timezone.utc) - timedelta(seconds=timeout_seconds)
 
         # Find devices that were online but heartbeat expired
