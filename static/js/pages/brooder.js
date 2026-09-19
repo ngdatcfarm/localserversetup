@@ -189,6 +189,7 @@ export default {
             addOpen, addSaving, addForm, barns,
             openAddForm, createZone,
             reloadAll, openZone, fmtNum, fmtDate,
+            formatLastSeen, lastSeenClass,
         };
     },
 
