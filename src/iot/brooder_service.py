@@ -835,10 +835,16 @@ class BrooderController:
         if not device_code:
             return
 
-        # Auto-register unknown nodes (zero-config onboarding)
+        # Auto-register unknown nodes (zero-config onboarding).
+        # Mirror to brooder_nodes (DB) so the UI candidate list and the
+        # POST /zones/{id}/members endpoint see the new ESP32 without a
+        # manual admin insert. Must schedule on the main asyncio loop —
+        # this callback runs on paho-mqtt's IO thread (no running loop).
+        # See mqtt_client.py set_main_loop / schedule_coroutine.
         if device_code not in self.nodes:
             logger.info(f"Brooder: auto-registering new node {device_code}")
             self.nodes[device_code] = BrooderNode(device_code=device_code)
+            mqtt_client.schedule_coroutine(self.register_node(device_code))
 
         node = self.nodes[device_code]
         # Field-name compat: legacy firmware (single SHT40, e.g. esp32_brooder.ino)
