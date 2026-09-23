@@ -117,7 +117,7 @@ const char* MQTT_USER     = "cfarm_device";
 const char* MQTT_PASS     = "cfarm_device_2026";
 
 const char* DEVICE_TYPE     = "brooder";
-const char* FIRMWARE_VERSION = "1.4.3";
+const char* FIRMWARE_VERSION = "1.4.4";
 const char* FIRMWARE_NAME    = "esp32_brooder";
 
 // ─── DEVICE CODE ───
@@ -164,6 +164,7 @@ const unsigned long HEARTBEAT_INTERVAL_MS   = 60000;   // Publish heartbeat ever
 const unsigned long SENSOR_READ_INTERVAL_MS = 2000;    // Read SHT40 every 2s
 const uint8_t       SHT4_FAIL_THRESHOLD     = 5;       // v1.4.2 (fw bug 4): consecutive I2C failures before latching sht4_ok=false. At 2s cadence = 10s of sustained failure. One transient blip no longer latches the Tier-3 failsafe clamp.
 const unsigned long FAILSAFE_TIMEOUT_MS     = 60000;   // v1.4.1: 15s → 60s. With server KEEPALIVE=4s and DB jitter, 15s was too tight — single 16s publish gap tripped failsafe and snapped heater 100→0, killing zone stability. 60s absorbs ≥14 missed packets; legitimate server outage still triggers failsafe but transient stalls don't.
+const unsigned long SERVER_GRACE_PERIOD_MS  = 30000;   // v1.4.4: anti-flap grace period. Absorbs WiFi micro-drops (10-100ms during SSR noise) and MQTT reconnect flaps without flipping to FAILSAFE. Trade-off: during the grace window the ESP32 holds last-server-commanded per-channel power without local PID moderation; brooder thermal inertia (~12s/°C) bounds drift to ≤0.5°C over 30s. EMERGENCY_LATCH_C=35.1°C + bimetal 38°C still active every cycle.
 const unsigned long NORMAL_CONFIRM_WINDOW_MS = 3000;    // v1.3.2: DEPRECATED. Was used for time-based counter reset — removed because server keepalive (6s) > window (3s), made hysteresis a no-op. Kept for reference; do not re-enable without also changing server cadence.
 const uint8_t       NORMAL_CONFIRM_REQUIRED  = 1;       // v1.4.1: 2 → 1. Now that FAILSAFE_TIMEOUT is 60s, the first fresh /power packet is sufficient proof of server liveness — second packet added ~4s of mode-flicker delay with no extra safety (failsafe exit already verifies input freshness). Counter reset only in enterFailsafe()/enterNormal().
 const unsigned long WDT_TIMEOUT_S           = 30;      // Hardware watchdog
@@ -325,6 +326,7 @@ float currentFallbackDelta = 0.0; // Tier-2 bias subtracted from local SHT40 whe
 
 unsigned long lastMqttCmdMs     = 0;
 uint8_t       normalConfirmCount = 0;    // v1.3.1: # of fresh server packets (≤ NORMAL_CONFIRM_WINDOW_MS old) accumulated toward NORMAL_CONFIRM_REQUIRED. Reset on enterFailsafe().
+unsigned long lastValidCommunicationMs = 0; // v1.4.4: timestamp of last confirmed-good WiFi+MQTT+lively-server state. Used by the 30s grace period in loop() to absorb WiFi micro-drops and MQTT reconnect flaps without flipping to FAILSAFE.
 unsigned long lastTelemetryMs   = 0;
 unsigned long lastHeartbeatMs   = 0;
 unsigned long lastSensorReadMs  = 0;
@@ -470,6 +472,16 @@ void onMqttConnected() {
 
     // Reset failsafe timer so we don't trip immediately after connect
     lastMqttCmdMs = millis();
+    // v1.4.4: reset the 30s grace clock too. After a fresh MQTT
+    // reconnect (typically following a server restart or WiFi recovery)
+    // we want the device to enjoy a full grace window before any
+    // single dropped packet can flip it to FAILSAFE. Without this,
+    // lastValidCommunicationMs might be 30+ seconds stale at the
+    // moment of reconnect → first transient WiFi blip after reconnect
+    // would immediately trip SUSTAINED-DISCONNECT. Setting it here
+    // means: "we just confirmed the link is good; treat it as good
+    // for the next 30s regardless of subsequent blips".
+    lastValidCommunicationMs = millis();
 
     // Announce online
     StaticJsonDocument<128> doc;
@@ -1408,37 +1420,79 @@ void loop() {
         warnedSensorDead = false;
 
         // ---- Failsafe detection + power output ----
-        // Fix #2: WiFi loss must also force failsafe. Without this gate, an
-        // mqttClient.connected() that hasn't noticed the dead socket yet (TCP
-        // keepalive can lag 30-60s) keeps serverAlive=true while the network is
-        // gone — PID holds stale last power and chicks drift. Adding the WiFi
-        // status check collapses both signals into one.
-        bool serverAlive = (WiFi.status() == WL_CONNECTED)
-                           && mqttClient.connected()
-                           && (now - lastMqttCmdMs) < FAILSAFE_TIMEOUT_MS;
+        // v1.4.4 ANTI-FLAP GRACE PERIOD (replaces pre-v1.4.4 instant flip).
+        //
+        // Bug being fixed: pre-v1.4.4 logic was
+        //   bool serverAlive = WiFi_ok && MQTT_ok && (now-lastMqttCmd < 60s);
+        //   if (serverAlive) { maybe enterNormal(); }
+        //   else            { if (!failsafe) enterFailsafe(); }
+        // && short-circuits instantly — a 10-100ms WiFi drop during SSR
+        // switching transients flipped serverAlive=false on the very next
+        // loop() iteration (10ms cadence). enterFailsafe() was called, which
+        // RESET normalConfirmCount = 0. When WiFi recovered 50ms later the
+        // loop saw serverAlive=true again but count was 0, so it had to wait
+        // for a fresh /power packet to bump count → 1. If WiFi flapped
+        // again before that packet, the cycle repeated forever: device
+        // "trembles" between modes, normalConfirmCount never accumulates,
+        // chicks see chaotic output.
+        //
+        // Fix: SUSTAINED-DISCONNECT check, not instantaneous check.
+        //   - track `lastValidCommunicationMs` (updated ONLY when
+        //     WiFi==OK && MQTT==OK && lastMqttCmd < FAILSAFE_TIMEOUT)
+        //   - consider "sustained disconnect" only when
+        //     (now - lastValidCommunicationMs) >= SERVER_GRACE_PERIOD_MS
+        //     (default 30s)
+        //   - during the grace window: hold last server command (already
+        //     latched in currentPowerCh1/Ch2 from the last MQTT callback),
+        //     do NOT call enterFailsafe(), do NOT reset normalConfirmCount
+        //   - after the grace window: enter failsafe as before
+        //
+        // Safety preserved: EMERGENCY_LATCH_C=35.1°C cutoff and bimetal
+        // 38°C hardware still active every 2s SHT40 read; brooder thermal
+        // inertia (~12s/°C) bounds temperature drift to <0.5°C over 30s
+        // of held output.
+        bool connectionCurrentlyOk = (WiFi.status() == WL_CONNECTED)
+                                     && mqttClient.connected()
+                                     && (now - lastMqttCmdMs) < FAILSAFE_TIMEOUT_MS;
 
-        if (serverAlive) {
-            // v1.3.1 NORMAL hysteresis (simplified):
-            //   Count consecutive fresh server packets. Enter NORMAL once
-            //   count >= NORMAL_CONFIRM_REQUIRED. Counter is reset only on:
-            //     - enterFailsafe()   (server died or WiFi/MQTT dropped)
-            //     - enterNormal()      (successful transition, start fresh)
-            //   NO time-based reset: server keepalive (KEEPALIVE_INTERVAL_S=6s)
-            //   > NORMAL_CONFIRM_WINDOW_MS (3s) — a time-based reset would fire
-            //   BETWEEN every keepalive packet and cap count at 1, making
-            //   hysteresis a no-op. /power is NOT retained on the broker
-            //   (mqtt_client.publish with qos=1, no retain), so retained-packet
-            //   protection is not needed.
+        if (connectionCurrentlyOk) {
+            // Refresh the "last good" timestamp continuously while link is up.
+            // Any single drop will stop the refresh; the 30s clock starts
+            // from this most-recent-good instant.
+            lastValidCommunicationMs = now;
+        }
+
+        bool isSustainedDisconnect = (now - lastValidCommunicationMs)
+                                     >= SERVER_GRACE_PERIOD_MS;
+
+        if (!isSustainedDisconnect) {
+            // ---- INSIDE THE 30s GRACE WINDOW ----
+            // Treat the device as NORMAL-controlled even if WiFi/MQTT
+            // blipped briefly. Hardware is already at last server's
+            // commanded power (currentPowerCh1/Ch2 from the last MQTT
+            // callback write). Only flip modes on a CONFIRMED transition.
             if (currentMode != MODE_NORMAL) {
                 if (normalConfirmCount >= NORMAL_CONFIRM_REQUIRED) {
-                    Serial.printf("FAILSAFE → NORMAL, ch1=%d%% ch2=%d%% (avg=%d%%)\n",
+                    Serial.printf("FAILSAFE → NORMAL, ch1=%d%% ch2=%d%% "
+                                  "(avg=%d%%) (within grace window)\n",
                                   lastServerCh1, lastServerCh2, lastServerPower);
                     enterNormal();
                 }
             }
-            // Power already updated via mqttCallback; nothing to do
+            // Do NOT touch currentPowerCh1/Ch2 — they hold the last
+            // server-commanded values from the most recent MQTT callback.
+            // The local failsafe PID is NOT run inside the grace window.
         } else {
-            if (currentMode != MODE_FAILSAFE) enterFailsafe();
+            // ---- SUSTAINED DISCONNECT (> 30s) ----
+            // Link has been bad long enough that the server is presumed
+            // truly dead. Hand authority to the local failsafe PID.
+            if (currentMode != MODE_FAILSAFE) {
+                Serial.printf(">>> SUSTAINED DISCONNECT (%lums > grace %lums) "
+                              "-> ENTERING FAILSAFE <<<\n",
+                              now - lastValidCommunicationMs,
+                              SERVER_GRACE_PERIOD_MS);
+                enterFailsafe();
+            }
 
             // Failsafe PID must run at the same cadence as the sensor
             // read (SENSOR_READ_INTERVAL_MS) — otherwise error stays
