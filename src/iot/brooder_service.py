@@ -43,6 +43,79 @@ logger = logging.getLogger(__name__)
 
 
 # ============================================================
+# Power-history audit trail (brooder_power_history hypertable).
+#
+# Insertion policy: record ONLY when power % actually changes. A tick that
+# publishes the same power as last time is not recorded — otherwise the
+# PID's 4-6s cadence would inflate the table to 36k rows/day/heater.
+# The single-ESP and zone controllers each track their own "last recorded"
+# field on the in-memory state and compare before INSERTing.
+# ============================================================
+
+async def _record_power_change(
+    *,
+    device_code: str,
+    channel: int,
+    power_pct: int,
+    setpoint_c: Optional[float],
+    pid_input_c: Optional[float],
+    source: str,                       # 'pid' | 'setpoint_change' | 'mode_change' | 'manual_override'
+    zone_id: Optional[int] = None,
+    heater_id: Optional[int] = None,
+    note: Optional[str] = None,
+) -> None:
+    """Append one row to brooder_power_history. Best-effort, never raises.
+
+    Called from PID loops, manual setpoint changes, and mode transitions.
+    Failures are logged at DEBUG so they don't pollute stderr.log but are
+    visible to anyone chasing a missing audit row.
+    """
+    try:
+        await db.execute(
+            """
+            INSERT INTO brooder_power_history
+                (zone_id, heater_id, device_code, channel,
+                 power_pct, setpoint_c, pid_input_c, source, note)
+            VALUES ($1,$2,$3,$4,$5,$6,$7,$8,$9)
+            """,
+            zone_id, heater_id, device_code, channel,
+            power_pct, setpoint_c, pid_input_c, source, note,
+        )
+    except Exception as e:
+        logger.debug(f"brooder_power_history insert skipped: {e}")
+
+
+async def _record_mode_change(node: "BrooderNode",
+                              old_mode: str,
+                              new_mode: str,
+                              *,
+                              note: Optional[str] = None,
+                              zone_id: Optional[int] = None,
+                              heater_id: Optional[int] = None,
+                              channel: int = 1) -> None:
+    """Record one brooder_power_history row for a node-level mode change.
+
+    No-op when old_mode == new_mode (caller may still call without guarding).
+    Records at the node's current ``last_power_sent`` so the audit trail can
+    answer "what power was the heater at when it entered failsafe?".
+    """
+    if old_mode == new_mode:
+        return
+    parts = [f"{old_mode}→{new_mode}"]
+    if note:
+        parts.append(note)
+    await _record_power_change(
+        zone_id=zone_id, heater_id=heater_id,
+        device_code=node.device_code, channel=channel,
+        power_pct=node.last_power_sent or 0,
+        setpoint_c=node.pid.setpoint if node.pid else None,
+        pid_input_c=node.last_temp_min,
+        source='mode_change',
+        note='; '.join(parts),
+    )
+
+
+# ============================================================
 # SETPOINT TABLE (Vietnamese free-range tropical chickens)
 # Day-age (1-indexed) → setpoint °C
 # ============================================================
@@ -150,17 +223,32 @@ ZONE_TEMP_SENSOR_TYPE = "temperature"  # sensor_latest.sensor_type for env senso
 # ZoneController._tick_zone_pid use this constant for the skip window.
 PID_HEARTBEAT_S       = 4
 
-# PID tuning — conservative (was Kp=30/Ki=0.5/Kd=50 which overshoots ±0.5°C).
+# PID tuning — v1.4.1 spam-failsafe + temp-stability pack (2026-09-23):
+# - Kp 12 → 6:  was overshooting setpoint by 2-3°C then snapping to 0% on
+#               overshoot correction (user-reported "100% rồi tắt luôn"
+#               = visible 100→0 snap). Half as aggressive ramp-up.
+# - Slew clamp:  limits raw PID output to ±SLEW_PCT_PER_TICK per publish
+#               cycle. PID still computes true target; client only sees
+#               gradual change.
 # Matches the firmware local-PID so server and failsafe behave identically.
-PID_KP = 12.0
+PID_KP = 6.0
 PID_KI = 0.25
 PID_KD = 25.0
 PID_OUTPUT_LIMITS = (0, 100)
 PID_SAMPLE_TIME_S  = 2.0
 
-# Deadband — suppress PID micro-corrections within ±0.1°C of setpoint.
-# Reduces heater on/off cycling once zone is stable.
-DEADBAND_C = 0.1
+# Deadband — v1.4.1: 0.1°C → 0.5°C. Was too narrow — temp rounding caused
+# output flip across setpoint. Holding ±0.5°C eliminates that bump while
+# not adding meaningful static offset (chick comfort band is ±0.5-1°C).
+DEADBAND_C = 0.5
+
+# Slew-rate limit (v1.4.1) — max % change per publish tick. Telemetry
+# cadence 5s; PID_HEARTBEAT_S=4s skip-gate → effective publish 5s. So
+# 5%/5s = 1%/s ramp speed. Slowly reaches target on cold-start but
+# eliminates bang-bang visible to user. Firmware-side failsafe mode
+# uses MAX_SLEW_PER_SEC=8 (~3%/s) separately; this constant is for the
+# NORMAL mode server-side clamp.
+SLEW_PCT_PER_TICK = 5
 
 
 # ============================================================
@@ -297,6 +385,7 @@ class BrooderNode:
 
     # Sent state
     last_power_sent: int = 0
+    last_power_sent_recorded: Optional[int] = None  # last value written to brooder_power_history
     last_setpoint_sent: Optional[float] = None
     last_setpoint_sent_at: Optional[datetime] = None
 
@@ -350,13 +439,36 @@ class BrooderNode:
 
     def compute_power(self, current_temp: float) -> int:
         self.update_pid_setpoint()
-        # Deadband: when within ±DEADBAND_C of setpoint, hold last output to
-        # avoid relay-like on/off cycling. Integral still accumulates (so a
-        # slow drift out of the band gets a non-zero response).
+        # v1.4.2 (server bug 2): ALWAYS call self.pid(current_temp) first so
+        # simple_pid's internal state updates (integral accumulates, derivative
+        # term gets a fresh reading). Previously we early-returned on deadband
+        # BEFORE calling self.pid → simple_pid._last_time never advanced, so
+        # on the next call dt = now - last = full elapsed wallclock (up to
+        # 600s of missed ticks). The integral then jumps by Ki*err*dt ≈
+        # 0.25 * 5°C * 600s = 750 units → way past saturation. v1.4.1 already
+        # added the slew clamp downstream so a 750-unit spike is rate-limited
+        # to 5%/publish tick, but the underlying integral stays poisoned until
+        # the controller bleeds it off (could take 30+s). Reordering: always
+        # tick PID, then apply deadband as a PUBLISHED-output hold only.
+        raw = self.pid(current_temp)
         err = self.pid.setpoint - current_temp
         if abs(err) < DEADBAND_C:
+            # Inside deadband → don't publish a new value, hold last output.
+            # Internal PID state already updated above (integral still grows
+            # slowly during long holds, which is correct).
             return max(0, min(100, self.last_power_sent))
-        out = self.pid(current_temp)
+        # v1.4.1: slew-rate clamp on published output. PID internally
+        # computes true target, but to ESP32 we publish only what's reachable
+        # in one tick (1%/s). Prevents user-visible 100→0 snaps caused by
+        # integral overshoot on saturation recovery.
+        last = self.last_power_sent if self.last_power_sent is not None else 0
+        delta = raw - last
+        if delta > SLEW_PCT_PER_TICK:
+            out = last + SLEW_PCT_PER_TICK
+        elif delta < -SLEW_PCT_PER_TICK:
+            out = last - SLEW_PCT_PER_TICK
+        else:
+            out = raw
         return max(0, min(100, int(round(out))))
 
     def reset_pid_bumpless(self, last_output_pct: Optional[int] = None) -> None:
@@ -429,6 +541,22 @@ class BrooderController:
 
     async def start(self) -> None:
         """Load config, subscribe MQTT, start periodic task."""
+        # v1.3.2 fix (2026-09-21): cancel leftover asyncio tasks from a prior
+        # incarnation. BrooderController is a singleton on the FastAPI app —
+        # when the server restarts (guardian recovers it), the process is
+        # fresh but the SAME class instance is reused via lifespan. Without
+        # this cleanup, each restart accumulates N keepalive loops alongside
+        # the new one → exponential growth in /power publish rate (observed
+        # live: 5 publishes in 7ms after a few restarts) and eventual OOM.
+        for attr in ("_periodic_task", "_zone_task", "_keepalive_task"):
+            t = getattr(self, attr, None)
+            if t and not t.done():
+                t.cancel()
+                try:
+                    await t
+                except asyncio.CancelledError:
+                    pass
+
         if self._running:
             return
         self._running = True
@@ -480,7 +608,12 @@ class BrooderController:
     # FAILSAFE_TIMEOUT_MS=8000 (was 5000; bumped to 8000 in v1.3.0), so
     # one missed keepalive window still has 2s of margin before failsafe.
 
-    KEEPALIVE_INTERVAL_S = 6
+    # v1.3.3 (2026-09-23): 6→4s. Fix spam-failsafe loop observed on barn-05
+    # (esp32-2588 / esp-brooder-000000 flickered normal↔failsafe ~113× / 2h).
+    # Doubles publish density → with FAILSAFE_TIMEOUT_MS=15s (firmware),
+    # margin jumps from 9s to 11s. Firmware-side bump to 60s proposed in
+    # firmware patch (separate flash).
+    KEEPALIVE_INTERVAL_S = 4
 
     async def _keepalive_loop(self) -> None:
         while self._running:
@@ -490,7 +623,11 @@ class BrooderController:
             except asyncio.CancelledError:
                 break
             except Exception as e:
+                # log + immediately retry next iteration (don't swallow time)
                 logger.error(f"Brooder keepalive loop error: {e}", exc_info=True)
+                # Small backoff so a tight exception loop doesn't burn CPU,
+                # but keep it short so we don't accumulate gaps.
+                await asyncio.sleep(1)
 
     async def _publish_keepalive_power(self) -> None:
         for code, node in self.nodes.items():
@@ -540,6 +677,7 @@ class BrooderController:
                     SELECT
                         bzs.sensor_device_code,
                         bzs.weight,
+                        bzs.sub_sensor,
                         sl.value      AS temp,
                         sl.time       AS last_seen,
                         d.barn_id     AS sensor_barn_id,
@@ -550,6 +688,7 @@ class BrooderController:
                     LEFT JOIN sensor_latest sl
                          ON sl.device_id = d.id
                         AND sl.sensor_type = $2
+                        AND sl.sub_sensor  = bzs.sub_sensor
                     WHERE bzs.brooder_device_code = $1
                     ORDER BY bzs.id
                     """,
@@ -702,10 +841,35 @@ class BrooderController:
             self.nodes[device_code] = BrooderNode(device_code=device_code)
 
         node = self.nodes[device_code]
-        node.last_temp1    = payload.get('temp1')
-        node.last_temp2    = payload.get('temp2')
-        node.last_temp_min = payload.get('temp_min')
-        node.last_hum_avg  = payload.get('hum_avg')
+        # Field-name compat: legacy firmware (single SHT40, e.g. esp32_brooder.ino)
+        # sends `temp` / `hum` / `temp_pid`. Newer payloads (dual-sensor or
+        # richer firmware) send `temp1` / `temp2` / `temp_min` / `hum_avg`.
+        # Accept either so PID never silently stops because of a rename.
+        temp1     = payload.get('temp1')
+        temp2     = payload.get('temp2')
+        temp_min  = payload.get('temp_min')
+        hum_avg   = payload.get('hum_avg')
+        if temp1 is None:
+            temp1 = payload.get('temp')         # legacy single-sensor alias
+        if temp2 is None:
+            temp2 = temp1                       # single-sensor: temp1 == temp2
+        if temp_min is None:
+            # Prefer firmware's own temp_pid (post-filter) when present,
+            # else min(temp1, temp2). temp_min is the PID input on the
+            # server side and must be a single representative value.
+            tpid = payload.get('temp_pid')
+            if tpid is not None:
+                temp_min = float(tpid)
+            elif temp1 is not None and temp2 is not None:
+                temp_min = min(float(temp1), float(temp2))
+            elif temp1 is not None:
+                temp_min = float(temp1)
+        if hum_avg is None:
+            hum_avg = payload.get('hum')        # legacy single-sensor alias
+        node.last_temp1    = temp1
+        node.last_temp2    = temp2
+        node.last_temp_min = temp_min
+        node.last_hum_avg  = hum_avg
         # Zone (reference sensor) contribution reported by ESP for diagnostics.
         # Firmware populates these when it has a fresh zone_temp payload.
         zt = payload.get('zone_temp')
@@ -720,8 +884,26 @@ class BrooderController:
         node.mode          = payload.get('mode', node.mode)
 
         # Run PID if enabled and we have temperature
-        if node.enabled and node.last_temp_min is not None:
-            asyncio.create_task(self._tick_pid(node))
+        # v1.4.2 (server bug 1): gate — if HeaterController is managing
+        # this device (per-device Heater rows registered), skip the
+        # legacy BrooderController PID path entirely. Without this gate,
+        # both controllers compute independent PIDs for the SAME physical
+        # heater channels (BrooderNode.compute_power uses its own
+        # last_power_sent; Heater.compute_power uses its own
+        # last_power_pct) → they publish conflicting power values within
+        # the same telemetry cycle. The MQTT broker delivers whichever
+        # was published last, so the user's reported "100% rồi tắt luôn"
+        # oscillation is partly this race. Node state updates above still
+        # run so ZoneController.member_nodes stays populated for Tier-2
+        # fallback and dashboards keep showing live temperature.
+        if (node.enabled
+                and node.last_temp_min is not None
+                and device_code not in heater_controller.heaters_by_device):
+            # NOTE: must schedule on main asyncio loop, not via
+            # asyncio.create_task — this handler is invoked from paho-mqtt's
+            # IO thread which has no running event loop. See mqtt_client.py
+            # set_main_loop / schedule_coroutine.
+            mqtt_client.schedule_coroutine(self._tick_pid(node))
 
     def _on_status(self, topic: str, payload) -> None:
         if isinstance(payload, (bytes, bytearray)):
@@ -786,6 +968,18 @@ class BrooderController:
                 # (delta>0 → heater is hotter than zone; we want zone estimate.)
                 if node.last_temp_min is None:
                     return
+                # v1.4.1: sensor glitch filter. SHT40 I2C disconnect returns
+                # 0°C or stale low values; running PID on that = huge positive
+                # error = heater to 100% → bimetal trip at 38°C. Reject
+                # implausible readings (<5°C or >50°C) instead of feeding the
+                # PID. ESP32 firmware has the same SHT40 failsafe → heater=0
+                # at the device level; this is the server-side mirror.
+                if node.last_temp_min < 5.0 or node.last_temp_min > 50.0:
+                    logger.warning(
+                        f"Brooder {node.device_code}: rejecting implausible "
+                        f"SHT40 reading {node.last_temp_min:.1f}°C (Tier-2 skipped)"
+                    )
+                    return
                 temp = node.last_temp_min - node.fallback_delta_c
                 pid_source = "local+delta"
                 # Reset LPF state on tier transition — Tier-1 and Tier-2 use
@@ -817,6 +1011,21 @@ class BrooderController:
             }, qos=1)
             node.last_power_sent = power_pct
 
+            # Audit trail — only record when power % actually changes. PID
+            # ticks at 4-6s cadence; without this guard the audit table
+            # would balloon to 36k rows/day/heater of duplicate zero-deltas.
+            if power_pct != node.last_power_sent_recorded:
+                node.last_power_sent_recorded = power_pct
+                await _record_power_change(
+                    heater_id=None,                  # single-ESP path: no Heater row
+                    device_code=node.device_code,
+                    channel=1,
+                    power_pct=power_pct,
+                    setpoint_c=sp,
+                    pid_input_c=node.last_temp_min,
+                    source='pid',
+                )
+
             # Persist to sensor_data hypertable — two streams for the same tick:
             #   1. brooder_temp  → °C   (PID input, drives chart)
             #   2. brooder_power → %    (actuator output, drives correlation chart)
@@ -831,35 +1040,62 @@ class BrooderController:
                 "day_age":   node.current_day_age(),
             })
             try:
+                # Look up device_id once for the per-tick writes
+                device_id = await db.fetchval(
+                    "SELECT id FROM devices WHERE device_code = $1",
+                    node.device_code,
+                )
+                if device_id is None:
+                    raise RuntimeError(f"device not found: {node.device_code}")
                 async with db.transaction() as conn:
-                    # Temperature row
+                    # Temperature row. sensor_data columns actually present:
+                    #   time, device_id, sensor_type (varchar), value,
+                    #   unit, barn_id, cycle_id, brooder_day_age, ...
+                    # The older INSERT in this function used
+                    # `sensor_type_id` + `recorded_at` + `metadata` which
+                    # were removed during migration 021 (sensor_type → varchar,
+                    # recorded_at → time, metadata dropped).
                     await conn.execute(
                         """
                         INSERT INTO sensor_data
-                            (device_id, sensor_type_id, value, recorded_at, metadata)
-                        SELECT d.id, st.id, $2, NOW(), $3::jsonb
-                        FROM devices d, sensor_types st
-                        WHERE d.device_code = $1 AND st.code = $4
-                        LIMIT 1
+                            (time, device_id, sensor_type, value, unit)
+                        VALUES (NOW(), $1, $2, $3, NULL)
                         """,
-                        node.device_code, temp, metadata, SENSOR_TYPE_CODE,
+                        device_id, SENSOR_TYPE_CODE, temp,
                     )
-                    # Power row (same tick, same metadata)
+                    # Power row (same tick)
                     await conn.execute(
                         """
                         INSERT INTO sensor_data
-                            (device_id, sensor_type_id, value, recorded_at, metadata)
-                        SELECT d.id, st.id, $2, NOW(), $3::jsonb
-                        FROM devices d, sensor_types st
-                        WHERE d.device_code = $1 AND st.code = $4
-                        LIMIT 1
+                            (time, device_id, sensor_type, value, unit)
+                        VALUES (NOW(), $1, $2, $3, '%')
                         """,
-                        node.device_code, float(power_pct), metadata,
-                        SENSOR_TYPE_POWER_CODE,
+                        device_id, SENSOR_TYPE_POWER_CODE, float(power_pct),
+                    )
+                    # Snapshot for the dashboard polling endpoint
+                    # (`/api/brooder/zones/{id}/heaters/power`). Single-ESP
+                    # brooder controller writes ONE heater row per tick —
+                    # zone controller writes N per zone.
+                    await conn.execute(
+                        """
+                        INSERT INTO brooder_heater_latest_power
+                            (heater_id, last_power_pct, last_setpoint,
+                             last_published_at, source)
+                        VALUES (
+                            (SELECT id FROM brooder_heaters
+                             WHERE device_code = $1 AND channel = 1),
+                            $2, $3, NOW(), 'server')
+                        ON CONFLICT (heater_id) DO UPDATE SET
+                            last_power_pct    = EXCLUDED.last_power_pct,
+                            last_setpoint     = EXCLUDED.last_setpoint,
+                            last_published_at = EXCLUDED.last_published_at,
+                            source            = EXCLUDED.source
+                        """,
+                        node.device_code, int(power_pct), float(sp),
                     )
             except Exception as e:
                 # Telemetry persistence is best-effort; don't break control loop
-                logger.debug(f"Brooder {node.device_code}: persist skipped: {e}")
+                logger.warning(f"Brooder {node.device_code}: persist skipped: {e}")
 
             if not ok:
                 logger.debug(f"Brooder {node.device_code}: MQTT publish queued/offline")
@@ -984,9 +1220,15 @@ class BrooderController:
                 continue
             age = (now - node.last_telemetry_at).total_seconds()
             if age > TELEMETRY_STALE_S and node.mode not in ('offline', 'stale'):
+                old_mode = node.mode
                 node.mode = 'stale'
                 logger.warning(f"Brooder {code}: stale telemetry "
                                f"({age:.0f}s > {TELEMETRY_STALE_S}s)")
+                # Audit — record the stale transition at current power.
+                await _record_mode_change(
+                    node, old_mode, 'stale',
+                    note=f"telemetry stale {age:.0f}s",
+                )
 
     # ─── profile cache (Phase 1+2) ────────────────────────────
     #
@@ -1285,6 +1527,22 @@ class BrooderController:
         mqtt_client.publish(topic, payload, qos=1, retain=True)
         node.last_setpoint_sent = node.pid.setpoint
         node.last_setpoint_sent_at = datetime.now(timezone.utc)
+
+        # Audit trail — manual setpoint change is an explicit operator
+        # action. Record at the current power so the chart can show
+        # "setpoint → power" correlation. Reset the dedup gate so the
+        # next PID tick (which will recompute power against the new
+        # setpoint) also gets recorded.
+        node.last_power_sent_recorded = None
+        await _record_power_change(
+            device_code=device_code, channel=1,
+            power_pct=node.last_power_sent or 0,
+            setpoint_c=setpoint,
+            pid_input_c=node.last_temp_min,
+            source='setpoint_change',
+            note=f"manual override → {setpoint if setpoint is not None else 'auto'}",
+        )
+
         logger.info(f"Brooder {device_code}: manual override → "
                     f"{setpoint if setpoint is not None else 'auto'} "
                     f"(effective {node.pid.setpoint:.2f}°C)")
@@ -1349,8 +1607,11 @@ brooder_controller = BrooderController()
 
 @dataclass
 class Heater:
-    """1 ESP32 + 1 channel + max wattage. Server splits PID output across
-    all enabled heaters in a zone by max-power weighting."""
+    """1 ESP32 + 1 channel + max wattage + INDEPENDENT PID. Heater-first refactor
+    2026-09-21: each heater runs its own PID with its own setpoint. Zone is just
+    a logical grouping for UI/management — no more shared PID, no more
+    max-power weighting.
+    """
     id: int
     zone_id: int
     device_code: str
@@ -1358,54 +1619,36 @@ class Heater:
     label: Optional[str]
     max_power_w: float
     enabled: bool
+    manual_setpoint: Optional[float] = None      # NEW: per-heater override
+    fallback_delta_c: float = 0.0                # NEW: per-heater Tier-2 bias
+    pid: Optional[PID] = field(default=None, init=False)  # NEW: own PID
     last_power_pct: int = 0         # cached from last MQTT publish
+    last_power_pct_recorded: Optional[int] = None  # last value written to brooder_power_history
     last_published_at: Optional[datetime] = None
+    last_pid_input: Optional[float] = None       # NEW: Tier-1 cache (skip-gate)
+    last_pid_input_at: Optional[datetime] = None # NEW: skip-gate timestamp
+    last_pid_input_lpf: Optional[float] = None  # NEW: Tier-1 low-pass filter (α=0.3)
+    last_pid_input_lpf_init: bool = False       # NEW: LPF init flag
 
+    # Profile cache (Phase 1+2): mirrored from zone (or first member cycle).
+    # Per-heater profile override is a future enhancement — for now each
+    # heater inherits its zone's profile so 2 heaters in the same zone get
+    # the same setpoint unless one has manual_setpoint set.
+    profile_cache: Optional["CachedProfile"] = None
+    profile_cache_cycle_date: Optional[date] = None
+    profile_cache_night_flag: Optional[bool] = None
 
-@dataclass
-class Zone:
-    """A thermal control unit — 1 PID, N heaters, M sensors."""
-    id: int
-    barn_id: Optional[int]
-    name: str
-    manual_setpoint: Optional[float] = None
-    fallback_delta_c: float = 0.0
-    enabled: bool = True
-    max_total_w: Optional[float] = None
-
-    # Profile cache (Phase 1+2) — mirrored from the first member node with
-    # a cycle_id set (zones typically share one cycle). Mirrored so we can
-    # publish setpoint per-zone (zone.current_setpoint() reads these) without
-    # hitting the DB inside the PID tick.
-    profile_cache: Optional["CachedProfile"]     = None
-    profile_cache_cycle_date: Optional[date]     = None
-    profile_cache_night_flag: Optional[bool]     = None
-
-    # Filled by ZoneController._load_zones()
-    pid: Optional[PID] = field(default=None, init=False)
-    member_device_codes: List[str] = field(default_factory=list, init=False)
-    member_nodes: Dict[str, "BrooderNode"] = field(default_factory=dict, init=False)
-    heaters: Dict[int, Heater] = field(default_factory=dict, init=False)
-
-    # Live overlay
-    last_zone_temp: Optional[float] = None
-    last_zone_temp_at: Optional[datetime] = None
-    zone_sensors_count: int = 0
-    pid_source: Optional[str] = None
-    last_pid_input: Optional[float] = None
-    last_pid_input_at: Optional[datetime] = None
-    last_power_total_pct: int = 0
-    last_setpoint_sent: Optional[float] = None
-    last_setpoint_sent_at: Optional[datetime] = None
-    mode: str = "unknown"           # normal | failsafe | offline | stale | startup
+    # Populated by HeaterController._refresh_heater_caches from zone member_nodes.
+    # Used as last-resort fallback in current_setpoint() when neither
+    # manual_setpoint nor profile_cache is set. Default empty list — first
+    # refresh fills it.
+    _zone_member_nodes: List["BrooderNode"] = field(default_factory=list, init=False, repr=False)
 
     def __post_init__(self):
-        # v1.3.0: removed sample_time=PID_SAMPLE_TIME_S. simple_pid then uses
-        # real elapsed dt between calls — critical because _tick_pid is
-        # event-driven by telemetry (5s cadence) AND gated by zone_temp
-        # updates (20s cadence). With fixed sample_time=2.0s, the D-term
-        # would be calculated assuming dt=2s even when actual dt=20s →
-        # 10x larger derivative kick on every zone_temp payload arrival.
+        # Mirrors BrooderNode.__post_init__: own PID with Kp/Ki/Kd that
+        # match firmware local-PID so server and failsafe behave identically.
+        # Removed sample_time=PID_SAMPLE_TIME_S — simple_pid uses real
+        # elapsed dt between calls.
         self.pid = PID(
             Kp=PID_KP, Ki=PID_KI, Kd=PID_KD,
             setpoint=self.current_setpoint(),
@@ -1413,22 +1656,22 @@ class Zone:
         )
         self.pid.auto_mode = True
 
-    # ─── setpoint logic (mirrors BrooderNode.current_setpoint) ───
+    # ─── setpoint resolution (mirrors Zone.current_setpoint cascade) ───
 
     def current_setpoint(self) -> float:
         if self.manual_setpoint is not None:
             return self.manual_setpoint
-        # Profile cache (Phase 1+2) — mirrors BrooderNode.current_setpoint
+        # Profile cache (mirrored from zone or first member cycle)
         if self.profile_cache is not None:
             sp = self.profile_cache.setpoint_target
             if self.profile_cache_night_flag:
                 sp += self.profile_cache.night_boost
             return min(sp, MAX_SAFE_TEMPERATURE)
-        # Earliest brooding_start_date across member cycles (a zone can
-        # span multiple barns → multiple cycles). For now take any member
-        # node's brooding_start_date; legacy 1:1 backfill means it's
-        # deterministic.
-        for n in self.member_nodes.values():
+        # Legacy day-age fallback — look up any zone member's brooding_start_date
+        # (set by HeaterController._refresh_heater_caches from zone member_nodes).
+        # Populated by HeaterController._refresh_heater_caches; falls back to
+        # DEFAULT_SETPOINT_C when no member has a cycle.
+        for n in self._zone_member_nodes:
             if n.brooding_start_date is not None:
                 days = (date.today() - n.brooding_start_date).days + 1
                 return calc_setpoint_for_day_age(days)
@@ -1438,43 +1681,115 @@ class Zone:
         sp = self.current_setpoint()
         if abs(self.pid.setpoint - sp) > 0.01:
             self.pid.setpoint = sp
-            logger.info(f"Zone {self.id}: setpoint → {sp:.2f}°C")
+            logger.info(f"Heater {self.id} ({self.device_code}/ch{self.channel}): setpoint → {sp:.2f}°C")
 
-    # ─── power distribution (max-power weighted) ──────────────
+    # ─── PID compute (mirrors BrooderNode.compute_power) ─────────────
 
-    def distribute_power(self, output_pct: float) -> Dict[int, int]:
-        """Split a PID output (0-100%) across this zone's enabled heaters
-        using max-power weighting.
+    def compute_power(self, current_temp: float) -> int:
+        self.update_pid_setpoint()
+        # v1.4.2 (server bug 2): see BrooderNode.compute_power for the
+        # rationale — always call self.pid(current_temp) first so internal
+        # PID state advances (simple_pid._last_time ticks). The deadband
+        # only gates the PUBLISHED output, not the PID tick itself.
+        raw = self.pid(current_temp)
+        err = self.pid.setpoint - current_temp
+        if abs(err) < DEADBAND_C:
+            return max(0, min(100, self.last_power_pct))
+        # v1.4.1: slew-rate clamp on published output (mirrors BrooderNode).
+        # PID still computes true target; ESP32 only sees what's reachable in
+        # one publish tick (~1%/s). Prevents user-visible 100→0 snaps caused
+        # by integral overshoot on saturation recovery.
+        last = self.last_power_pct if self.last_power_pct is not None else 0
+        delta = raw - last
+        if delta > SLEW_PCT_PER_TICK:
+            out = last + SLEW_PCT_PER_TICK
+        elif delta < -SLEW_PCT_PER_TICK:
+            out = last - SLEW_PCT_PER_TICK
+        else:
+            out = raw
+        return max(0, min(100, int(round(out))))
 
-        Formula: heater_i_pct = output_pct × (w_i / Σw)
-        Then fold rounding remainder onto the heater with the largest
-        max_power_w to keep the total exact.
+    def to_dict(self) -> dict:
+        return {
+            "id":              self.id,
+            "zone_id":         self.zone_id,
+            "device_code":     self.device_code,
+            "channel":         self.channel,
+            "label":           self.label,
+            "max_power_w":     self.max_power_w,
+            "enabled":         self.enabled,
+            "manual_setpoint": self.manual_setpoint,
+            "effective_setpoint": self.current_setpoint(),
+            "fallback_delta_c": self.fallback_delta_c,
+            "last_power_pct":  self.last_power_pct,
+            "last_published_at": (self.last_published_at.isoformat()
+                                  if self.last_published_at else None),
+            "profile_code":    (self.profile_cache.profile_code
+                                  if self.profile_cache else None),
+        }
 
-        Returns {heater_id: pct} for all enabled heaters (skips disabled).
-        Empty dict if no enabled heaters (zone has been deconfigured).
-        """
-        active = [h for h in self.heaters.values() if h.enabled]
-        if not active:
-            return {}
-        total_w = sum(h.max_power_w for h in active)
-        if total_w <= 0:
-            # Pathological — equal split
-            n = len(active)
-            base = int(round(output_pct)) // n
-            rem = int(round(output_pct)) - base * n
-            return {h.id: base + (1 if i < rem else 0)
-                    for i, h in enumerate(active)}
-        result = {}
-        for h in active:
-            share = (h.max_power_w / total_w) * output_pct
-            result[h.id] = max(0, min(100, int(round(share))))
-        # Rounding drift correction — sum may be off by ±N
-        target = int(round(output_pct))
-        diff = target - sum(result.values())
-        if diff != 0 and active:
-            biggest = max(active, key=lambda h: h.max_power_w)
-            result[biggest.id] = max(0, min(100, result[biggest.id] + diff))
-        return result
+
+@dataclass
+class Zone:
+    """A logical thermal-control grouping — N heaters, M sensors.
+
+    Heater-first refactor 2026-09-21: a Zone is NO LONGER a control unit.
+    Each Heater owns its own PID; the Zone just collects members for UI
+    grouping, MQTT fan-out of /setpoint, and zone-temp publishing.
+
+    The PID field, current_setpoint(), distribute_power(), and
+    update_pid_setpoint() are removed. manual_setpoint / fallback_delta_c
+    are retained as LEGACY read-only state — zone-level setpoint changes
+    fan out to per-heater manual_setpoint overrides (see set_zone_setpoint
+    + HeaterController.set_heater_setpoint).
+    """
+    id: int
+    barn_id: Optional[int]
+    name: str
+    manual_setpoint: Optional[float] = None  # LEGACY — read-only mirror
+    fallback_delta_c: float = 0.0             # LEGACY — read-only mirror
+    enabled: bool = True
+    max_total_w: Optional[float] = None
+
+    # Profile cache (Phase 1+2) — mirrored from the first member node with
+    # a cycle_id set. Used by _publish_setpoint_changes to publish the
+    # retained /setpoint payload (single value = average across heaters).
+    # No PID reads this — each Heater has its own profile_cache now.
+    profile_cache: Optional["CachedProfile"]     = None
+    profile_cache_cycle_date: Optional[date]     = None
+    profile_cache_night_flag: Optional[bool]     = None
+
+    # Filled by ZoneController._load_zones()
+    member_device_codes: List[str] = field(default_factory=list, init=False)
+    member_nodes: Dict[str, "BrooderNode"] = field(default_factory=dict, init=False)
+    heaters: Dict[int, Heater] = field(default_factory=dict, init=False)
+
+    # Live overlay (read-only diagnostics for UI)
+    last_zone_temp: Optional[float] = None
+    last_zone_temp_at: Optional[datetime] = None
+    zone_sensors_count: int = 0
+    last_setpoint_sent: Optional[float] = None
+    last_setpoint_sent_at: Optional[datetime] = None
+    mode: str = "unknown"           # normal | failsafe | offline | stale | startup
+
+    # ─── legacy helpers used by ZoneController (still needed) ────
+
+    def current_setpoint(self) -> float:
+        """Legacy cascade — manual → profile → day-age → default. Kept so
+        the /zones/{id} response can echo effective_setpoint. The PID
+        does NOT read this — each Heater has its own cascade."""
+        if self.manual_setpoint is not None:
+            return self.manual_setpoint
+        if self.profile_cache is not None:
+            sp = self.profile_cache.setpoint_target
+            if self.profile_cache_night_flag:
+                sp += self.profile_cache.night_boost
+            return min(sp, MAX_SAFE_TEMPERATURE)
+        for n in self.member_nodes.values():
+            if n.brooding_start_date is not None:
+                days = (date.today() - n.brooding_start_date).days + 1
+                return calc_setpoint_for_day_age(days)
+        return DEFAULT_SETPOINT_C
 
     # ─── online / status ──────────────────────────────────────
 
@@ -1504,8 +1819,6 @@ class Zone:
             "last_zone_temp_at":     (self.last_zone_temp_at.isoformat()
                                        if self.last_zone_temp_at else None),
             "zone_sensors_count":    self.zone_sensors_count,
-            "pid_source":            self.pid_source,
-            "last_power_total_pct":  self.last_power_total_pct,
             "member_count":          len(self.member_device_codes),
             "heater_count":          len([h for h in self.heaters.values()
                                           if h.enabled]),
@@ -1545,6 +1858,18 @@ class ZoneController:
     # ─── lifecycle ─────────────────────────────────────────
 
     async def start(self) -> None:
+        # v1.3.2 fix (2026-09-21): cancel leftover asyncio tasks from a prior
+        # incarnation. Same pattern as BrooderController.start() — without this,
+        # server restarts accumulate zone_temp + periodic loops alongside new ones.
+        for attr in ("_zone_temp_task", "_periodic_task"):
+            t = getattr(self, attr, None)
+            if t and not t.done():
+                t.cancel()
+                try:
+                    await t
+                except asyncio.CancelledError:
+                    pass
+
         if self._running:
             return
         self._running = True
@@ -1596,8 +1921,10 @@ class ZoneController:
                 z.fallback_delta_c = float(r["fallback_delta_c"] or 0.0)
                 z.enabled          = r["enabled"]
                 z.max_total_w      = r["max_total_w"]
-                if z.manual_setpoint != r["manual_setpoint"]:
-                    z.update_pid_setpoint()
+                # NOTE: zone-level manual_setpoint is now LEGACY read-only
+                # state. Per-heater manual_setpoint is the source of truth
+                # for the PID. Fan-out happens in set_zone_setpoint on
+                # operator action; on periodic reload, no cascade needed.
             else:
                 self.zones[zid] = Zone(
                     id=zid,
@@ -1712,10 +2039,31 @@ class ZoneController:
 
         # Sync to in-memory BrooderNode (shared with BrooderController)
         node = zone.member_nodes[device_code]
-        node.last_temp1    = payload.get('temp1')
-        node.last_temp2    = payload.get('temp2')
-        node.last_temp_min = payload.get('temp_min')
-        node.last_hum_avg  = payload.get('hum_avg')
+        # Field-name compat — see BrooderController._on_telemetry. Accept
+        # legacy single-sensor fields (temp/hum/temp_pid) alongside the
+        # newer temp1/temp2/temp_min/hum_avg names.
+        temp1     = payload.get('temp1')
+        temp2     = payload.get('temp2')
+        temp_min  = payload.get('temp_min')
+        hum_avg   = payload.get('hum_avg')
+        if temp1 is None:
+            temp1 = payload.get('temp')
+        if temp2 is None:
+            temp2 = temp1
+        if temp_min is None:
+            tpid = payload.get('temp_pid')
+            if tpid is not None:
+                temp_min = float(tpid)
+            elif temp1 is not None and temp2 is not None:
+                temp_min = min(float(temp1), float(temp2))
+            elif temp1 is not None:
+                temp_min = float(temp1)
+        if hum_avg is None:
+            hum_avg = payload.get('hum')
+        node.last_temp1    = temp1
+        node.last_temp2    = temp2
+        node.last_temp_min = temp_min
+        node.last_hum_avg  = hum_avg
         zt = payload.get('zone_temp')
         if zt is not None and zt != -999.0:
             node.last_zone_temp = float(zt)
@@ -1723,11 +2071,24 @@ class ZoneController:
             node.last_zone_temp = None
         node.pid_source = payload.get('pid_source')
         node.last_telemetry_at = datetime.now(timezone.utc)
-        node.mode = payload.get('mode', node.mode)
-        zone.mode = node.mode  # mirror
+        old_mode = node.mode
+        new_mode = payload.get('mode', node.mode)
+        node.mode = new_mode
+        zone.mode = new_mode  # mirror
+        # Audit — record only when telemetry reports a mode transition.
+        # Sync MQTT handler — schedule coroutine on the captured asyncio loop.
+        if new_mode != old_mode:
+            mqtt_client.schedule_coroutine(
+                _record_mode_change(node, old_mode, new_mode)
+            )
 
         if zone.enabled and node.last_temp_min is not None:
-            asyncio.create_task(self._tick_zone_pid(zone, node))
+            # NOTE: PID tick has moved to HeaterController (per-heater
+            # independent PID). ZoneController._on_telemetry only maintains
+            # the member_nodes cache + zone.mode. HeaterController subscribes
+            # to the same MQTT topics and runs PID for each heater in
+            # heaters_by_device[device_code].
+            pass
 
     def _on_status(self, topic: str, payload) -> None:
         if isinstance(payload, (bytes, bytearray)):
@@ -1746,9 +2107,15 @@ class ZoneController:
         node = zone.member_nodes.get(device_code)
         if node is None:
             return
+        old_mode = node.mode
         new_mode = payload.get('status', node.mode)
         node.mode = new_mode
         zone.mode = new_mode
+        # Audit — record only on actual mode change (sync handler).
+        if new_mode != old_mode:
+            mqtt_client.schedule_coroutine(
+                _record_mode_change(node, old_mode, new_mode)
+            )
 
     def _on_lwt(self, topic: str, payload) -> None:
         device_code = extract_device_code(topic)
@@ -1759,152 +2126,35 @@ class ZoneController:
             return
         node = zone.member_nodes.get(device_code)
         if node is not None:
+            old_mode = node.mode
             node.mode = 'offline'
+            # Audit — record only on actual transition into offline.
+            # Sync MQTT handler — schedule coroutine on the captured loop.
+            if old_mode != 'offline':
+                mqtt_client.schedule_coroutine(
+                    _record_mode_change(node, old_mode, 'offline', note="LWT")
+                )
         # Zone mode becomes offline only if ALL members offline
         if all((n.mode in ('offline', 'unknown') or n.last_telemetry_at is None)
                for n in zone.member_nodes.values()):
-            zone.mode = 'offline'
-
-    # ─── Zone-level PID tick + telemetry persistence ───────
-
-    async def _tick_zone_pid(self, zone: Zone, source_node: BrooderNode) -> None:
-        """Compute new power, distribute across heaters, publish per-ESP
-        MQTT commands, persist telemetry.
-
-        Same Tier-1/Tier-2 logic as BrooderController._tick_pid but
-        keyed on the zone, not a single node.
-        """
-        try:
-            now = datetime.now(timezone.utc)
-
-            # Tier 1: zone-weighted-avg when fresh (≤ ZONE_TEMP_STALE_S old)
-            zone_age_s = None
-            if zone.last_zone_temp is not None and zone.last_zone_temp_at is not None:
-                zone_age_s = (now - zone.last_zone_temp_at).total_seconds()
-            zone_fresh = (zone_age_s is not None
-                          and zone_age_s <= ZONE_TEMP_STALE_S)
-
-            if zone_fresh and zone.last_zone_temp is not None:
-                temp = zone.last_zone_temp
-                pid_source = "zone"
-            else:
-                # Tier 2: local SHT40 of ANY member node, adjusted by zone-level
-                # fallback_delta_c. Pick the freshest reading.
-                freshest: Optional[BrooderNode] = None
-                freshest_age: Optional[float] = None
-                for n in zone.member_nodes.values():
-                    if n.last_temp_min is None or n.last_telemetry_at is None:
-                        continue
-                    age = (now - n.last_telemetry_at).total_seconds()
-                    if freshest_age is None or age < freshest_age:
-                        freshest = n
-                        freshest_age = age
-                if freshest is None or freshest_age is None or freshest_age > ZONE_TEMP_STALE_S:
-                    return
-                temp = freshest.last_temp_min - zone.fallback_delta_c
-                pid_source = "local+delta"
-
-            # Skip when input hasn't changed AND recent enough — the 4s window
-            # also acts as a server-alive heartbeat (firmware failsafe after 5s).
-            # Note: this is the ZONE equivalent of BrooderController._tick_pid's
-            # skip gate, which uses PID_HEARTBEAT_S (=4). Keeping both in sync
-            # so NORMAL-mode ESP32 doesn't fall into failsafe just because the
-            # zone reference sensor hasn't ticked (sensors are still updating).
-            if (zone.last_pid_input == temp
-                    and zone.last_pid_input_at is not None
-                    and (now - zone.last_pid_input_at).total_seconds() < PID_HEARTBEAT_S):
-                return
-
-            zone.update_pid_setpoint()
-            err = zone.pid.setpoint - temp
-            if abs(err) < DEADBAND_C:
-                # Hold last output (PID integral still accumulates)
-                out_pct = zone.last_power_total_pct
-            else:
-                out_raw = zone.pid(temp)
-                out_pct = max(0, min(100, int(round(out_raw))))
-
-            zone.last_pid_input = temp
-            zone.last_pid_input_at = now
-            zone.pid_source = pid_source
-            zone.last_power_total_pct = out_pct
-            sp = zone.pid.setpoint
-
-            # Distribute across heaters, group by ESP
-            distribution = zone.distribute_power(out_pct)
-            per_esp: Dict[str, Dict[str, int]] = {}
-            for hid, pct in distribution.items():
-                h = zone.heaters.get(hid)
-                if h is None:
-                    continue
-                per_esp.setdefault(h.device_code, {})[f"ch{h.channel}"] = pct
-
-            # Publish per-ESP (firmware v1.1.0 prefers ch1/ch2; v1.0.x falls
-            # back to single `power` field which we also include for safety).
-            for code, channels in per_esp.items():
-                payload = {
-                    **channels,
-                    "power":    int((sum(channels.values()) / max(len(channels), 1))),
-                    "setpoint": round(sp, 2),
-                    "ts":       now.isoformat(),
-                }
-                topic = f"cfarm/brooder-{code}/power"
-                mqtt_client.publish(topic, payload, qos=1)
-
-                # Update heater cache
+            if zone.mode != 'offline':
+                # Record one audit row per heater in the zone so the offline
+                # transition is visible per heater (not just per zone).
+                old_zone_mode = zone.mode
+                zone.mode = 'offline'
+                # Compute a representative setpoint for the audit row —
+                # average across the zone's heaters, fall back to current_setpoint.
+                setpoint_repr = zone.current_setpoint()
                 for h in zone.heaters.values():
-                    if h.device_code != code:
-                        continue
-                    key = f"ch{h.channel}"
-                    if key in channels:
-                        h.last_power_pct = channels[key]
-                        h.last_published_at = now
-
-                # Persist to hypertable (same as BrooderController)
-                await self._persist_zone_telemetry(code, temp, channels, sp, zone)
-
-        except Exception as e:
-            logger.error(f"Zone {zone.id} PID tick error: {e}")
-            zone.mode = "error"
-
-    async def _persist_zone_telemetry(self, code: str, temp: float,
-                                      channels: Dict[str, int], sp: float,
-                                      zone: Zone) -> None:
-        """Mirror BrooderController tick persistence but per-zone metadata."""
-        try:
-            avg_pct = (sum(channels.values()) / max(len(channels), 1)) if channels else 0.0
-            metadata = json.dumps({
-                "setpoint":  sp,
-                "zone_id":   zone.id,
-                "mode":      zone.mode,
-                "channels":  channels,
-                "zone_temp": zone.last_zone_temp,
-            })
-            async with db.transaction() as conn:
-                await conn.execute(
-                    """
-                    INSERT INTO sensor_data
-                        (device_id, sensor_type_id, value, recorded_at, metadata)
-                    SELECT d.id, st.id, $2, NOW(), $3::jsonb
-                    FROM devices d, sensor_types st
-                    WHERE d.device_code = $1 AND st.code = $4
-                    LIMIT 1
-                    """,
-                    code, temp, metadata, SENSOR_TYPE_CODE,
-                )
-                await conn.execute(
-                    """
-                    INSERT INTO sensor_data
-                        (device_id, sensor_type_id, value, recorded_at, metadata)
-                    SELECT d.id, st.id, $2, NOW(), $3::jsonb
-                    FROM devices d, sensor_types st
-                    WHERE d.device_code = $1 AND st.code = $4
-                    LIMIT 1
-                    """,
-                    code, float(avg_pct), metadata, SENSOR_TYPE_POWER_CODE,
-                )
-        except Exception as e:
-            logger.debug(f"Zone {zone.id}: persist telemetry skipped: {e}")
+                    mqtt_client.schedule_coroutine(_record_power_change(
+                        zone_id=zone.id, heater_id=h.id,
+                        device_code=h.device_code, channel=h.channel,
+                        power_pct=h.last_power_pct or 0,
+                        setpoint_c=setpoint_repr,
+                        pid_input_c=None,
+                        source='mode_change',
+                        note=f"zone {old_zone_mode}→offline (all members offline)",
+                    ))
 
     # ─── zone_temp publishing (one per zone) ───────────────
 
@@ -1920,7 +2170,17 @@ class ZoneController:
 
     async def _publish_zone_temps(self) -> None:
         """Compute weighted-avg of each zone's attached sensors, publish to
-        cfarm/brooder-{code}/zone_temp for EVERY member ESP."""
+        cfarm/brooder-{code}/zone_temp for EVERY member ESP.
+
+        With the heater-first PID refactor (2026-09-21), sensors may be:
+          - heater-specific (heater_id=<one>)  → feeds that heater's PID
+          - shared zone-level (is_shared=TRUE)  → feeds ALL heaters in zone
+          - legacy zone-pool (heater_id=NULL AND is_shared=FALSE) → unused
+
+        Zone-temp MQTT publish keeps its original semantics: only zone-level
+        sensors (heater_id IS NULL) feed the published average. This avoids
+        double-counting when shared sensors are also bound per-heater.
+        """
         now = datetime.now(timezone.utc)
         for z in self.zones.values():
             if not z.enabled:
@@ -1931,6 +2191,7 @@ class ZoneController:
                     SELECT
                         bzs.sensor_device_code,
                         bzs.weight,
+                        bzs.sub_sensor,
                         sl.value      AS temp,
                         sl.time       AS last_seen
                     FROM brooder_zone_sensors bzs
@@ -1939,7 +2200,8 @@ class ZoneController:
                     LEFT JOIN sensor_latest sl
                          ON sl.device_id = d.id
                         AND sl.sensor_type = $2
-                    WHERE bzs.zone_id = $1
+                        AND sl.sub_sensor  = bzs.sub_sensor
+                    WHERE bzs.zone_id = $1 AND bzs.heater_id IS NULL
                     ORDER BY bzs.id
                     """,
                     z.id, ZONE_TEMP_SENSOR_TYPE,
@@ -2292,8 +2554,11 @@ class ZoneController:
         if z is None:
             raise ValueError(f"Unknown zone: {zone_id}")
         z.manual_setpoint = setpoint
-        z.update_pid_setpoint()
-        effective = z.pid.setpoint
+        # Heater-first refactor: zone-level manual_setpoint fans out to per-
+        # heater manual_setpoint overrides. We persist both rows so the zone
+        # column stays accurate for legacy endpoints, but the per-heater
+        # override is the source of truth for the PID.
+        effective = z.current_setpoint()
 
         await db.execute(
             "UPDATE brooder_zones SET manual_setpoint = $1, "
@@ -2301,7 +2566,23 @@ class ZoneController:
             setpoint, zone_id,
         )
 
-        # Publish retained setpoint to all member ESPs
+        # Fan-out: set manual_setpoint on EVERY heater in the zone.
+        # HeaterController picks up the change on the next periodic reload.
+        for h in z.heaters.values():
+            await db.execute(
+                "UPDATE brooder_heaters SET manual_setpoint = $1, "
+                "updated_at = NOW() WHERE id = $2",
+                setpoint, h.id,
+            )
+            # Live update in-memory so the next PID tick sees the override
+            # without waiting for the 60s periodic reload.
+            if h.manual_setpoint != setpoint:
+                h.manual_setpoint = setpoint
+                h.update_pid_setpoint()
+
+        # Publish retained setpoint to all member ESPs.
+        # Single value = zone effective setpoint (firmware only knows one
+        # retained setpoint; per-channel PIDs are server-side only).
         payload = build_setpoint_payload(
             effective,
             manual_override=setpoint is not None,
@@ -2328,14 +2609,36 @@ class ZoneController:
         except Exception as e:
             logger.debug(f"Zone {zone_id}: audit write failed: {e}")
 
+        # Per-heater audit + power-history. One row per heater so the
+        # heater-first refactor is visible in the audit trail.
+        for h in z.heaters.values():
+            await _record_power_change(
+                zone_id=zone_id, heater_id=h.id,
+                device_code=h.device_code, channel=h.channel,
+                power_pct=h.last_power_pct or 0,
+                setpoint_c=setpoint,
+                pid_input_c=None,
+                source='heater_setpoint_change',
+                note=f"zone override → heater {h.id} (ch{h.channel}) "
+                     f"manual_setpoint={setpoint if setpoint is not None else 'auto'}",
+            )
+
         logger.info(f"Zone {zone_id}: manual override → "
                     f"{setpoint if setpoint is not None else 'auto'} "
-                    f"(effective {effective:.2f}°C)")
+                    f"(effective {effective:.2f}°C, fanned out to "
+                    f"{len(z.heaters)} heater(s))")
         return z.to_dict()
 
     async def set_zone_fallback_delta(self, zone_id: int, delta: float) -> dict:
         """Update Tier-2 fallback delta (admin-tuned offset for the local
-        SHT40 path). Re-publishes setpoint retained."""
+        SHT40 path). Re-publishes setpoint retained.
+
+        Heater-first refactor: zone-level fallback_delta_c is now LEGACY
+        read-only. New per-heater fallback_delta_c is the source of truth.
+        This setter still updates the zone row (for legacy dashboards) AND
+        fans the delta out to all heaters so each heater's Tier-2 fallback
+        uses the new offset.
+        """
         z = self.zones.get(zone_id)
         if z is None:
             raise ValueError(f"Unknown zone: {zone_id}")
@@ -2345,9 +2648,18 @@ class ZoneController:
             "updated_at = NOW() WHERE id = $2",
             float(delta), zone_id,
         )
-        # Republish
+        # Fan-out: write the delta to all heaters in the zone.
+        for h in z.heaters.values():
+            await db.execute(
+                "UPDATE brooder_heaters SET fallback_delta_c = $1, "
+                "updated_at = NOW() WHERE id = $2",
+                float(delta), h.id,
+            )
+            h.fallback_delta_c = float(delta)
+        # Republish retained /setpoint (single value = zone effective setpoint).
+        effective = z.current_setpoint()
         payload = build_setpoint_payload(
-            z.pid.setpoint,
+            effective,
             manual_override=z.manual_setpoint is not None,
             fallback_delta_c=z.fallback_delta_c,
         )
@@ -2397,3 +2709,845 @@ class ZoneController:
 # ============================================================
 
 zone_controller = ZoneController()
+
+
+# ============================================================
+# HEATER CONTROLLER — singleton (Heater-first refactor 2026-09-21)
+# ============================================================
+#
+# Each Heater runs its own PID with its own setpoint. The HeaterController
+# owns the per-heater control loop and replaces the zone-level PID that
+# ZoneController used to run.
+#
+# Architecture:
+#   * Loads all heaters from brooder_heaters at start().
+#   * Subscribes to cfarm/+/telemetry (filter cfarm/brooder-*) like the
+#     other controllers. Paho allows multiple subscribers on the same topic.
+#   * On each telemetry event for a device with N heaters:
+#       - compute weighted-avg of sensors assigned to THIS heater (Tier 1)
+#       - or freshest member SHT40 minus this heater's fallback_delta_c (Tier 2)
+#       - run Heater.compute_power()
+#   * When ALL heaters for a device have ticked, build per-ESP payload
+#     {ch1: pct1, ch2: pct2, ...} and publish cfarm/brooder-{code}/power.
+#   * The retained /setpoint topic stays single-value (zone-avg) so the
+#     firmware v1.0.x NVS-cached setpoint keeps working.
+# ============================================================
+
+
+class HeaterController:
+    """Per-heater PID controller. Heater-first refactor 2026-09-21.
+
+    One PID per Heater, weighted-avg Tier-1 input from sensors with
+    heater_id=X, freshest-member Tier-2 fallback for zones with no
+    sensor assignment. Publishes per-ESP power payload; retained
+    setpoint is published by ZoneController (single value for firmware
+    compat).
+    """
+
+    def __init__(self):
+        self.heaters: Dict[int, Heater] = {}
+        # For per-ESP power-payload grouping when multiple heaters live
+        # on the same device (channel 1 + channel 2).
+        self.heaters_by_device: Dict[str, List[Heater]] = {}
+        # Mirror of ZoneController member_nodes (for Tier-2 fallback).
+        # Populated by _refresh_member_nodes() called from _load_heaters
+        # and periodically on reload.
+        self._member_nodes_by_zone: Dict[int, Dict[str, "BrooderNode"]] = {}
+        # Zone-level profile cache mirror (so per-heater setpoints fall
+        # back to the zone's resolved profile when manual_setpoint is None).
+        self._zone_profile_cache: Dict[int, "CachedProfile"] = {}
+        self._zone_profile_cache_date: Dict[int, date] = {}
+        self._zone_profile_cache_night: Dict[int, bool] = {}
+        self._running = False
+        self._periodic_task: Optional[asyncio.Task] = None
+        # Per-heater profile cache dirty flag — flipped when a profile test
+        # assignment is applied/cleared or when cycle_id changes.
+        self._profile_cache_dirty: bool = False
+
+    # ─── lifecycle ─────────────────────────────────────────
+
+    async def start(self) -> None:
+        # Cancel leftover tasks from a prior incarnation (same pattern
+        # as BrooderController / ZoneController).
+        for attr in ("_periodic_task", "_keepalive_task"):
+            t = getattr(self, attr, None)
+            if t and not t.done():
+                t.cancel()
+                try:
+                    await t
+                except asyncio.CancelledError:
+                    pass
+
+        if self._running:
+            return
+        self._running = True
+        try:
+            await self._load_heaters()
+            await self._refresh_member_nodes()
+            # v1.4.2 (server bug 5): seed PID setpoints ONLY after
+            # _refresh_member_nodes populated _zone_member_nodes. Previously
+            # update_pid_setpoint() was called inside _load_heaters while
+            # _zone_member_nodes was still empty — fell through to
+            # DEFAULT_SETPOINT_C=33.5 even for 25-day-old chicks (who need 25°C).
+            # First-boot-only race window of ~10ms, but the wrong setpoint
+            # would persist until the next telemetry event triggered a PID
+            # call. Defer the seed here so the very first PID tick uses the
+            # right profile_cache / brooding_start_date fallback.
+            for h in self.heaters.values():
+                h.update_pid_setpoint()
+        except Exception as e:
+            logger.error(f"HeaterController: initial load failed: {e}")
+        self._subscribe_mqtt()
+        self._periodic_task = asyncio.create_task(self._periodic_loop())
+        # v1.4.2 (server bug 3): mirror BrooderController's keepalive loop
+        # for HeaterController — devices with Heater rows registered have
+        # ZERO keepalive coverage today. Telemetry cadence is 5s but PID
+        # publishes also gate on skip window (PID_HEARTBEAT_S=4), so a
+        # ~10s stall in either pipeline would let FAILSAFE_TIMEOUT_MS=8000
+        # on firmware expire and the heater drop into FAILSAFE for ~15s
+        # before the next publish resumes control. The keepalive loop is
+        # the same idea as BrooderController's: every 4s, publish the last
+        # commanded power value (no PID recompute, no DB hit) so the
+        # firmware sees fresh /power packets and stays in MODE_NORMAL.
+        self._keepalive_task = asyncio.create_task(self._keepalive_loop())
+        logger.info(
+            f"HeaterController started: {len(self.heaters)} heaters loaded "
+            f"across {len(self.heaters_by_device)} device(s)"
+        )
+
+    async def stop(self) -> None:
+        self._running = False
+        for attr in ("_periodic_task",):
+            t = getattr(self, attr, None)
+            if t and not t.done():
+                t.cancel()
+                try:
+                    await t
+                except asyncio.CancelledError:
+                    pass
+        logger.info("HeaterController stopped")
+
+    # ─── DB loading ────────────────────────────────────────
+
+    async def _load_heaters(self) -> None:
+        """Load all enabled heaters from DB + rebuild heaters_by_device."""
+        try:
+            rows = await db.fetch(
+                """
+                SELECT id, zone_id, device_code, channel, label, max_power_w,
+                       enabled, manual_setpoint, fallback_delta_c
+                FROM brooder_heaters
+                WHERE is_active = TRUE
+                ORDER BY zone_id, device_code, channel
+                """
+            )
+        except Exception as e:
+            logger.error(f"HeaterController: load heaters failed: {e}")
+            return
+
+        # Preserve last_power_pct / last_published_at if heater already loaded.
+        loaded_ids = set()
+        for r in rows:
+            hid = r["id"]
+            loaded_ids.add(hid)
+            old = self.heaters.get(hid)
+            new_pid_setpoint = old.pid.setpoint if (old and old.pid) else None
+            self.heaters[hid] = Heater(
+                id=hid,
+                zone_id=r["zone_id"],
+                device_code=r["device_code"],
+                channel=r["channel"],
+                label=r["label"],
+                max_power_w=float(r["max_power_w"] or 1500.0),
+                enabled=r["enabled"],
+                manual_setpoint=r["manual_setpoint"],
+                fallback_delta_c=float(r["fallback_delta_c"] or 0.0),
+                last_power_pct=old.last_power_pct if old else 0,
+                last_published_at=old.last_published_at if old else None,
+            )
+            # Restore last_pid_input cache (skip-gate state)
+            if old:
+                self.heaters[hid].last_pid_input = old.last_pid_input
+                self.heaters[hid].last_pid_input_at = old.last_pid_input_at
+                self.heaters[hid].last_pid_input_lpf = old.last_pid_input_lpf
+                self.heaters[hid].last_pid_input_lpf_init = old.last_pid_input_lpf_init
+                self.heaters[hid].last_power_pct_recorded = old.last_power_pct_recorded
+                self.heaters[hid].profile_cache = old.profile_cache
+                self.heaters[hid].profile_cache_cycle_date = old.profile_cache_cycle_date
+                self.heaters[hid].profile_cache_night_flag = old.profile_cache_night_flag
+                self.heaters[hid]._zone_member_nodes = old._zone_member_nodes
+            # v1.4.2 (server bug 5): update_pid_setpoint() moved to start()
+            # AFTER _refresh_member_nodes populates _zone_member_nodes.
+            # Previously called here while field was still empty → fall
+            # through to DEFAULT_SETPOINT_C=33.5 ignoring brooding_start_date.
+            # If we had a PID setpoint cached from before and current matches
+            # within 0.05°C, keep it (avoids a one-shot bump on reload).
+            if (new_pid_setpoint is not None
+                    and abs(new_pid_setpoint - 0) > 0.01):  # only if real cached
+                self.heaters[hid].pid.setpoint = new_pid_setpoint
+
+        # Drop heaters that no longer exist / were soft-deleted
+        for hid in list(self.heaters.keys()):
+            if hid not in loaded_ids:
+                del self.heaters[hid]
+
+        # Rebuild heaters_by_device
+        self.heaters_by_device = {}
+        for h in self.heaters.values():
+            self.heaters_by_device.setdefault(h.device_code, []).append(h)
+
+    async def _refresh_member_nodes(self) -> None:
+        """Mirror ZoneController's member_nodes per zone. Used by Heater
+        controllers to compute Tier-2 fallback (freshest member SHT40)
+        and brooding_start_date fallback for setpoint resolution.
+
+        Cheaper to read directly from ZoneController (same process) than
+        to issue a DB query.
+        """
+        self._member_nodes_by_zone = {}
+        for zid, z in zone_controller.zones.items():
+            self._member_nodes_by_zone[zid] = dict(z.member_nodes)
+        # Update each heater's _zone_member_nodes reference
+        for h in self.heaters.values():
+            h._zone_member_nodes = list(
+                self._member_nodes_by_zone.get(h.zone_id, {}).values()
+            )
+
+    # ─── MQTT subscription ─────────────────────────────────
+    #
+    # Mirrors BrooderController and ZoneController — paho-mqtt allows
+    # multiple subscribers on the same topic. We filter for the
+    # cfarm/brooder- prefix and skip everything else.
+
+    def _subscribe_mqtt(self) -> None:
+        mqtt_client.subscribe("cfarm/+/telemetry", self._on_telemetry)
+        mqtt_client.subscribe("cfarm/+/status",    self._on_status)
+        mqtt_client.subscribe("cfarm/+/lwt",       self._on_lwt)
+
+    def _on_telemetry(self, topic: str, payload) -> None:
+        if isinstance(payload, (bytes, bytearray)):
+            try:
+                payload = json.loads(payload.decode('utf-8'))
+            except Exception as e:
+                logger.warning(f"Heater telemetry JSON decode error on {topic}: {e}")
+                return
+        if not isinstance(payload, dict):
+            return
+
+        device_code = extract_device_code(topic)
+        if not device_code:
+            return
+
+        heaters = self.heaters_by_device.get(device_code)
+        if not heaters:
+            return  # Not in our heater registry — ZoneController/BrooderController
+                    # may handle this device via legacy paths
+
+        # Schedule the per-heater tick on the main event loop (this
+        # handler runs on paho-mqtt's IO thread).
+        mqtt_client.schedule_coroutine(self._tick_device_heaters(device_code, payload))
+
+    def _on_status(self, topic: str, payload) -> None:
+        # Heater status mirror is delegated to ZoneController._on_status
+        # (which already records mode transitions in brooder_power_history).
+        # HeaterController only needs per-heater power accounting, not
+        # status bookkeeping.
+        pass
+
+    def _on_lwt(self, topic: str, payload) -> None:
+        device_code = extract_device_code(topic)
+        if not device_code:
+            return
+        # Mark all heaters for this device as offline (record audit row).
+        for h in self.heaters_by_device.get(device_code, []):
+            mqtt_client.schedule_coroutine(_record_power_change(
+                zone_id=h.zone_id, heater_id=h.id,
+                device_code=h.device_code, channel=h.channel,
+                power_pct=h.last_power_pct or 0,
+                setpoint_c=h.current_setpoint(),
+                pid_input_c=None,
+                source='heater_mode_change',
+                note=f"LWT (device offline)",
+            ))
+
+    # ─── per-heater PID tick ────────────────────────────────
+
+    async def _tick_device_heaters(self, device_code: str, payload: dict) -> None:
+        """Run PID for every heater on `device_code` and publish a single
+        per-ESP MQTT payload at the end.
+
+        The Tier-1/Tier-2 logic mirrors BrooderController._tick_pid /
+        ZoneController._tick_zone_pid but operates per-heater instead of
+        per-zone.
+        """
+        try:
+            now = datetime.now(timezone.utc)
+            temp1 = payload.get('temp1')
+            temp2 = payload.get('temp2')
+            temp_min = payload.get('temp_min')
+            if temp1 is None:
+                temp1 = payload.get('temp')
+            if temp2 is None:
+                temp2 = temp1
+            if temp_min is None:
+                tpid = payload.get('temp_pid')
+                if tpid is not None:
+                    temp_min = float(tpid)
+                elif temp1 is not None and temp2 is not None:
+                    temp_min = min(float(temp1), float(temp2))
+                elif temp1 is not None:
+                    temp_min = float(temp1)
+            if temp_min is None:
+                return
+
+            # Zone this device belongs to (for Tier-2 fallback + profile cache)
+            zone_heaters = self.heaters_by_device.get(device_code) or []
+            zone_id = zone_heaters[0].zone_id if zone_heaters else None
+
+            per_heater_output: Dict[int, int] = {}
+            per_heater_input: Dict[int, float] = {}
+            per_heater_sp: Dict[int, float] = {}
+
+            for h in zone_heaters:
+                if not h.enabled:
+                    continue
+                # Tier-1: weighted-avg of sensors assigned to this heater.
+                # Tier-2: freshest member SHT40 minus this heater's
+                # fallback_delta_c.
+                temp, pid_source = await self._compute_pid_input(
+                    h, temp_min, now,
+                )
+                if temp is None:
+                    continue
+
+                # Skip-gate: don't re-run PID when input hasn't changed.
+                if (h.last_pid_input == temp
+                        and h.last_pid_input_at is not None
+                        and (now - h.last_pid_input_at).total_seconds() < PID_HEARTBEAT_S):
+                    per_heater_output[h.id] = h.last_power_pct
+                    per_heater_input[h.id] = temp
+                    per_heater_sp[h.id] = h.pid.setpoint
+                    continue
+
+                out_pct = h.compute_power(temp)
+                h.last_pid_input = temp
+                h.last_pid_input_at = now
+                h.last_power_pct = out_pct
+                h.last_published_at = now
+                per_heater_output[h.id] = out_pct
+                per_heater_input[h.id] = temp
+                per_heater_sp[h.id] = h.pid.setpoint
+
+                # Audit — only when power % actually changes
+                if out_pct != h.last_power_pct_recorded:
+                    h.last_power_pct_recorded = out_pct
+                    await _record_power_change(
+                        zone_id=h.zone_id, heater_id=h.id,
+                        device_code=h.device_code, channel=h.channel,
+                        power_pct=out_pct,
+                        setpoint_c=h.pid.setpoint,
+                        pid_input_c=temp,
+                        source='pid',
+                    )
+
+            if not per_heater_output:
+                return
+
+            # Build per-ESP payload {ch1: pct1, ch2: pct2, ...}
+            channels: Dict[str, int] = {}
+            for hid, pct in per_heater_output.items():
+                h = self.heaters.get(hid)
+                if h is None:
+                    continue
+                channels[f"ch{h.channel}"] = pct
+            avg = int(sum(channels.values()) / max(len(channels), 1))
+            # v1.4.2 (server bug 6): firmware uses the payload's setpoint as
+            # the retained NVS reference for FAILSAFE_SETPOINT_C fallback
+            # when server connectivity drops. If we AVERAGE setpoints and one
+            # heater is on manual_setpoint=24°C while the other runs the
+            # profile at 31°C, firmware sees 27.5°C and converges there →
+            # wrong profile for the zone's *primary* heater (the one
+            # following brooding_start_date). Use MAX instead so the
+            # warmest required setpoint governs the firmware reference,
+            # and the per-channel server-side PID can still override below.
+            avg_sp = (max(per_heater_sp.values())
+                      if per_heater_sp else DEFAULT_SETPOINT_C)
+            payload_out = {
+                **channels,
+                "power":    avg,
+                "setpoint": round(avg_sp, 2),
+                "ts":       now.isoformat(),
+            }
+            topic = f"cfarm/brooder-{device_code}/power"
+            mqtt_client.publish(topic, payload_out, qos=1)
+
+            # Persist to hypertable (same as BrooderController._tick_pid)
+            try:
+                device_id = await db.fetchval(
+                    "SELECT id FROM devices WHERE device_code = $1",
+                    device_code,
+                )
+                if device_id is None:
+                    raise RuntimeError(f"device not found: {device_code}")
+                # Use first heater's input as the temp sample
+                first_input = next(iter(per_heater_input.values()), None)
+                async with db.transaction() as conn:
+                    if first_input is not None:
+                        await conn.execute(
+                            """
+                            INSERT INTO sensor_data
+                                (time, device_id, sensor_type, value, unit)
+                            VALUES (NOW(), $1, $2, $3, NULL)
+                            """,
+                            device_id, SENSOR_TYPE_CODE, float(first_input),
+                        )
+                    await conn.execute(
+                        """
+                        INSERT INTO sensor_data
+                            (time, device_id, sensor_type, value, unit)
+                        VALUES (NOW(), $1, $2, $3, '%')
+                        """,
+                        device_id, SENSOR_TYPE_POWER_CODE, float(avg),
+                    )
+                    # Snapshot per-heater latest power (one UPSERT per heater).
+                    for hid, pct in per_heater_output.items():
+                        h = self.heaters.get(hid)
+                        if h is None:
+                            continue
+                        await conn.execute(
+                            """
+                            INSERT INTO brooder_heater_latest_power
+                                (heater_id, last_power_pct, last_setpoint,
+                                 last_published_at, source)
+                            VALUES ($1, $2, $3, NOW(), 'server')
+                            ON CONFLICT (heater_id) DO UPDATE SET
+                                last_power_pct    = EXCLUDED.last_power_pct,
+                                last_setpoint     = EXCLUDED.last_setpoint,
+                                last_published_at = EXCLUDED.last_published_at,
+                                source            = EXCLUDED.source
+                            """,
+                            hid, int(pct), float(per_heater_sp[hid]),
+                        )
+            except Exception as e:
+                logger.warning(f"Heater {device_code}: persist skipped: {e}")
+
+        except Exception as e:
+            logger.error(f"HeaterController tick error for {device_code}: {e}")
+
+    async def _compute_pid_input(self, h: Heater, source_temp_min: float,
+                                 now: datetime) -> Tuple[Optional[float], str]:
+        """Compute the PID input for heater `h`.
+
+        Returns (temp, source_label):
+          - Tier 1: weighted-avg of sensors EITHER bound to this heater
+                    (heater_id = h.id) OR shared zone-level rows
+                    (is_shared = TRUE, heater_id IS NULL). The shared
+                    branch restores the docstring semantics at
+                    src/server/routes/brooder.py:953-957 — a zone-level
+                    sensor with is_shared=TRUE feeds every heater in the
+                    zone without N-row duplication. When fresh → use directly.
+          - Tier 2: freshest member node's SHT40 (last_temp_min) minus
+                    h.fallback_delta_c. Each heater has its own delta
+                    so ch1 and ch2 can be calibrated independently.
+
+        Returns (None, ...) when no usable input is available.
+        """
+        # Tier 1: heaters with at least 1 sensor assigned OR shared zone-level
+        # sensors (is_shared=TRUE). Shared rows (heater_id=NULL) feed ALL
+        # heaters in the zone via this query — see scripts/083_zone_shared_sensor_flag.sql.
+        try:
+            sensor_rows = await db.fetch(
+                """
+                SELECT
+                    bzs.sensor_device_code,
+                    bzs.weight,
+                    bzs.sub_sensor,
+                    sl.value      AS temp,
+                    sl.time       AS last_seen,
+                    bzs.is_shared
+                FROM brooder_zone_sensors bzs
+                LEFT JOIN devices d
+                       ON d.device_code = bzs.sensor_device_code
+                LEFT JOIN sensor_latest sl
+                       ON sl.device_id = d.id
+                      AND sl.sensor_type = $3
+                      -- v1.4.2 (server bug 7): PostgreSQL `=` returns NULL
+                      -- when either side is NULL → NULL is treated as FALSE
+                      -- in WHERE/ON, so a bzs row with sub_sensor IS NULL
+                      -- (zone-level shared sensor) never matched a sensor_latest
+                      -- row whose sub_sensor is NULL. IS NOT DISTINCT FROM
+                      -- treats NULL as a comparable value so the JOIN actually
+                      -- returns rows for shared null-tagged sensors.
+                      AND sl.sub_sensor  IS NOT DISTINCT FROM bzs.sub_sensor
+                WHERE bzs.zone_id = $1 AND (
+                    bzs.heater_id = $2
+                    OR (bzs.is_shared = TRUE AND bzs.heater_id IS NULL)
+                )
+                ORDER BY bzs.id
+                """,
+                h.zone_id, h.id, ZONE_TEMP_SENSOR_TYPE,
+            )
+        except Exception as e:
+            logger.debug(f"Heater {h.id}: sensor query failed: {e}")
+            sensor_rows = []
+
+        if sensor_rows:
+            payload = [dict(r) for r in sensor_rows]
+            value, fresh_count = blend_zone_temp(payload, now=now)
+            if value is not None:
+                # v1.3.0: low-pass filter (α=0.3) — mirrors BrooderNode
+                # zone_lpf logic. Tier-1 sensor payloads arrive in 20s steps;
+                # α=0.3 with 5s tick → τ≈2.5s smooths the discrete jumps
+                # before the D-term sees them.
+                if not h.last_pid_input_lpf_init:
+                    h.last_pid_input_lpf = value
+                    h.last_pid_input_lpf_init = True
+                else:
+                    h.last_pid_input_lpf = 0.3 * value + 0.7 * h.last_pid_input_lpf
+                return h.last_pid_input_lpf, "heater-zone"
+
+        # Tier 2: freshest member SHT40 minus this heater's fallback_delta_c.
+        # Use ZoneController's member_nodes (same process, no extra DB hit).
+        zone = zone_controller.zones.get(h.zone_id)
+        if zone is not None:
+            freshest: Optional[BrooderNode] = None
+            freshest_age: Optional[float] = None
+            for n in zone.member_nodes.values():
+                if n.last_temp_min is None or n.last_telemetry_at is None:
+                    continue
+                age = (now - n.last_telemetry_at).total_seconds()
+                if freshest_age is None or age < freshest_age:
+                    freshest = n
+                    freshest_age = age
+            if freshest is not None and freshest_age is not None \
+                    and freshest_age <= ZONE_TEMP_STALE_S:
+                # v1.4.2 (server bug 4): Tier-2 sensor glitch filter — mirror
+                # of the Tier-1 logic BrooderController._tick_pid applies.
+                # SHT40 I2C hang returns -40°C (or 0°C on some variants) and
+                # would otherwise drive the heater to 100% for as long as
+                # the stale reading persists (≤ ZONE_TEMP_STALE_S = 180s).
+                raw = freshest.last_temp_min
+                if raw < 5.0 or raw > 50.0:
+                    logger.debug(
+                        f"Heater {h.id} Tier-2: rejected member "
+                        f"{freshest.device_code} reading {raw:.1f}°C "
+                        f"(glitch filter)"
+                    )
+                    return None, "local+delta-glitch"
+                # Reset LPF state on tier transition (different inputs).
+                h.last_pid_input_lpf_init = False
+                return raw - h.fallback_delta_c, "local+delta"
+
+        return None, "no-input"
+
+    # ─── keepalive watchdog (v1.4.2 / server bug 3) ─────────
+    #
+    # Mirror BrooderController's keepalive loop for devices that have
+    # Heater rows. Same 4s cadence (matches BrooderController's
+    # KEEPALIVE_INTERVAL_S), same no-PID-recompute semantics — just
+    # publish the LAST commanded per-channel power + setpoint so the
+    # firmware sees fresh /power packets and stays in MODE_NORMAL.
+    # Without this, HeaterController devices had ZERO keepalive: their
+    # /power publishes were gated on telemetry arrival + the
+    # PID_HEARTBEAT_S=4 skip window, so any stall in either would let
+    # firmware's FAILSAFE_TIMEOUT_MS expire.
+
+    KEEPALIVE_INTERVAL_S = 4
+
+    async def _keepalive_loop(self) -> None:
+        while self._running:
+            try:
+                await asyncio.sleep(self.KEEPALIVE_INTERVAL_S)
+                await self._publish_keepalive_power()
+            except asyncio.CancelledError:
+                break
+            except Exception as e:
+                logger.error(
+                    f"Heater keepalive loop error: {e}", exc_info=True
+                )
+                # Small backoff so a tight exception loop doesn't burn CPU.
+                await asyncio.sleep(1)
+
+    async def _publish_keepalive_power(self) -> None:
+        """Publish the last commanded per-channel power for every device
+        that has at least one Heater row. Uses Heater.last_power_pct
+        (the same field Heater.compute_power writes) so the firmware's
+        retained value never drifts from what the server PID last
+        commanded. Each device gets a single /power message with all
+        channels (ch1, ch2, …) plus the max-setpoint reference (v1.4.2
+        server bug 6 — same logic as _tick_device_heaters uses).
+        """
+        for code, hs in self.heaters_by_device.items():
+            if not hs:
+                continue
+            # Skip if no PID has run yet on any heater — first publish is
+            # gated on telemetry arrival and there'd be no payload to keep
+            # alive.
+            if any(h.last_power_pct is None for h in hs):
+                continue
+            # Build per-channel payload + max-setpoint (mirrors the
+            # _tick_device_heaters payload shape so the firmware doesn't
+            # have to learn two formats).
+            channels: Dict[str, int] = {}
+            setpoints: List[float] = []
+            for h in hs:
+                channels[f"ch{h.channel}"] = int(h.last_power_pct)
+                if h.pid is not None:
+                    setpoints.append(h.pid.setpoint)
+            max_sp = max(setpoints) if setpoints else DEFAULT_SETPOINT_C
+            payload_out = {
+                **channels,
+                "power":    int(sum(channels.values()) / max(len(channels), 1)),
+                "setpoint": round(max_sp, 2),
+                "ts":       datetime.now(timezone.utc).isoformat(),
+                "keepalive": True,
+            }
+            topic = f"cfarm/brooder-{code}/power"
+            try:
+                mqtt_client.publish(topic, payload_out, qos=1)
+            except Exception as e:
+                logger.debug(f"Heater {code}: keepalive publish failed: {e}")
+
+    # ─── periodic reload (60s) ─────────────────────────────
+
+    async def _periodic_loop(self) -> None:
+        while self._running:
+            try:
+                await asyncio.sleep(60)
+                await self._load_heaters()
+                await self._refresh_member_nodes()
+                # Sweep expired test assignments + refresh profile caches
+                await self._sweep_test_assignments()
+                await self._refresh_heater_profile_caches()
+            except asyncio.CancelledError:
+                break
+            except Exception as e:
+                logger.error(f"HeaterController periodic loop error: {e}",
+                             exc_info=True)
+
+    def invalidate_profile_cache(self) -> None:
+        """Flip the dirty flag so the next periodic tick re-resolves
+        every heater's profile cache. Called by routes/brooder_profiles.py
+        after mutations.
+        """
+        self._profile_cache_dirty = True
+
+    async def _sweep_test_assignments(self) -> None:
+        """Mirror BrooderController._sweep_test_assignments — auto-expire
+        stale test assignments so the next profile resolve sees the cleared
+        state.
+        """
+        try:
+            rows = await db.fetch(
+                """
+                UPDATE brooder_profile_test_assignments
+                SET cleared_at = NOW(), cleared_reason = 'auto_expired'
+                WHERE cleared_at IS NULL AND expires_at <= NOW()
+                RETURNING id
+                """
+            )
+        except Exception as e:
+            logger.debug(f"HeaterController test sweeper query failed: {e}")
+            return
+        if rows:
+            self._profile_cache_dirty = True
+            logger.info(
+                f"HeaterController test sweeper: auto-expired {len(rows)} assignment(s)"
+            )
+
+    async def _refresh_heater_profile_caches(self) -> None:
+        """Resolve the zone-level profile once per periodic tick (the
+        zone's primary cycle resolution is already done by ZoneController
+        in _refresh_profile_caches; we just mirror it). Then mirror it
+        into each heater's profile_cache.
+        """
+        try:
+            await self._refresh_member_nodes()
+            # Mirror zone profile_cache into heater profile_cache. Cheaper
+            # to reuse ZoneController's existing resolution than to redo
+            # the same DB lookup per heater.
+            for zid, z in zone_controller.zones.items():
+                self._zone_profile_cache[zid] = z.profile_cache
+                self._zone_profile_cache_date[zid] = z.profile_cache_cycle_date
+                self._zone_profile_cache_night[zid] = z.profile_cache_night_flag
+            for h in self.heaters.values():
+                # Only mirror when our heater doesn't have a manual override
+                # — manual_setpoint always wins.
+                if h.manual_setpoint is not None:
+                    continue
+                cache = self._zone_profile_cache.get(h.zone_id)
+                if cache is None:
+                    h.profile_cache = None
+                    h.profile_cache_cycle_date = None
+                    h.profile_cache_night_flag = None
+                    continue
+                # Skip when the zone's cache hasn't moved (date/night bool)
+                if (h.profile_cache is not None
+                        and h.profile_cache is cache
+                        and h.profile_cache_cycle_date == self._zone_profile_cache_date.get(h.zone_id)
+                        and h.profile_cache_night_flag == self._zone_profile_cache_night.get(h.zone_id)
+                        and not self._profile_cache_dirty):
+                    continue
+                h.profile_cache = cache
+                h.profile_cache_cycle_date = self._zone_profile_cache_date.get(h.zone_id)
+                h.profile_cache_night_flag = self._zone_profile_cache_night.get(h.zone_id)
+                h.update_pid_setpoint()
+            self._profile_cache_dirty = False
+        except Exception as e:
+            logger.warning(f"HeaterController: profile refresh failed: {e}")
+
+    # ─── public API (for routes / dashboard) ───────────────
+
+    def get_heater(self, heater_id: int) -> Optional[dict]:
+        h = self.heaters.get(heater_id)
+        return h.to_dict() if h else None
+
+    def list_heaters(self, zone_id: Optional[int] = None) -> List[dict]:
+        out = []
+        for h in self.heaters.values():
+            if zone_id is not None and h.zone_id != zone_id:
+                continue
+            out.append(h.to_dict())
+        return out
+
+    async def set_heater_setpoint(self, heater_id: int,
+                                   setpoint: Optional[float],
+                                   note: Optional[str] = None) -> dict:
+        """Set/clear manual_setpoint override on a single heater.
+
+        None → clear override (back to auto day-age / profile).
+        Float → lock to that °C.
+
+        Audit logged to heater_setpoint_history + brooder_power_history.
+        Retained /setpoint topic re-published (single value = average
+        across the device's heaters for firmware compat).
+        """
+        h = self.heaters.get(heater_id)
+        if h is None:
+            raise ValueError(f"Unknown heater: {heater_id}")
+        old_setpoint = h.manual_setpoint
+        h.manual_setpoint = setpoint
+        h.update_pid_setpoint()
+        effective = h.pid.setpoint
+
+        await db.execute(
+            "UPDATE brooder_heaters SET manual_setpoint = $1, "
+            "updated_at = NOW() WHERE id = $2",
+            setpoint, heater_id,
+        )
+
+        # Audit — heater_setpoint_history
+        try:
+            await db.execute(
+                """
+                INSERT INTO heater_setpoint_history
+                    (heater_id, manual_setpoint, effective_setpoint, source, note)
+                VALUES ($1, $2, $3, 'manual', $4)
+                """,
+                heater_id, setpoint, effective, note,
+            )
+        except Exception as e:
+            logger.debug(f"Heater {heater_id}: audit write failed: {e}")
+
+        # Republish retained /setpoint to the device (average across this
+        # device's heaters, so the firmware's NVS-cached setpoint stays
+        # representative for the failsafe path).
+        try:
+            await self._republish_setpoint_for_device(h.device_code)
+        except Exception as e:
+            logger.warning(f"Heater {heater_id}: setpoint republish failed: {e}")
+
+        # Power-history audit
+        await _record_power_change(
+            zone_id=h.zone_id, heater_id=h.id,
+            device_code=h.device_code, channel=h.channel,
+            power_pct=h.last_power_pct or 0,
+            setpoint_c=setpoint,
+            pid_input_c=None,
+            source='heater_setpoint_change',
+            note=f"heater override: {old_setpoint} → {setpoint}"
+                 + (f" ({note})" if note else ""),
+        )
+        logger.info(f"Heater {heater_id} ({h.device_code}/ch{h.channel}): "
+                    f"manual override → {setpoint if setpoint is not None else 'auto'} "
+                    f"(effective {effective:.2f}°C)")
+        return h.to_dict()
+
+    async def set_heater_fallback_delta(self, heater_id: int,
+                                          delta: float) -> dict:
+        """Update Tier-2 fallback delta for a single heater."""
+        h = self.heaters.get(heater_id)
+        if h is None:
+            raise ValueError(f"Unknown heater: {heater_id}")
+        h.fallback_delta_c = float(delta)
+        await db.execute(
+            "UPDATE brooder_heaters SET fallback_delta_c = $1, "
+            "updated_at = NOW() WHERE id = $2",
+            float(delta), heater_id,
+        )
+        # Republish retained setpoint so firmware's NVS-cached delta updates
+        try:
+            await self._republish_setpoint_for_device(h.device_code)
+        except Exception as e:
+            logger.warning(f"Heater {heater_id}: delta republish failed: {e}")
+        return h.to_dict()
+
+    async def get_heater_setpoint_history(self, heater_id: int,
+                                            limit: int = 50) -> List[dict]:
+        """Recent manual override changes for this heater (audit + UI)."""
+        rows = await db.fetch(
+            """
+            SELECT id, manual_setpoint, effective_setpoint, source, note, created_at
+            FROM heater_setpoint_history
+            WHERE heater_id = $1
+            ORDER BY created_at DESC
+            LIMIT $2
+            """,
+            heater_id, limit,
+        )
+        out = []
+        for r in rows:
+            d = dict(r)
+            d["created_at"] = d["created_at"].isoformat() if d.get("created_at") else None
+            out.append(d)
+        return out
+
+    async def _republish_setpoint_for_device(self, device_code: str) -> None:
+        """Republish the retained /setpoint for one ESP. Computes the
+        MAX setpoint across all heaters on the device (not average) so
+        the firmware's NVS reference governs the warmest profile target
+        — v1.4.2 (server bug 6) correction; previously a per-heater
+        manual_setpoint at 24°C dragging the device average down to
+        27.5°C made the firmware failsafe converge to the wrong floor.
+        """
+        heaters = self.heaters_by_device.get(device_code) or []
+        if not heaters:
+            return
+        setpoints = [h.pid.setpoint for h in heaters if h.pid is not None]
+        avg_sp = max(setpoints) if setpoints else DEFAULT_SETPOINT_C
+        # Use the zone's profile_cache + fallback_delta_c as representative
+        # for the firmware payload (firmware cares about max_safe +
+        # fallback_delta_c, not per-heater overrides). Delta stays averaged
+        # — each heater applies its own delta independently in Tier-2.
+        zone = zone_controller.zones.get(heaters[0].zone_id)
+        profile_cache = zone.profile_cache if zone else None
+        avg_delta = (
+            sum(h.fallback_delta_c for h in heaters) / len(heaters)
+            if heaters else 0.0
+        )
+        payload = build_setpoint_payload(
+            avg_sp,
+            manual_override=any(h.manual_setpoint is not None for h in heaters),
+            fallback_delta_c=avg_delta,
+        )
+        if profile_cache is not None:
+            payload["profile_code"] = profile_cache.profile_code
+        topic = f"cfarm/brooder-{device_code}/setpoint"
+        mqtt_client.publish(topic, payload, qos=1, retain=True)
+
+
+# ============================================================
+# Module-level singleton (HeaterController)
+# ============================================================
+
+heater_controller = HeaterController()

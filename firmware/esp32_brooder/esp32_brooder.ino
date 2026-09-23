@@ -2,7 +2,44 @@
  * =========================================================
  * CFarm ESP32 Brooder Firmware
  * Wi-Fi version (W5500 Ethernet migration planned)
- * Version: 1.3.0  (sensor-failsafe hoist + hybrid failsafe SP + longer timeout — 2026-09-18)
+ * Version: 1.4.1  (anti-spam-failsafe pack — 2026-09-23)
+ *                            v1.4.1 anti-spam-failsafe pack:
+ *                            - FAILSAFE_TIMEOUT_MS 15000 → 60000 (4× margin).
+ *                              Server keepalive cadence is 4s; even with a
+ *                              5-packet burst lost (DB write latency, MQTT
+ *                              QoS-1 retry, watchdog reset) the gap stays
+ *                              under 60s. Was: any single 16s gap (DB stall
+ *                              + publish jitter) tripped failsafe → mode
+ *                              flicker → 100→0 power snap → temp overshoot.
+ *                            - NORMAL_CONFIRM_REQUIRED 2 → 1. With the
+ *                              longer timeout, the first fresh /power packet
+ *                              is enough proof the server is back — second
+ *                              packet adds 4s of mode-flicker delay with no
+ *                              safety benefit (failsafe exits cleanly when
+ *                              input is recent).
+ *                            v1.4.0 provisioning rewrite:
+ *                            - Added DEVICE_CODE compile-time constant to
+ *                              USER CONFIG so each ESP32 can match a
+ *                              pre-created DB row (e.g. "esp32-8056").
+ *                            - generateDeviceCode() priority: constant >
+ *                              NVS cache > MAC fallback.
+ *                            - MAC fallback changed from type-prefixed
+ *                              "esp-brooder-XXXXXX" to universal
+ *                              "esp-XXXXXX" (type lives in DEVICE_TYPE +
+ *                              topic prefix, not in code).
+ *                            v1.3.2 bugfix:
+ *                            - REMOVED time-based count reset in hysteresis block.
+ *                              Server keepalive interval (KEEPALIVE_INTERVAL_S=6) was
+ *                              > NORMAL_CONFIRM_WINDOW_MS (3), so the reset was firing
+ *                              between every keepalive packet and capping
+ *                              normalConfirmCount at 1 — hysteresis was a no-op.
+ *                            - Counter now resets only on enterFailsafe()/enterNormal().
+ *                            - Recovery: 2 consecutive /power packets (~6-12s typical).
+ *                            v1.3.1 anti-thrash pack:
+ *                            - FAILSAFE_TIMEOUT_MS 8000 → 15000 (margin ~11s vs 4s heartbeat)
+ *                            - NORMAL hysteresis: require 2 fresh packets before
+ *                              leaving FAILSAFE.
+ *                            v1.3.0 (sensor-failsafe hoist + hybrid failsafe SP + longer timeout — 2026-09-18)
  *                            v1.0.8 baseline (zone-reference redesign):
  *                            - PID input = zone-weighted-avg in NORMAL mode
  *                              (NO 50/50 blend; zone is the ground truth
@@ -80,8 +117,20 @@ const char* MQTT_USER     = "cfarm_device";
 const char* MQTT_PASS     = "cfarm_device_2026";
 
 const char* DEVICE_TYPE     = "brooder";
-const char* FIRMWARE_VERSION = "1.3.0";
+const char* FIRMWARE_VERSION = "1.4.3";
 const char* FIRMWARE_NAME    = "esp32_brooder";
+
+// ─── DEVICE CODE ───
+// Unique identifier for this physical ESP32 (no type prefix; type lives in
+// DEVICE_TYPE + MQTT topic prefix cfarm/brooder-/).
+//
+// Set this to match a pre-created DB row (e.g. "esp32-8056") so the server
+// links this ESP32 to that exact row. Leave empty ("") to auto-derive from
+// MAC — server will create a new row on first heartbeat.
+//
+// Priority order on first boot: this constant → NVS cache → MAC.
+// Once cached in NVS, this constant is ignored on subsequent boots (NVS wins).
+const char* DEVICE_CODE = "";
 
 // ==================== PIN DEFINES ====================
 
@@ -113,7 +162,10 @@ const char* FIRMWARE_NAME    = "esp32_brooder";
 const unsigned long TELEMETRY_INTERVAL_MS   = 5000;    // Publish telemetry every 5s
 const unsigned long HEARTBEAT_INTERVAL_MS   = 60000;   // Publish heartbeat every 60s (for Devices dashboard)
 const unsigned long SENSOR_READ_INTERVAL_MS = 2000;    // Read SHT40 every 2s
-const unsigned long FAILSAFE_TIMEOUT_MS     = 8000;    // Switch to failsafe if no cmd
+const uint8_t       SHT4_FAIL_THRESHOLD     = 5;       // v1.4.2 (fw bug 4): consecutive I2C failures before latching sht4_ok=false. At 2s cadence = 10s of sustained failure. One transient blip no longer latches the Tier-3 failsafe clamp.
+const unsigned long FAILSAFE_TIMEOUT_MS     = 60000;   // v1.4.1: 15s → 60s. With server KEEPALIVE=4s and DB jitter, 15s was too tight — single 16s publish gap tripped failsafe and snapped heater 100→0, killing zone stability. 60s absorbs ≥14 missed packets; legitimate server outage still triggers failsafe but transient stalls don't.
+const unsigned long NORMAL_CONFIRM_WINDOW_MS = 3000;    // v1.3.2: DEPRECATED. Was used for time-based counter reset — removed because server keepalive (6s) > window (3s), made hysteresis a no-op. Kept for reference; do not re-enable without also changing server cadence.
+const uint8_t       NORMAL_CONFIRM_REQUIRED  = 1;       // v1.4.1: 2 → 1. Now that FAILSAFE_TIMEOUT is 60s, the first fresh /power packet is sufficient proof of server liveness — second packet added ~4s of mode-flicker delay with no extra safety (failsafe exit already verifies input freshness). Counter reset only in enterFailsafe()/enterNormal().
 const unsigned long WDT_TIMEOUT_S           = 30;      // Hardware watchdog
 const unsigned long WIFI_RETRY_INTERVAL_MS  = 10000;
 const unsigned long MQTT_RETRY_INTERVAL_MS  = 5000;
@@ -253,11 +305,26 @@ int   currentPowerCh2    = 0;    // 0-255 (DAC2 — chảo 2)
 int   lastServerPower    = 0;    // 0-100 (% last from server — legacy)
 int   lastServerCh1      = 0;    // 0-100 (last ch1 from server — v1.1.0+)
 int   lastServerCh2      = 0;    // 0-100 (last ch2 from server — v1.1.0+)
+// v1.4.2 (firmware bug 2): per-channel power ratio captured when entering
+// FAILSAFE. In NORMAL the server publishes different ch1/ch2 % (one
+// heater may run 90% while the other runs 10% based on each heater's
+// PID). The local failsafe PID runs ONE shared temperature control
+// loop (single SHT40 sensor), so it can't independently steer two
+// heaters. The compromise: compute ONE PID output (the "failsafe mean
+// power") and scale it per-channel by the ratio captured from the last
+// NORMAL state. This way the relative bias (ch1:ch2 ratio) is preserved
+// during failsafe — ch1 keeps getting more power than ch2 if it was
+// running hotter when the server died. Without this, failsafe averaged
+// the two (set both to ~50%) and lost the calibration the operator
+// spent days tuning.
+float failsafeCh1Ratio   = 1.0f;  // ch1 share of failsafe mean (default 0.5/0.5)
+float failsafeCh2Ratio   = 1.0f;  // ch2 share of failsafe mean (default 0.5/0.5)
 float currentSetpoint    = 33.5; // Default day-1 setpoint
 float currentFallbackDelta = 0.0; // Tier-2 bias subtracted from local SHT40 when zone stale
                                     // (positive = heater-zone reads hotter than chick-zone)
 
 unsigned long lastMqttCmdMs     = 0;
+uint8_t       normalConfirmCount = 0;    // v1.3.1: # of fresh server packets (≤ NORMAL_CONFIRM_WINDOW_MS old) accumulated toward NORMAL_CONFIRM_REQUIRED. Reset on enterFailsafe().
 unsigned long lastTelemetryMs   = 0;
 unsigned long lastHeartbeatMs   = 0;
 unsigned long lastSensorReadMs  = 0;
@@ -265,6 +332,15 @@ unsigned long lastWifiRetryMs   = 0;
 unsigned long lastMqttRetryMs   = 0;
 
 bool sht4_ok = false;
+// v1.4.2 (firmware bug 4): consecutive-failure counter. Single I2C
+// glitches (ESD, brown-out on shared PSU, momentary bus contention)
+// can return false from getEvent() even though the sensor is alive.
+// Previously a single failure latched sht4_ok=false forever — the
+// sensor failsafe clamp (Tier-3, heater OFF) stayed engaged until a
+// reboot. With SHT4_FAIL_THRESHOLD=5 at 2s cadence, the counter fills
+// in 10s of sustained failure (the I2C bus is really dead or the
+// sensor is unplugged). One transient blip no longer latches.
+uint8_t sht4_fail_count = 0;
 
 // Local PID state (failsafe)
 float        pidIntegral      = 0;
@@ -278,22 +354,40 @@ unsigned long pidLastTickMs    = 0;
 // ==================== UTILITIES ====================
 
 String generateDeviceCode() {
-    // v1.1.0 — Provisioning flow:
-    //   1. Try NVS ("brooder" namespace, key "device_code") — admin can
-    //      provision via a serial command or via the server's flash
-    //      endpoint.
-    //   2. Fallback: derive from MAC last 3 bytes so each freshly-flashed
-    //      ESP gets a unique code (no manual editing per chip).
-    //   3. Auto-persist the derived code to NVS so it survives reboot
+    // v1.4.0 — Provisioning flow (priority order):
+    //   1. DEVICE_CODE compile-time constant (USER CONFIG) — used when set
+    //      non-empty so this ESP32 matches a pre-created DB row.
+    //   2. NVS cache ("brooder" namespace, key "device_code") — wins on
+    //      subsequent boots so the code stays stable even if the constant
+    //      is cleared later.
+    //   3. Fallback: derive from MAC last 3 bytes (esp-XXXXXX universal
+    //      scheme, no type prefix) so each freshly-flashed ESP gets a unique
+    //      code without manual editing per chip.
+    //   4. Auto-persist the resolved code to NVS so it survives reboot
     //      AND the server sees a stable code in subsequent telemetry.
+
+    // Step 1: compile-time constant (only on first boot, before NVS exists)
+    if (DEVICE_CODE[0] != '\0') {
+        String from_const = String(DEVICE_CODE);
+        // Cache to NVS so subsequent boots use the stable cached value
+        prefs.begin("brooder", false);
+        prefs.putString("device_code", from_const);
+        prefs.end();
+        Serial.printf("Device code from compile-time constant: %s\n",
+                      from_const.c_str());
+        return from_const;
+    }
+
+    // Step 2: NVS cache (stable across reboots)
     prefs.begin("brooder", true);
     String device_code = prefs.getString("device_code", "");
     prefs.end();
     if (device_code.length() == 0) {
+        // Step 3: derive from MAC (universal esp-XXXXXX, no type prefix)
         uint8_t mac[6];
         WiFi.macAddress(mac);
         char buf[32];
-        snprintf(buf, sizeof(buf), "esp-brooder-%02X%02X%02X",
+        snprintf(buf, sizeof(buf), "esp-%02X%02X%02X",
                  mac[3], mac[4], mac[5]);
         device_code = String(buf);
         prefs.begin("brooder", false);
@@ -448,16 +542,19 @@ void mqttCallback(char* topic, byte* payload, unsigned int length) {
             lastServerPower = (ch1 + ch2) / 2;
             applyPowerChannel(1, ch1);
             applyPowerChannel(2, ch2);
-            lastMqttCmdMs = millis();
+            noteServerCommand();   // v1.3.1: bumps normalConfirmCount for hysteresis
 
             // Returning to NORMAL from FAILSAFE → preload PID for next time
             if (currentMode == MODE_FAILSAFE) {
                 int avg = (ch1 + ch2) / 2;
                 preloadPidIntegral(map(avg, 0, 100, 0, PID_OUTPUT_MAX));
-                Serial.printf("FAILSAFE → NORMAL, ch1=%d%% ch2=%d%% (avg=%d%%)\n",
-                              ch1, ch2, avg);
+                // v1.3.1: don't flip mode here — let the loop's hysteresis
+                // (NORMAL_CONFIRM_REQUIRED consecutive packets) decide.
+                // This avoids a single stale/retained packet kicking us
+                // out of failsafe mid-incident.
             }
-            currentMode = MODE_NORMAL;
+            // v1.3.1: currentMode = MODE_NORMAL removed — set by enterNormal()
+            // in the main loop once normalConfirmCount >= NORMAL_CONFIRM_REQUIRED.
         }
 
     // ---- SETPOINT UPDATE ----
@@ -491,16 +588,18 @@ void mqttCallback(char* topic, byte* payload, unsigned int length) {
     } else if (topicStr == topic_cmd) {
         const char* action = doc["action"] | "";
         if (strcmp(action, "ping") == 0) {
-            lastMqttCmdMs = millis();
+            noteServerCommand();   // v1.3.1: counts toward NORMAL confirm
             Serial.println("CMD: ping received");
         } else if (strcmp(action, "reboot") == 0) {
             Serial.println("CMD: reboot requested");
             delay(100);
             ESP.restart();
         } else if (strcmp(action, "clear_failsafe") == 0) {
-            Serial.println("CMD: clear_failsafe");
-            currentMode = MODE_NORMAL;
-            lastMqttCmdMs = millis();
+            // v1.3.1: operator override — bypass hysteresis (explicit intent).
+            Serial.println("CMD: clear_failsafe (operator override)");
+            normalConfirmCount = 0;
+            noteServerCommand();
+            enterNormal();   // uses enterNormal() so LED/serial/status published cleanly
         }
 
     // ---- ZONE TEMP (server-side weighted avg of reference sensors) ----
@@ -543,22 +642,86 @@ void initSensors() {
     else          Serial.println("SHT40: FAIL — check wiring");
 }
 
+// v1.4.2 (firmware bug 4 hardening): hard I2C bus recovery. Industrial
+// noise (SSR switching transients, VFD harmonics, contactor arcs on the
+// shared 24V PSU) can latch a slave device's SDA line LOW — the slave
+// chip is still powered and holding the data line down waiting for a
+// clock pulse to release it. Wire.begin() / sht4.begin() can't recover
+// this because the ESP32's I2C peripheral is the MASTER — it never
+// initiates a clock unless it's already in a transaction. So Wire stays
+// quiet, slave stays latched, every subsequent getEvent() returns false.
+//
+// The recovery procedure (per UM10204 §3.1.16 "Bus stuck low recovery"):
+//   1. Reconfigure SCL pin as GPIO push-pull OUTPUT (bypass Wire peripheral)
+//   2. Toggle SCL HIGH/LOW 9 times to clock out any stuck slave — each
+//      rising edge gives the SDA-low holder one clock to release
+//   3. Generate a STOP condition: SDA LOW → SDA HIGH while SCL HIGH
+//      (this is what every I2C transaction ends with; without it, any
+//      partial transaction stays pending in slave state machines)
+//   4. Return SCL/SDA pins to Wire peripheral via I2C_Bus.begin()
+//
+// Cost: ~10ms (9 toggles @ ~1ms each + Wire re-init). Called only on
+// the FIRST I2C failure after a stretch of OK reads, so steady-state
+// cost is zero.
+void i2cBusRecovery() {
+    Serial.println("  I2C bus recovery: toggling SCL as GPIO to free stuck slave...");
+    // Step 1: bypass Wire, take direct control of SCL pin
+    pinMode(I2C_SCL, OUTPUT);
+    digitalWrite(I2C_SCL, HIGH);   // start from idle-high (I2C spec)
+    delayMicroseconds(5);
+
+    // Step 2: clock out stuck slave — 9 pulses per UM10204 recommendation
+    for (int i = 0; i < 9; i++) {
+        digitalWrite(I2C_SCL, LOW);
+        delayMicroseconds(5);
+        digitalWrite(I2C_SCL, HIGH);
+        delayMicroseconds(5);
+    }
+
+    // Step 3: manual STOP — SDA LOW while SCL HIGH, then SDA HIGH
+    pinMode(I2C_SDA, OUTPUT);
+    digitalWrite(I2C_SDA, LOW);
+    delayMicroseconds(5);
+    digitalWrite(I2C_SCL, HIGH);
+    delayMicroseconds(5);
+    digitalWrite(I2C_SDA, HIGH);
+    delayMicroseconds(5);
+
+    // Step 4: hand pins back to Wire peripheral
+    I2C_Bus.begin(I2C_SDA, I2C_SCL, 100000);
+}
+
 void readSensors() {
     sensors_event_t hum_event, temp_event;
-    // Per-cycle success flag. The sht4_ok flag set by initSensors() reflects
-    // boot-time probe only — if the sensor is unplugged while running,
-    // sht4_ok stays true forever and stale temp values keep feeding the PID.
-    // This flag is reset every cycle, so a hot-unplug is detected on
-    // the very next read and trips the sensor-failsafe clamp immediately.
+    // v1.4.2 (firmware bug 4): single I2C failure no longer latches the
+    // sensor failsafe clamp. The previous "if (!sht4_ok) skip getEvent()"
+    // pattern at line 630 meant that once sht4_ok dropped to false, the
+    // sensor was never re-probed and the Tier-3 heater-OFF clamp stayed
+    // engaged until reboot. Now we always attempt a read regardless of
+    // sht4_ok's prior value, count consecutive failures, and only latch
+    // false after SHT4_FAIL_THRESHOLD=5 misses (≈10s at 2s cadence). The
+    // first transient failure also re-initializes I2C bus + SHT40 driver
+    // — many I2C lockups (line noise, brown-out on shared PSU) clear with
+    // a fresh begin().
     bool read_success = false;
 
-    if (sht4_ok && sht4.getEvent(&hum_event, &temp_event)) {
+    if (sht4.getEvent(&hum_event, &temp_event)) {
         temp        = temp_event.temperature;
         hum         = hum_event.relative_humidity;
         read_success = true;
     }
 
     if (read_success) {
+        // Reset failure counter + re-arm sht4_ok on first success after
+        // a transient outage. If it was latched false (5+ consecutive
+        // failures), one good read is enough to recover — the user gets
+        // their heater back without a power cycle.
+        if (sht4_fail_count > 0 || !sht4_ok) {
+            Serial.printf("SHT40 recovered after %u failed read(s)\n",
+                          sht4_fail_count);
+            sht4_fail_count = 0;
+            sht4_ok = true;
+        }
         // Low-pass filter the local SHT40 BEFORE feeding Tier-2 PID.
         // Cold-start: filter has no history yet → seed with raw reading so
         // the first sample isn't biased by `temp_filtered = 0` default.
@@ -614,9 +777,36 @@ void readSensors() {
         }
     } else {
         Serial.println("WARN: Khong doc duoc SHT40 trong chu ky nay!");
-        // Propagate the failure into the boot flag so the loop-level
-        // failsafe clamp (heater OFF) kicks in right now, not on next boot.
-        sht4_ok = false;
+        // v1.4.2 (firmware bug 4): count consecutive failures, re-init
+        // I2C + driver on the FIRST failure (most common cause of a
+        // single read fail is bus lockup that a fresh begin() clears),
+        // and only latch sht4_ok=false after SHT4_FAIL_THRESHOLD misses.
+        // The Tier-3 sensor-failsafe clamp (heater OFF) checks sht4_ok,
+        // so a single glitch now degrades to one Tier-2 cycle using the
+        // previous filtered temp_pid instead of zeroing the heater.
+        if (sht4_fail_count == 0) {
+            // First failure after a stretch of OK reads → run the
+            // HARD I2C bus recovery sequence (clock-out stuck slave +
+            // STOP condition + Wire re-init). Plain Wire.begin() can't
+            // recover from SDA-low latching because the ESP32's I2C
+            // peripheral won't initiate clocks without an active
+            // transaction — see i2cBusRecovery() docstring.
+            i2cBusRecovery();
+            sht4.begin(&I2C_Bus);
+            Serial.println("  I2C bus + SHT40 driver re-initialized after "
+                           "transient recovery attempt");
+        }
+        sht4_fail_count++;
+        if (sht4_fail_count >= SHT4_FAIL_THRESHOLD) {
+            if (sht4_ok) {
+                Serial.printf("  SHT40 latched DEAD after %u consecutive "
+                              "failures — Tier-3 failsafe engaged\n",
+                              sht4_fail_count);
+            }
+            // Propagate the failure into the boot flag so the loop-level
+            // failsafe clamp (heater OFF) kicks in.
+            sht4_ok = false;
+        }
     }
 }
 
@@ -634,6 +824,20 @@ float computeFailsafePid() {
         if (dt < 0.001f) dt = 0.001f; // safety
     }
     pidLastTickMs = now;
+
+    // v1.4.2 (firmware bug 3): update pidLastTempPid BEFORE the deadband
+    // check so the D-term on the first tick AFTER exiting the band sees
+    // a fresh measurement. Previously the deadband returned early and
+    // pidLastTempPid was never updated → if the controller sat inside
+    // the deadband for 30 seconds (typical steady-state in the user's
+    // barn-05 setpoint=30°C / temp=30.1°C case), the first D-term after
+    // exiting measured "rate of change" = (current_temp - stale_pid) / 1s
+    // — typically 0.3-2°C/s, but with Kd=25 the kick output spike was
+    // ±20% which the user could hear as a relay click. Tracking the latest
+    // temp_pid every tick (regardless of deadband) keeps the derivative
+    // fresh and bounded by the actual measurement rate.
+    float prevPidTemp = pidLastTempPid;
+    pidLastTempPid = temp_pid;
 
     float error = currentSetpoint - temp_pid;
 
@@ -660,9 +864,10 @@ float computeFailsafePid() {
     // ticks, but avoids the spike that derivative-on-error causes on setpoint
     // changes — the previous implementation multiplied SP jumps by Kd and
     // slammed the output, even though the actual process variable hadn't moved).
-    float derivative = -(temp_pid - pidLastTempPid) / dt;
+    // pidLastTempPid already updated above (so derivative here uses the
+    // freshest sample), with prevPidTemp as the "previous" reference.
+    float derivative = -(temp_pid - prevPidTemp) / dt;
     float D = PID_KD * derivative;
-    pidLastTempPid = temp_pid;
 
     float output_unclamped = P + I + D;
     float output = output_unclamped;
@@ -737,8 +942,20 @@ void applyPowerChannel(int ch, int pct) {
     // hardware gate (POWER_ENABLE_PIN=27 → V→I supply) cuts off the 4mA-at-
     // DAC=0 floor at the source. On un-wired boards this conditional remains
     // active to defeat the floor.
+    //
+    // v1.4.2 (firmware bug 5): threshold is MIN_VALID_DAC_OFF, not
+    // MIN_VALID_DAC. The hysteresis in applyPower() defines three bands:
+    //   p >= MIN_VALID_DAC (6)        → ON
+    //   p <  MIN_VALID_DAC_OFF (3)    → OFF
+    //   p in [3, 6)                   → hold previous state
+    // The pre-v1.4.2 clamp at this site used MIN_VALID_DAC (6) which
+    // COLLAPSED the [3, 6) hold-band on un-wired boards — every p in
+    // [3, 6) was force-zeroed, defeating hysteresis. Fix: use the same
+    // OFF threshold (3) that applyPower() uses to enter the OFF state.
+    // The [3, 6) band then correctly holds state on both wired and
+    // un-wired boards.
 #if POWER_ENABLE_PIN < 0
-    if (dac > 0 && dac < MIN_VALID_DAC) {
+    if (dac > 0 && dac < MIN_VALID_DAC_OFF) {
         dac = 0;
     }
 #endif
@@ -783,13 +1000,25 @@ void applyPower(int p) {
     if (p < 0)              p = 0;
     if (p > PID_OUTPUT_MAX) p = PID_OUTPUT_MAX;
 
-    // Slew-rate limit (BOTH modes)
-    int delta = p - currentPower;
-    if (delta >  MAX_SLEW_PER_SEC) delta =  MAX_SLEW_PER_SEC;
-    if (delta < -MAX_SLEW_PER_SEC) delta = -MAX_SLEW_PER_SEC;
-    p = currentPower + delta;
-    if (p < 0)              p = 0;
-    if (p > PID_OUTPUT_MAX) p = PID_OUTPUT_MAX;
+    // v1.4.2 (firmware bug 1): slew-rate limit ONLY in FAILSAFE. The server
+    // already publishes with its own SLEW_PCT_PER_TICK=5 clamp on each tick,
+    // so layering a 3%/s slew here doubles the rate-limit and creates a
+    // noticeable lag when the operator pushes setpoint (e.g. from 28°C to
+    // 33°C → server publishes 100%/tick but firmware slews at 3%/s, so
+    // convergence to target takes 33+ seconds instead of <1). In NORMAL
+    // mode the server's per-tick slew is authoritative; tracking it
+    // 1-for-1 keeps operator responsiveness. The slew is still essential
+    // in FAILSAFE because the local PID loop runs at 1Hz with no server
+    // moderation — without it a saturation recovery would slam 0→100%
+    // in one tick.
+    if (currentMode == MODE_FAILSAFE) {
+        int delta = p - currentPower;
+        if (delta >  MAX_SLEW_PER_SEC) delta =  MAX_SLEW_PER_SEC;
+        if (delta < -MAX_SLEW_PER_SEC) delta = -MAX_SLEW_PER_SEC;
+        p = currentPower + delta;
+        if (p < 0)              p = 0;
+        if (p > PID_OUTPUT_MAX) p = PID_OUTPUT_MAX;
+    }
 
     if (currentMode == MODE_FAILSAFE) {
         // Hysteresis at MIN_VALID_DAC. State syncs from currentPower on each
@@ -814,8 +1043,24 @@ void applyPower(int p) {
     int prev_pct = (currentPower * 100) / PID_OUTPUT_MAX;
     if (pct == prev_pct) return;
 
-    applyPowerChannel(1, pct);
-    applyPowerChannel(2, pct);
+    // v1.4.2 (firmware bug 2): in FAILSAFE, scale per-channel by the
+    // ratio captured in enterFailsafe() so the operator-tuned bias
+    // (e.g. ch1:90%, ch2:10%) survives the server outage. The shared
+    // failsafe PID computes one "mean" output; multiplying by 2.0 ×
+    // (refCh1 / (refCh1 + refCh2)) gives back the original per-channel
+    // percentage when refCh1:refCh2 = 9:1 (for example). Both channels
+    // get clamped to [0,100] so a bias-heavy ratio doesn't go negative.
+    // In NORMAL the per-channel command comes straight from the server
+    // via mqttCallback → applyPowerChannel, no scaling needed.
+    if (currentMode == MODE_FAILSAFE) {
+        int pctCh1 = constrain((int)(pct * failsafeCh1Ratio), 0, 100);
+        int pctCh2 = constrain((int)(pct * failsafeCh2Ratio), 0, 100);
+        applyPowerChannel(1, pctCh1);
+        applyPowerChannel(2, pctCh2);
+    } else {
+        applyPowerChannel(1, pct);
+        applyPowerChannel(2, pct);
+    }
 }
 
 // ==================== TELEMETRY ====================
@@ -827,8 +1072,17 @@ void publishTelemetry() {
     doc["device_code"]    = device_code;
     doc["device_type"]    = DEVICE_TYPE;
     doc["fw_version"]     = FIRMWARE_VERSION;
+    // Legacy single-sensor aliases — keep for back-compat with v1.2 server code.
     doc["temp"]           = temp;
     doc["hum"]            = hum;
+    // Multi-sensor field names — server's _on_telemetry expects these for
+    // its Tier-1/Tier-2 PID input selection (BrooderController + ZoneController).
+    // Single-SHT40 firmware maps all three to the same `temp` value so the
+    // server's min(temp1, temp2) collapses to temp without bias.
+    doc["temp1"]          = temp;
+    doc["temp2"]          = temp;            // single sensor → same as temp1
+    doc["temp_min"]       = temp;            // min(temp1, temp2) for 1 sensor
+    doc["hum_avg"]        = hum;
     doc["temp_pid"]       = temp_pid;
     doc["setpoint"]       = currentSetpoint;
     // v1.1.0 — per-channel power fields (0..100%). Old `power` field
@@ -901,9 +1155,20 @@ void publishStatus(const char* status) {
 
 // ==================== MODE TRANSITIONS ====================
 
+// v1.3.1: helper to stamp "real" server commands. Centralizes the
+// lastMqttCmdMs + normalConfirmCount++ so future cmd topics can't
+// forget to bump the confirm counter.
+void noteServerCommand() {
+    lastMqttCmdMs = millis();
+    if (normalConfirmCount < 255) normalConfirmCount++;
+}
+
 void enterFailsafe() {
     if (currentMode == MODE_FAILSAFE) return;
     Serial.println(">>> ENTERING FAILSAFE (local PID) <<<");
+
+    // v1.3.1: any prior NORMAL confirmations are now stale — start fresh.
+    normalConfirmCount = 0;
 
     // v1.3.0: Hybrid setpoint selection.
     //   Rationale: hardcoded 30°C was too cold for day-1..3 chicks (33.5°C target).
@@ -935,6 +1200,56 @@ void enterFailsafe() {
 
     previousMode = currentMode;
     currentMode  = MODE_FAILSAFE;
+    // v1.4.2 (firmware bug 2): capture per-channel ratio for failsafe
+    // output scaling. Using the LAST server-commanded per-channel values
+    // (lastServerCh1/Ch2) as the reference — they're what the server's
+    // per-heater PID determined was correct before connectivity dropped.
+    // If both are zero (server never sent a /power packet), fall back to
+    // the current DAC values (currentPowerCh1/Ch2) which the server's
+    // first /power loaded. Equal split (50/50) is the safe default.
+    //
+    // v1.4.2 HARDENING (divide-by-zero / NaN guard): the divisor refSum
+    // can be 0 in THREE legitimate scenarios, all handled by the
+    // refSum>0 guard below:
+    //   1. Cold start: server never sent /power yet, both channels idle
+    //      → refSum=0 → fallback 50/50 (failsafeCh1Ratio=1, ch2Ratio=1)
+    //   2. Warm-then-disconnect: zone is at setpoint, both heaters were
+    //      commanded 0% just before server died → refSum=0 → fallback
+    //      50/50 (correct: PID can ramp either channel independently)
+    //   3. Single-channel brooder wired to ch1 only (legacy hardware):
+    //      lastServerCh1=lastServerCh2=0 → refSum=0 → fallback 50/50
+    //
+    // The *per-channel* zero case is handled implicitly by ratio math:
+    // if refCh1=0 and refCh2=50, failsafeCh1Ratio=0.0 and ch2Ratio=2.0.
+    // constrain((int)(pct*0.0), 0, 100) = 0 → ch1 stays off (correct:
+    // it was 0% before fail); constrain((int)(pct*2.0), 0, 100) = 100 →
+    // ch2 gets full power when PID demands it. This preserves the
+    // "asymmetric bias" the operator tuned.
+    int  refCh1 = lastServerCh1 > 0 ? lastServerCh1
+                                   : (currentPowerCh1 * 100) / PID_OUTPUT_MAX;
+    int  refCh2 = lastServerCh2 > 0 ? lastServerCh2
+                                   : (currentPowerCh2 * 100) / PID_OUTPUT_MAX;
+    int  refSum = refCh1 + refCh2;
+    if (refSum > 0) {
+        failsafeCh1Ratio = (float)refCh1 / (float)refSum * 2.0f;
+        failsafeCh2Ratio = (float)refCh2 / (float)refSum * 2.0f;
+    } else {
+        // Cold-start / both-channels-idle / single-channel-legacy.
+        // 50/50 split: ratio=1 means pctCh1 = pct * 1 = pct (same as
+        // un-scaled), pctCh2 = pct * 1 = pct → both channels get the
+        // PID's mean output. Safe default that won't crash on NaN.
+        failsafeCh1Ratio = 1.0f;
+        failsafeCh2Ratio = 1.0f;
+    }
+    // Belt-and-braces: NaN guard for the (theoretically impossible)
+    // case where refSum>0 but division still yields NaN (e.g. if
+    // refCh1/refCh2 somehow overflow to +inf). isfinite() rejects
+    // both NaN and ±inf.
+    if (!isfinite(failsafeCh1Ratio)) failsafeCh1Ratio = 1.0f;
+    if (!isfinite(failsafeCh2Ratio)) failsafeCh2Ratio = 1.0f;
+    Serial.printf("    Failsafe per-channel ratio: ch1=%.2f ch2=%.2f "
+                  "(from refCh1=%d refCh2=%d)\n",
+                  failsafeCh1Ratio, failsafeCh2Ratio, refCh1, refCh2);
     preloadPidIntegral(currentPower);
     publishStatus("failsafe");
 }
@@ -944,6 +1259,13 @@ void enterNormal() {
     Serial.println(">>> BACK TO NORMAL (server control) <<<");
     previousMode = currentMode;
     currentMode  = MODE_NORMAL;
+    // v1.3.1: reset hysteresis counter so next FAILSAFE cycle starts clean.
+    // The earlier "time-based reset" was REMOVED: server publishes /power every
+    // 6s (KEEPALIVE_INTERVAL_S) which is > NORMAL_CONFIRM_WINDOW_MS (3s) —
+    // the reset was firing between packets and capping normalConfirmCount at 1,
+    // making hysteresis useless. /power is not retained on the broker, so no
+    // retained-packet protection is needed either.
+    normalConfirmCount = 0;
     publishStatus("online");
 }
 
@@ -993,7 +1315,19 @@ void setup() {
     mqttClient.setServer(MQTT_SERVER, MQTT_PORT);
     mqttClient.setCallback(mqttCallback);
     mqttClient.setBufferSize(1024);    // telemetry expanded for zone fields (v1.0.8)
-    mqttClient.setKeepAlive(15);
+    // MQTT keepalive interval (seconds). The broker uses 1.5× this value as
+    // the timeout (per MQTT 3.1.1 spec) before firing the LWT topic and
+    // marking the client offline.
+    //
+    // Was 15s → broker timeout ≈22s → LWT fired every ~22s when telemetry
+    // jitter delayed PINGREQ → server marked node mode='offline' even though
+    // ESP was actually online. Bumped to 60s (broker timeout ≈90s) so a few
+    // delayed cycles of telemetry/heartbeat don't trip LWT.
+    //
+    // Trade-off: actual disconnect detection now takes ~90s instead of ~22s.
+    // Acceptable for brooder (heater control loop has its own watchdog via
+    // server → ESP /power heartbeat) and offline alert has its own poll loop.
+    mqttClient.setKeepAlive(60);
     mqttClient.setSocketTimeout(3);
 
     // Watchdog (compatible with both Arduino Core 2.x and 3.x).
@@ -1084,7 +1418,24 @@ void loop() {
                            && (now - lastMqttCmdMs) < FAILSAFE_TIMEOUT_MS;
 
         if (serverAlive) {
-            if (currentMode != MODE_NORMAL) enterNormal();
+            // v1.3.1 NORMAL hysteresis (simplified):
+            //   Count consecutive fresh server packets. Enter NORMAL once
+            //   count >= NORMAL_CONFIRM_REQUIRED. Counter is reset only on:
+            //     - enterFailsafe()   (server died or WiFi/MQTT dropped)
+            //     - enterNormal()      (successful transition, start fresh)
+            //   NO time-based reset: server keepalive (KEEPALIVE_INTERVAL_S=6s)
+            //   > NORMAL_CONFIRM_WINDOW_MS (3s) — a time-based reset would fire
+            //   BETWEEN every keepalive packet and cap count at 1, making
+            //   hysteresis a no-op. /power is NOT retained on the broker
+            //   (mqtt_client.publish with qos=1, no retain), so retained-packet
+            //   protection is not needed.
+            if (currentMode != MODE_NORMAL) {
+                if (normalConfirmCount >= NORMAL_CONFIRM_REQUIRED) {
+                    Serial.printf("FAILSAFE → NORMAL, ch1=%d%% ch2=%d%% (avg=%d%%)\n",
+                                  lastServerCh1, lastServerCh2, lastServerPower);
+                    enterNormal();
+                }
+            }
             // Power already updated via mqttCallback; nothing to do
         } else {
             if (currentMode != MODE_FAILSAFE) enterFailsafe();
