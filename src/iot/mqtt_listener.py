@@ -636,6 +636,15 @@ class MqttListener:
         device_topic = self._extract_device_topic(topic)
 
         if not isinstance(payload, dict):
+            # Corrupted/garbage status payload — same handling as heartbeat:
+            # queue a presence-only bump so the device doesn't go offline
+            # purely because its JSON is malformed.
+            logger.warning(
+                "MqttListener: Non-dict status payload from %s (%d bytes) — "
+                "marking online only",
+                topic, len(payload) if isinstance(payload, (bytes, bytearray, str)) else 0,
+            )
+            self._queue_work("_store_heartbeat_minimal", device_topic)
             return
 
         self._queue_work("_store_status", device_topic, payload)
@@ -794,6 +803,16 @@ class MqttListener:
         sub_sensor = self._extract_sub_sensor(topic)
 
         if not isinstance(payload, dict):
+            # Corrupted sensor payload — same handling as heartbeat:
+            # mark the device online (presence-only) so the dashboard
+            # reflects that the device is alive even if we can't parse
+            # its sensor fields.
+            logger.warning(
+                "MqttListener: Non-dict sensor payload from %s (%d bytes) — "
+                "marking online only",
+                topic, len(payload) if isinstance(payload, (bytes, bytearray, str)) else 0,
+            )
+            self._queue_work("_store_heartbeat_minimal", device_topic)
             return
 
         # Stash sub-sensor in payload (underscore-prefixed = metadata, not a sensor key).

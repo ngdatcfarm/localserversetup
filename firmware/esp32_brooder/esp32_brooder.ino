@@ -2,7 +2,32 @@
  * =========================================================
  * CFarm ESP32 Brooder Firmware
  * Wi-Fi version (W5500 Ethernet migration planned)
- * Version: 1.4.7  (3 follow-up fixes to v1.4.6 — 2026-09-24)
+ * Version: 1.4.9  (5 follow-up fixes to v1.4.6 — 2026-09-24)
+ *                            v1.4.9 follow-up fixes to v1.4.6:
+ *                            - Fixed the same strlen-UB as v1.4.8 in 4 OTHER
+ *                              publish sites that were missed: publishTelemetry
+ *                              (buf[640], 5s cadence — highest risk), publishStatus,
+ *                              publishDiagnostic, onMqttConnected status. The
+ *                              2-arg serializeJson(doc, buf) does strlen() on
+ *                              uninitialized stack memory in ArduinoJson 6.x;
+ *                              switching to serializeJson(doc, buf, sizeof(buf))
+ *                              and passing the returned n to mqttClient.publish()
+ *                              makes strlen() impossible. v1.4.8 only fixed
+ *                              publishHeartbeat (the symptom that surfaced in
+ *                              esp32-1168); telemetry corruption would have
+ *                              hit the broker with the same byte-0xa8 pattern.
+ *                            v1.4.8 follow-up fix to v1.4.6:
+ *                            - publishHeartbeat() buffer overflow: bumped
+ *                              StaticJsonDocument 384→512 + switched to
+ *                              serializeJson(doc, buf, sizeof(buf)) (3-arg)
+ *                              so ArduinoJson can't strlen() uninitialized
+ *                              stack memory. Actual payload is ~412 bytes
+ *                              with 29 v1.4.6 fields; old buf[384] + 2-arg
+ *                              serializeJson was writing past buf[] and
+ *                              producing byte 0xa8 at position 385 in every
+ *                              heartbeat. Server-side workarounds keep the
+ *                              device online but firmware field updates
+ *                              (RSSI / heap / counters) need the clean payload.
  *                            v1.4.7 follow-up fixes to v1.4.6:
  *                            - TWDT init → reconfigure on Core 3.x. Arduino's
  *                              app_main() pre-inits the task watchdog with the
@@ -171,7 +196,7 @@ const char* MQTT_USER     = "cfarm_device";
 const char* MQTT_PASS     = "cfarm_device_2026";
 
 const char* DEVICE_TYPE     = "brooder";
-const char* FIRMWARE_VERSION = "1.4.8";
+const char* FIRMWARE_VERSION = "1.4.9";
 const char* FIRMWARE_NAME    = "esp32_brooder";
 
 // ─── DEVICE CODE ───
@@ -624,8 +649,8 @@ void onMqttConnected() {
     doc["fw_version"]  = FIRMWARE_VERSION;
 
     char buf[160];
-    serializeJson(doc, buf);
-    mqttClient.publish(topic_status, buf, true);  // retained
+    size_t n = serializeJson(doc, buf, sizeof(buf));
+    mqttClient.publish(topic_status, buf, n, true);  // retained
 
     // v1.4.6: emit the boot diagnostic event now that the link is up.
     // We delay from setup() until MQTT connect because publishDiagnostic()
@@ -1366,8 +1391,8 @@ void publishTelemetry() {
                                 ? "zone" : "local+delta";
 
     char buf[640];
-    serializeJson(doc, buf);
-    mqttClient.publish(topic_telemetry, buf, false);  // QoS 0, not retained
+    size_t n = serializeJson(doc, buf, sizeof(buf));
+    mqttClient.publish(topic_telemetry, buf, n, false);  // QoS 0, not retained
 }
 
 void publishHeartbeat() {
@@ -1450,8 +1475,8 @@ void publishStatus(const char* status) {
     doc["power"]       = (currentPower * 100) / PID_OUTPUT_MAX;
     doc["setpoint"]    = currentSetpoint;
     char buf[160];
-    serializeJson(doc, buf);
-    mqttClient.publish(topic_status, buf, true);  // retained
+    size_t n = serializeJson(doc, buf, sizeof(buf));
+    mqttClient.publish(topic_status, buf, n, true);  // retained
 }
 
 // ==================== DIAGNOSTIC (v1.4.6) ====================
@@ -1589,12 +1614,12 @@ bool publishDiagnostic(const char* event_type, const char* details_json) {
     }
 
     char buf[512];
-    serializeJson(doc, buf);
-    // NOTE: PubSubClient::publish's third arg is `retained` (bool), not QoS.
+    size_t n = serializeJson(doc, buf, sizeof(buf));
+    // NOTE: PubSubClient::publish's fourth arg is `retained` (bool), not QoS.
     // QoS for this client is set globally via mqttClient.setPublishQoS() in
     // newer cores; here we use the default QoS 0 (acceptable for diagnostic
     // events because the heartbeat carries the persistent state).
-    return mqttClient.publish(topic_diag, buf, false);
+    return mqttClient.publish(topic_diag, buf, n, false);
 }
 
 // ==================== MODE TRANSITIONS ====================

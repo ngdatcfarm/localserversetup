@@ -146,9 +146,16 @@ class CloudMqttClient:
         """Route incoming messages to registered callbacks."""
         topic = msg.topic
         try:
-            payload = json.loads(msg.payload.decode())
+            payload = json.loads(msg.payload.decode("utf-8"))
         except (json.JSONDecodeError, UnicodeDecodeError):
-            payload = msg.payload.decode()
+            # Same bug as mqtt_client.py (pre-2026-09-24): re-decoding raw bytes
+            # with utf-8 re-raises the same UnicodeDecodeError. Keep raw bytes
+            # so handlers can decide whether/how to coerce.
+            payload = msg.payload
+            logger.debug(
+                "CloudMQTT: payload on %s not UTF-8 JSON, keeping raw bytes (%d bytes)",
+                topic, len(msg.payload) if msg.payload else 0,
+            )
 
         self._message_count += 1
         self._last_message_at = time.time()
@@ -163,9 +170,15 @@ class CloudMqttClient:
                             logger.error(f"CloudMQTT callback error [{pattern}]: {e}")
 
     def subscribe(self, topic_pattern: str, callback: Callable):
-        """Register a callback for a topic pattern."""
+        """Register a callback for a topic pattern.
+
+        Deduplicates: skip if callback already registered. See mqtt_client.py
+        for the rationale (prevent N×duplicate processing after restarts).
+        """
         with self._lock:
-            self._callbacks.setdefault(topic_pattern, []).append(callback)
+            handlers = self._callbacks.setdefault(topic_pattern, [])
+            if callback not in handlers:
+                handlers.append(callback)
         logger.info(f"CloudMQTT: Registered handler for {topic_pattern}")
 
     def publish(self, topic: str, payload: dict, qos: int = 1, retain: bool = False) -> bool:
