@@ -1,5 +1,6 @@
 """MQTT Client - Connects to LOCAL Mosquitto broker (primary) with cloud fallback."""
 
+import asyncio
 import json
 import logging
 import threading
@@ -28,6 +29,39 @@ class MqttClient:
         self._reconnect_thread: Optional[threading.Thread] = None
         self._message_count = 0
         self._last_message_at: Optional[float] = None
+        # Main asyncio loop reference — set by main.py via set_main_loop()
+        # during startup. Needed because paho-mqtt calls our handlers from its
+        # OWN IO thread (loop_start() spawns a non-asyncio thread), but
+        # coroutines like BrooderController._tick_pid must run on the main
+        # event loop. Without this, asyncio.create_task() inside a sync
+        # callback raises "no running event loop" and the coroutine is never
+        # awaited → PID tick silently never runs.
+        self._main_loop: Optional[asyncio.AbstractEventLoop] = None
+
+    def set_main_loop(self, loop: asyncio.AbstractEventLoop) -> None:
+        """Capture the main asyncio event loop. Call this from main.py
+        BEFORE connect() so any sync MQTT callback can later schedule
+        coroutines on it via schedule_coroutine().
+        """
+        self._main_loop = loop
+        logger.info(f"MQTT: Main event loop captured (id={id(loop)})")
+
+    def schedule_coroutine(self, coro):
+        """Schedule a coroutine on the captured main event loop.
+
+        Safe to call from paho-mqtt's IO thread (which has no event loop of
+        its own). Returns a concurrent.futures.Future for callers that want
+        to wait, or None if no main loop has been captured yet (in which
+        case the coroutine is dropped — same outcome as the bug we're
+        fixing, but at least we log it).
+        """
+        if self._main_loop is None:
+            logger.warning(
+                "MQTT: schedule_coroutine called but main loop not yet "
+                "captured — coroutine dropped"
+            )
+            return None
+        return asyncio.run_coroutine_threadsafe(coro, self._main_loop)
 
     @classmethod
     def get_instance(cls) -> "MqttClient":
@@ -99,14 +133,22 @@ class MqttClient:
         if rc == 0:
             self.connected = True
             logger.info(f"MQTT: Connected to {self.host}")
-            # Subscribe to all cfarm topics
+            # Subscribe to ALL cfarm topics via the single broad wildcard.
+            # In-process dispatch then routes each message to the correct
+            # registered pattern in self._callbacks.
+            #
+            # IMPORTANT: We deliberately do NOT subscribe to specific patterns
+            # like 'cfarm/+/heartbeat' here. Per MQTT spec §3.1.2.6 (v5) /
+            # §2.2.1 (v3.1.1), when a client has overlapping subscriptions the
+            # broker MUST deliver the message once PER matching subscription.
+            # Subscribing to both 'cfarm/#' AND 'cfarm/+/heartbeat' makes every
+            # heartbeat / sensor / status / telemetry / lwt message arrive
+            # TWICE — once for 'cfarm/#' and once for the specific pattern.
+            # The duplicates corrupted _store_heartbeat (rows ×2), thrashed
+            # _tick_pid (ticks ×2), and spammed logs with "MQTT HEARTBEAT" 2×.
+            # Single broker subscription + in-process pattern matching is the
+            # correct fix.
             client.subscribe("cfarm/#", qos=1)
-            # Re-subscribe all registered callbacks
-            with self._lock:
-                pending = getattr(self, '_pending_subscriptions', [])
-                logger.info(f"MQTT: Flushing {len(pending)} pending subscriptions")
-                for pattern in self._callbacks.keys():
-                    client.subscribe(pattern, qos=1)
             # Announce server online
             self.publish("cfarm/server/status", {
                 "status": "online",
@@ -156,16 +198,39 @@ class MqttClient:
         """Route incoming messages to registered callbacks."""
         topic = msg.topic
         try:
-            payload = json.loads(msg.payload.decode())
+            payload = json.loads(msg.payload.decode("utf-8"))
         except (json.JSONDecodeError, UnicodeDecodeError):
-            payload = msg.payload.decode()
+            # Decode failed (binary payload, or non-UTF-8 bytes from sensor
+            # data / Vietnamese chars in 8-bit fields). The previous version
+            # re-ran .decode() in the except block, which raised the same
+            # UnicodeDecodeError and bubbled up to paho-mqtt's _thread_main —
+            # the traceback was logged, the message was DROPPED, and on a
+            # crash-loop supervisor the operator saw heartbeats from some
+            # devices but a permanent gap on any device whose payload
+            # happened to contain a stray 0x80-0xBF byte (e.g. esp32-1168
+            # heartbeats at position 385). Fix: keep raw bytes as the
+            # fallback. Per-topic handlers can decide whether to .decode()
+            # themselves with the right codec.
+            payload = msg.payload
+            logger.debug(
+                "MQTT: payload on %s not UTF-8 JSON, keeping raw bytes (%d bytes)",
+                topic, len(msg.payload) if msg.payload else 0,
+            )
 
         self._message_count += 1
         self._last_message_at = time.time()
 
         logger.info(f"MQTT message: topic={topic}")
         if "heartbeat" in topic:
-            logger.warning(f"MQTT HEARTBEAT message on {topic}: {payload}")
+            # Heartbeats are always JSON; if we ended up with raw bytes,
+            # surface the fact instead of crashing the log formatter.
+            if isinstance(payload, (bytes, bytearray)):
+                logger.warning(
+                    "MQTT HEARTBEAT message on %s: <%d bytes, non-UTF-8 payload>",
+                    topic, len(payload),
+                )
+            else:
+                logger.warning(f"MQTT HEARTBEAT message on {topic}: {payload}")
         with self._lock:
             for pattern, handlers in self._callbacks.items():
                 if self._topic_matches(pattern, topic):
@@ -176,23 +241,25 @@ class MqttClient:
                             logger.error(f"MQTT callback error [{pattern}]: {e}")
 
     def subscribe(self, topic_pattern: str, callback: Callable):
-        """Register a callback for a topic pattern."""
-        with self._lock:
-            self._callbacks.setdefault(topic_pattern, []).append(callback)
-        # Actually subscribe to the MQTT broker (also queues if not yet connected)
-        self._subscribe_to_broker(topic_pattern)
-        logger.info(f"MQTT: Registered handler for {topic_pattern}")
+        """Register a callback for a topic pattern.
 
-    def _subscribe_to_broker(self, topic_pattern: str):
-        """Send subscription to broker, or queue if not yet connected."""
-        if self.client and self.connected:
-            self.client.subscribe(topic_pattern, qos=1)
-        # Track pending subscriptions for when we connect
+        Deduplicates: if the same callback object is already registered for this
+        pattern, skip the append. Prevents N×duplicate handler invocations on
+        every MQTT message after server restarts (each restart called subscribe()
+        again and the previous lists were never cleared).
+
+        NOTE: We do NOT forward this pattern to the broker — the broker already
+        receives every message via the single 'cfarm/#' subscription in
+        _on_connect. Subscribing again per-pattern would cause the broker to
+        deliver each overlapping message twice (see _on_connect for details).
+        The in-process _callbacks dict does its own MQTT-style pattern matching
+        in _topic_matches().
+        """
         with self._lock:
-            if not hasattr(self, '_pending_subscriptions'):
-                self._pending_subscriptions = []
-            if topic_pattern not in self._pending_subscriptions:
-                self._pending_subscriptions.append(topic_pattern)
+            handlers = self._callbacks.setdefault(topic_pattern, [])
+            if callback not in handlers:
+                handlers.append(callback)
+        logger.info(f"MQTT: Registered handler for {topic_pattern}")
 
     def publish(self, topic: str, payload: dict, qos: int = 1, retain: bool = False) -> bool:
         """Publish a message."""

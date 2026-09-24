@@ -37,6 +37,7 @@ from typing import Optional, Dict, List, Tuple
 from simple_pid import PID
 
 from src.iot.mqtt_client import mqtt_client
+from src.iot.device_state import EXPECTED_RESET_REASONS
 from src.services.database.db import db
 
 logger = logging.getLogger(__name__)
@@ -485,6 +486,49 @@ class BrooderNode:
         age = (datetime.now(timezone.utc) - self.last_telemetry_at).total_seconds()
         return age < 30
 
+    @staticmethod
+    def _classify_node_error(
+        current_error: Optional[str],
+        sensor_state: Optional[str],
+        reset_reason: Optional[str],
+    ) -> Optional[str]:
+        """Compute the new last_error string from firmware-reported state.
+
+        Two inputs (sensor_state, reset_reason) drive three outcomes:
+          - Priority 1: sensor is bad  → "sensor_<state>" (sensor wins over
+            reset_reason because a dead sensor masks boot reason too — the
+            operator needs to know the sensor is broken before chasing
+            reset causes).
+          - Priority 2: abnormal boot → "reset_<reason>" (e.g. "reset_wdt").
+          - No anomaly  → clear the stale error (only if it matches the
+            sensor_/reset_ prefix so unrelated errors aren't accidentally
+            wiped).
+
+        Returns the new error string (possibly None if cleared).
+        """
+        # Priority 1: sensor in a bad state. Both 'latched_dead' (5+
+        # consecutive read failures) and 'unresponsive' (single transient
+        # miss) deserve dashboard attention.
+        if sensor_state in ("latched_dead", "unresponsive"):
+            return f"sensor_{sensor_state}"
+
+        # Priority 2: abnormal reset reason. EXPECTED_RESET_REASONS is the
+        # shared allowlist (firmware doesn't bump a counter for these —
+        # they're benign boot paths).
+        if reset_reason and reset_reason not in EXPECTED_RESET_REASONS:
+            return f"reset_{reset_reason}"
+
+        # No current anomaly — clear any stale error we previously set, but
+        # only if it matches one of our own prefixes so we don't accidentally
+        # erase an error set by some other code path (e.g. compute_power
+        # errors at line ~1111).
+        if current_error and (
+            current_error.startswith("sensor_")
+            or current_error.startswith("reset_")
+        ):
+            return None
+        return current_error
+
     def to_dict(self) -> dict:
         return {
             "device_code":        self.device_code,
@@ -888,6 +932,26 @@ class BrooderController:
         # (fallback_delta_c is server-published; ESP just echoes it back)
         node.last_telemetry_at = datetime.now(timezone.utc)
         node.mode          = payload.get('mode', node.mode)
+
+        # v1.4.6: surface firmware-reported sensor health + reset reason on
+        # the brooder node so the dashboard can show "this device rebooted
+        # abnormally" / "sensor is in degraded state" without a separate
+        # DB query. We set last_error to a short human-readable string when
+        # the device reports something abnormal — the existing to_dict()
+        # already exposes last_error in the API response.
+        sensor_state = payload.get('sensor_state')
+        reset_reason = payload.get('reset_reason')
+        # _classify_node_error is defined as a @staticmethod on BrooderNode,
+        # not on BrooderController. The previous call site used
+        # `self._classify_node_error(...)` which raised
+        # AttributeError("'BrooderController' object has no attribute
+        # '_classify_node_error'") on every telemetry message from a brooder
+        # device — the exception was swallowed by the MQTT dispatcher and
+        # the telemetry path silently no-op'd. Call it on BrooderNode
+        # directly.
+        node.last_error = BrooderNode._classify_node_error(
+            node.last_error, sensor_state, reset_reason,
+        )
 
         # Run PID if enabled and we have temperature
         # v1.4.2 (server bug 1): gate — if HeaterController is managing

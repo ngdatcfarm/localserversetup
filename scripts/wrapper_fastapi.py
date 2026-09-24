@@ -80,6 +80,42 @@ def start_uvicorn():
     return proc
 
 
+def _port_is_listening(port: int) -> bool:
+    """Return True if some process is currently bound to the given port.
+
+    Used to skip a restart while the previous uvicorn is still in TIME_WAIT
+    (or someone else is holding the port) — Windows surfaces that as
+    WinError 10048 ("only one usage of each socket address ... is normally
+    permitted") and the new uvicorn immediately shuts down, so the wrapper
+    keeps spinning a new process every few seconds and never recovers.
+    """
+    try:
+        import socket
+        with socket.socket(socket.AF_INET, socket.SOCK_STREAM) as s:
+            s.settimeout(0.5)
+            return s.connect_ex(("127.0.0.1", port)) == 0
+    except Exception:
+        return False
+
+
+def _wait_for_port_free(port: int, timeout_s: int = 60) -> bool:
+    """Block until no process is listening on port, or timeout elapses.
+
+    Returns True if the port is free, False on timeout. Used after a crash
+    to give the kernel TIME_WAIT window (~30-60s on Windows) a chance to
+    expire so the next uvicorn can bind successfully. Backs off the polling
+    to keep CPU usage negligible.
+    """
+    deadline = time.time() + timeout_s
+    sleep_s = 0.5
+    while time.time() < deadline:
+        if not _port_is_listening(port):
+            return True
+        time.sleep(sleep_s)
+        sleep_s = min(sleep_s * 1.5, 4.0)
+    return not _port_is_listening(port)
+
+
 def main():
     log.info("=" * 50)
     log.info("CFarm FastAPI Guardian starting (uptime: %s)", get_uptime())
@@ -99,6 +135,22 @@ def main():
                 time.sleep(60)
                 restart_count = 0  # Reset after sleep
                 continue
+
+            # Wait for the previous socket to clear from TIME_WAIT before
+            # starting a new uvicorn. Without this, the new process hits
+            # WinError 10048 ("only one usage of each socket address ...
+            # is normally permitted") and exits in <1s, the wrapper sees
+            # the dead PID, and we end up in a tight restart loop that
+            # hammers the port until the kernel finally clears the
+            # TIME_WAIT (~30-60s on Windows). The /health endpoint
+            # flips offline for those 30-60s of bind failures, which is
+            # what was causing the perpetual 90s restart cycle.
+            if not _wait_for_port_free(8002, timeout_s=60):
+                log.warning(
+                    "Port 8002 still busy after 60s — TIME_WAIT or another "
+                    "holder. Sleeping 5s and trying anyway."
+                )
+                time.sleep(5)
 
             proc = start_uvicorn()
             restart_count += 1

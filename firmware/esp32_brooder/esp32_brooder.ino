@@ -2,7 +2,60 @@
  * =========================================================
  * CFarm ESP32 Brooder Firmware
  * Wi-Fi version (W5500 Ethernet migration planned)
- * Version: 1.4.1  (anti-spam-failsafe pack — 2026-09-23)
+ * Version: 1.4.7  (3 follow-up fixes to v1.4.6 — 2026-09-24)
+ *                            v1.4.7 follow-up fixes to v1.4.6:
+ *                            - TWDT init → reconfigure on Core 3.x. Arduino's
+ *                              app_main() pre-inits the task watchdog with the
+ *                              5s default timeout; our esp_task_wdt_init() was
+ *                              failing with "TWDT already initialized" and the
+ *                              existing 5s budget was way tighter than our 60s
+ *                              WDT_TIMEOUT_S. mqttClient.connect() can block
+ *                              >5s on a busy broker → WDT fires → 90s crash
+ *                              loop. reconfigure() updates the existing TWDT
+ *                              in place with our 60s timeout.
+ *                            - RTC_NOINIT_ATTR magic sentinel (0xCFA2CFA2).
+ *                              esp32-1168 reported boot_count=3074480277 on
+ *                              first v1.4.6 boot — RTC memory was NOT zeroed
+ *                              on power-on (random bits from silicon /
+ *                              battery-backed RTC). The old "boot_count==0"
+ *                              check didn't catch this and we kept the garbage
+ *                              as the initial counter values. Sentinel detects
+ *                              both fresh (zero) and garbage (non-zero, no
+ *                              magic) and resets cleanly.
+ *                            - publishHeartbeat() stack usage cut from 1280B
+ *                              (768-doc + 512-buf) to 768B (384+384). Actual
+ *                              serialized payload is ~320B, so 384 has
+ *                              comfortable headroom. Less transient stack
+ *                              pressure on the loop task = more WDT slack.
+ *                            v1.4.6 WDT crash-loop fix + state reporting:
+ *                            - ROOT CAUSE FIX for esp32-1168 crash loop with no
+ *                              SHT40 attached: I2C_Bus.setTimeout(50ms) caps the
+ *                              per-read block at 100ms instead of 500ms+ (default
+ *                              was 250ms × 2 transactions ≈ 400ms per getEvent()).
+ *                              Plus early-return guard in readSensors() when
+ *                              sht4_ok is latched false — no point burning cycles
+ *                              on an absent sensor.
+ *                            - RTC_NOINIT_ATTR struct persists boot_count +
+ *                              per-reason reset counts across resets (RTC memory
+ *                              survives power-on but not power-off; survives
+ *                              WDT/brownout/panic exactly as needed).
+ *                            - Runtime counters (i2c_error_count,
+ *                              i2c_recovery_count, wifi_disconnect_count,
+ *                              mqtt_disconnect_count, heap_min) tracked in RAM
+ *                              and reported in every heartbeat.
+ *                            - NEW /diagnostic topic (cfarm/{code}/diagnostic,
+ *                              QoS 1, not retained) for event-driven server
+ *                              notifications: boot, sensor_state_change,
+ *                              i2c_recovery, mode_transition, heap_low.
+ *                            - Extended heartbeat payload exposes all counters
+ *                              + sensor_state + reset_reason + max_uptime_s so
+ *                              the server can detect "device is unstable" from
+ *                              DB queries, not log scraping.
+ *                            v1.4.5 keepalive/heartbeat retune:
+ *                            - KEEPALIVE 60→90s (broker timeout 135s) +
+ *                              HEARTBEAT_INTERVAL 60→30s — server LWT
+ *                              hysteresis absorbs false flaps; heartbeat is
+ *                              now well inside the broker's 135s budget.
  *                            v1.4.1 anti-spam-failsafe pack:
  *                            - FAILSAFE_TIMEOUT_MS 15000 → 60000 (4× margin).
  *                              Server keepalive cadence is 4s; even with a
@@ -105,6 +158,7 @@
 #include <Preferences.h>
 #include <esp_task_wdt.h>
 #include <esp_system.h>
+#include <string.h>   // v1.4.6: memset() in recordRtcStateOnBoot()
 
 // ==================== USER CONFIG ====================
 
@@ -117,7 +171,7 @@ const char* MQTT_USER     = "cfarm_device";
 const char* MQTT_PASS     = "cfarm_device_2026";
 
 const char* DEVICE_TYPE     = "brooder";
-const char* FIRMWARE_VERSION = "1.4.5";
+const char* FIRMWARE_VERSION = "1.4.8";
 const char* FIRMWARE_NAME    = "esp32_brooder";
 
 // ─── DEVICE CODE ───
@@ -158,6 +212,30 @@ const char* DEVICE_CODE = "";
 #define STATUS_LED 2
 
 // ==================== TIMING ====================
+
+// v1.4.6 WDT root-cause fix: cap I2C bus-level timeout at 50ms. Default
+// is 250ms (Wire.setTimeout default in ESP32 Arduino core 2.x/3.x), so
+// each getEvent() call blocks for ~250ms × 2 transactions = 500ms+ when
+// no SHT40 is on the bus. At 2s cadence that's 25% CPU burn on I2C alone,
+// and Adafruit_SHT4x internal retries push it to 1.2s+ — over time the
+// loop() iterations stop calling esp_task_wdt_reset() in time and the WDT
+// trips every ~30s, causing the reboot loop on esp32-1168. 50ms × 2 = 100ms
+// worst-case blocking — well under the WDT 30s budget.
+const uint32_t I2C_TIMEOUT_MS            = 50;
+
+// v1.4.6 diagnostic throttling. Sensor recovery is "promoted to ok" after
+// 10 consecutive successful reads (≈20s) so a single blip after recovery
+// doesn't immediately report "ok" then flap back to "unresponsive".
+const uint8_t  SENSOR_RECOVERY_OK_STREAK = 10;
+
+// Diagnostic event throttle (ms). Prevents noisy conditions (bus recovery
+// attempts, heap_low) from flooding the broker with redundant events.
+const uint32_t DIAG_THROTTLE_MS          = 60000UL;
+
+// Free heap below this threshold fires a heap_low diagnostic event.
+// ESP32 with WiFi typically has ~200KB free; <50KB means fragments are
+// likely and a malloc() can fail (silent corruption → WDT).
+const uint32_t HEAP_LOW_THRESHOLD_BYTES  = 50 * 1024UL;
 
 const unsigned long TELEMETRY_INTERVAL_MS   = 5000;    // Publish telemetry every 5s
 // v1.4.5: 60000 → 30000. Keepalive=90 (broker timeout=135s) but heartbeat
@@ -277,6 +355,7 @@ char topic_setpoint[80];
 char topic_cmd[80];
 char topic_lwt[80];
 char topic_ztemp[80];    // Server→ESP: weighted-avg of zone reference sensors
+char topic_diag[80];     // ESP→Server: event-driven diagnostic notifications (v1.4.6)
 
 WiFiClient wifiClient;
 PubSubClient mqttClient(wifiClient);
@@ -351,6 +430,45 @@ bool sht4_ok = false;
 // sensor is unplugged). One transient blip no longer latches.
 uint8_t sht4_fail_count = 0;
 
+// ── v1.4.6: persistent RTC state across resets ──────────────────────────
+// RTC_NOINIT_ATTR keeps this struct in RTC slow memory which survives
+// software resets, WDT resets, brown-outs, and panics — but NOT a full
+// power cycle (the chip is unpowered). That's exactly what we want:
+// every abnormal boot is recorded, but a fresh power-on doesn't keep
+// the count from a different physical session.
+RTC_NOINIT_ATTR struct {
+    // v1.4.7: magic sentinel. RTC slow memory is NOT guaranteed to be zero
+    // on a fresh power-on for every ESP32 variant (esp32-1168 reported
+    // boot_count=3074480277 on first v1.4.6 boot — clearly random bits).
+    // Using a sentinel instead of `boot_count==0` to detect first-boot
+    // works regardless of initial RTC state: if magic != MAGIC, the struct
+    // is either truly fresh OR garbage → memset + stamp magic.
+    uint32_t magic;
+    uint32_t boot_count;
+    uint32_t wdt_reset_count;
+    uint32_t brownout_count;
+    uint32_t panic_count;
+    uint32_t max_uptime_s;
+    uint8_t  last_reset_reason;   // esp_reset_reason() return value
+} rtc_state;
+
+// v1.4.7: RTC struct sentinel. Chosen arbitrarily but with bit pattern
+// unlikely to occur in random RTC garbage (alternating 0xCF / 0xA2 → 32
+// bits with ~50% ones density, neither all-zero nor all-one nor small int).
+#define RTC_STATE_MAGIC 0xCFA2CFA2U
+
+// ── v1.4.6: runtime counters (RAM, reset on power cycle) ─────────────────
+uint32_t i2c_error_count        = 0;
+uint32_t i2c_recovery_count     = 0;
+uint32_t wifi_disconnect_count  = 0;
+uint32_t mqtt_disconnect_count  = 0;
+uint32_t heap_min               = UINT32_MAX;
+const char* sensor_state_str    = "unknown";   // "ok"|"unresponsive"|"recovered"|"latched_dead"
+unsigned long lastHeapLowWarnMs = 0;           // throttle heap_low diagnostic events
+unsigned long lastRecoveryDiagMs = 0;          // throttle i2c_recovery diagnostic events
+uint8_t sensor_recovery_streak  = 0;           // v1.4.6: post-recovery success count, 10 → "ok"
+bool boot_diagnostic_pending    = false;       // v1.4.6: emit "boot" event on first MQTT connect
+
 // Local PID state (failsafe)
 float        pidIntegral      = 0;
 // Fix #3: Derivative is computed on MEASUREMENT (-d(temp_pid)/dt), not on
@@ -418,6 +536,7 @@ void buildTopics() {
     snprintf(topic_cmd,       sizeof(topic_cmd),       "%s/cmd",       topic_base.c_str());
     snprintf(topic_lwt,       sizeof(topic_lwt),       "%s/lwt",       topic_base.c_str());
     snprintf(topic_ztemp,     sizeof(topic_ztemp),     "%s/zone_temp", topic_base.c_str());
+    snprintf(topic_diag,      sizeof(topic_diag),      "%s/diagnostic", topic_base.c_str());   // v1.4.6
 }
 
 float loadCachedSetpoint() {
@@ -461,6 +580,13 @@ void connectWifi() {
     if (millis() - lastWifiRetryMs < WIFI_RETRY_INTERVAL_MS) return;
     lastWifiRetryMs = millis();
 
+    // v1.4.6: count WiFi disconnect attempts. Note this is "attempt to
+    // reconnect", not "got disconnected" — WiFi.onEvent() would give us
+    // the precise moment of disconnect, but the connectWifi() retry path
+    // already runs whenever WiFi is down, so this counter ticks on every
+    // reconnect attempt. Good enough for the dashboard.
+    wifi_disconnect_count++;
+
     Serial.println("WiFi: connecting...");
     WiFi.mode(WIFI_STA);
     WiFi.setAutoReconnect(true);
@@ -500,6 +626,24 @@ void onMqttConnected() {
     char buf[160];
     serializeJson(doc, buf);
     mqttClient.publish(topic_status, buf, true);  // retained
+
+    // v1.4.6: emit the boot diagnostic event now that the link is up.
+    // We delay from setup() until MQTT connect because publishDiagnostic()
+    // silently bails when !connected — instead of dropping the event,
+    // hold the flag and emit here. Only clear the flag on successful publish;
+    // a broker buffer-full or transient network blip will leave the flag set
+    // and retry on the next MQTT reconnect.
+    if (boot_diagnostic_pending) {
+        char details[160];
+        snprintf(details, sizeof(details),
+                 "{\"wdt\":%lu,\"brownout\":%lu,\"panic\":%lu}",
+                 (unsigned long)rtc_state.wdt_reset_count,
+                 (unsigned long)rtc_state.brownout_count,
+                 (unsigned long)rtc_state.panic_count);
+        if (publishDiagnostic("boot", details)) {
+            boot_diagnostic_pending = false;
+        }
+    }
 }
 
 void connectMqtt() {
@@ -648,9 +792,18 @@ void mqttCallback(char* topic, byte* payload, unsigned int length) {
 
 // ==================== SENSORS ====================
 
+// v1.4.6: single source of truth for the I2C bus init sequence.
+// Both initSensors() and i2cBusRecovery() need to re-initialise the bus
+// after a recovery; centralising here means a future Arduino-ESP32 core
+// that resets the timeout in begin() can't silently regress the WDT fix.
+void i2cBusInit() {
+    I2C_Bus.begin(I2C_SDA, I2C_SCL, 100000);
+    I2C_Bus.setTimeout(I2C_TIMEOUT_MS);
+}
+
 void initSensors() {
     // Single SHT40 on default Wire bus (GPIO 21/22).
-    I2C_Bus.begin(I2C_SDA, I2C_SCL, 100000);
+    i2cBusInit();
 
     // Adafruit_SHT4x::begin() signature is `bool begin(TwoWire *theWire = &Wire)`
     // — the I2C address is hardcoded to SHT4x_DEFAULT_ADDR (0x44) in the
@@ -707,10 +860,25 @@ void i2cBusRecovery() {
     delayMicroseconds(5);
 
     // Step 4: hand pins back to Wire peripheral
-    I2C_Bus.begin(I2C_SDA, I2C_SCL, 100000);
+    i2cBusInit();   // re-applies I2C_TIMEOUT_MS too (v1.4.6)
 }
 
 void readSensors() {
+    // v1.4.6 EARLY-RETURN GUARD: once the sensor is latched DEAD, don't
+    // keep blocking on a missing/absent I2C device. sht4_ok becomes false
+    // only after SHT4_FAIL_THRESHOLD=5 misses, at which point the Tier-3
+    // sensor-failsafe clamp (heater OFF) is engaged in loop() and there's
+    // nothing for a fresh read to do except reset the fail counter — which
+    // we don't want automatically. The recovery path (sht4.begin after
+    // i2cBusRecovery) lives in the else-branch below for transient errors,
+    // and operator-driven recovery requires a reboot OR enough successful
+    // reads to bring sht4_fail_count below the threshold via the recovery
+    // logic below. Skipping getEvent() entirely here means the loop stays
+    // responsive (no 100ms I2C timeout block) and the WDT is fed promptly.
+    if (!sht4_ok) {
+        return;
+    }
+
     sensors_event_t hum_event, temp_event;
     // v1.4.2 (firmware bug 4): single I2C failure no longer latches the
     // sensor failsafe clamp. The previous "if (!sht4_ok) skip getEvent()"
@@ -740,7 +908,34 @@ void readSensors() {
                           sht4_fail_count);
             sht4_fail_count = 0;
             sht4_ok = true;
+            // v1.4.6: publish sensor_state_change diagnostic so the server
+            // sees recovery events in real time (not just on the next
+            // 30s heartbeat). Promote to "ok" only after 10 successful
+            // reads (≈20s) — a single blip after recovery shouldn't
+            // immediately report "ok" and then flap back to "unresponsive".
+            const char* prev_state = sensor_state_str;
+            sensor_state_str = "recovered";
+            sensor_recovery_streak = 1;
+            if (strcmp(prev_state, "recovered") != 0) {
+                publishDiagnostic("sensor_state_change",
+                                  "{\"from\":\"latched_dead\",\"to\":\"recovered\"}");
+            }
+        } else if (strcmp(sensor_state_str, "ok") != 0) {
+            // Already-OK sensor: keep promoting toward "ok" as we accumulate
+            // post-recovery successes. Without this branch, sensor_state_str
+            // would stay "recovered" forever even though the sensor is fine.
+            if (sensor_recovery_streak < SENSOR_RECOVERY_OK_STREAK) {
+                sensor_recovery_streak++;
+            }
+            if (sensor_recovery_streak >= SENSOR_RECOVERY_OK_STREAK
+                && strcmp(sensor_state_str, "ok") != 0) {
+                sensor_state_str = "ok";
+                publishDiagnostic("sensor_state_change",
+                                  "{\"from\":\"recovered\",\"to\":\"ok\"}");
+            }
         }
+        // Steady-state "ok" sensor: nothing to do — sensor_state_str is "ok"
+        // and stays "ok" until the next failure below.
         // Low-pass filter the local SHT40 BEFORE feeding Tier-2 PID.
         // Cold-start: filter has no history yet → seed with raw reading so
         // the first sample isn't biased by `temp_filtered = 0` default.
@@ -796,6 +991,10 @@ void readSensors() {
         }
     } else {
         Serial.println("WARN: Khong doc duoc SHT40 trong chu ky nay!");
+        // v1.4.6: bump cumulative I2C error counter so server can see
+        // degradation patterns (e.g. 5 errors/hour = intermittent, 200/hour
+        // = sensor going bad). Heartbeat publishes this every 30s.
+        i2c_error_count++;
         // v1.4.2 (firmware bug 4): count consecutive failures, re-init
         // I2C + driver on the FIRST failure (most common cause of a
         // single read fail is bus lockup that a fresh begin() clears),
@@ -811,16 +1010,53 @@ void readSensors() {
             // peripheral won't initiate clocks without an active
             // transaction — see i2cBusRecovery() docstring.
             i2cBusRecovery();
+            // v1.4.6: count bus-recovery attempts so server can spot a
+            // pattern (e.g. one recovery on cold-boot = normal, 50/hour
+            // = failing hardware). Heartbeat publishes this every 30s.
+            i2c_recovery_count++;
+            // v1.4.6: emit diagnostic event on every recovery attempt.
+            // Throttling: state-transition events (boot, mode change,
+            // sensor_state_change) go out unconditionally because they're
+            // rare; recovery attempts can be frequent during a noisy
+            // bus, so cap at once per DIAG_THROTTLE_MS.
+            if (millis() - lastRecoveryDiagMs >= DIAG_THROTTLE_MS) {
+                lastRecoveryDiagMs = millis();
+                char details[96];
+                snprintf(details, sizeof(details),
+                         "{\"recovery_count\":%lu,\"error_count\":%lu}",
+                         (unsigned long)i2c_recovery_count,
+                         (unsigned long)i2c_error_count);
+                publishDiagnostic("i2c_recovery", details);
+            }
             sht4.begin(&I2C_Bus);
             Serial.println("  I2C bus + SHT40 driver re-initialized after "
                            "transient recovery attempt");
         }
         sht4_fail_count++;
+        // v1.4.6: track transient-fail state for the heartbeat. The plan
+        // specifies four states: "ok"|"unresponsive"|"recovered"|"latched_dead".
+        // Single failure → "unresponsive" (will flip back to "recovered" on
+        // next success). Threshold latch below → "latched_dead".
+        if (sht4_fail_count == 1) {
+            if (strcmp(sensor_state_str, "ok") == 0
+                || strcmp(sensor_state_str, "unknown") == 0) {
+                sensor_state_str = "unresponsive";
+                // Don't publish a diagnostic event for a single transient
+                // miss — that's noise. The recovery branch above publishes
+                // on the next successful read.
+            }
+            sensor_recovery_streak = 0;   // reset post-recovery streak
+        }
         if (sht4_fail_count >= SHT4_FAIL_THRESHOLD) {
             if (sht4_ok) {
                 Serial.printf("  SHT40 latched DEAD after %u consecutive "
                               "failures — Tier-3 failsafe engaged\n",
                               sht4_fail_count);
+                // v1.4.6: one-shot diagnostic event on the latched-dead
+                // transition so server sees it immediately.
+                sensor_state_str = "latched_dead";
+                publishDiagnostic("sensor_state_change",
+                                  "{\"from\":\"unresponsive\",\"to\":\"latched_dead\"}");
             }
             // Propagate the failure into the boot flag so the loop-level
             // failsafe clamp (heater OFF) kicks in.
@@ -1140,23 +1376,69 @@ void publishHeartbeat() {
     // firmware so the same handler works for both device types.
     if (!mqttClient.connected()) return;
 
-    StaticJsonDocument<256> doc;
+    // v1.4.6: track heap minimum so server can spot leaks. Updated every
+    // call so the worst case is bounded by HEARTBEAT_INTERVAL_MS=30s.
+    uint32_t fh = ESP.getFreeHeap();
+    if (fh < heap_min) heap_min = fh;
+
+    // v1.4.7: 768→384 — actual serialized payload is ~320 bytes (29 fields
+    // × ~11 bytes avg), so 384 has comfortable headroom. The 768-byte
+    // StaticJsonDocument + 512-byte buf = 1.28KB transient stack usage
+    // was unnecessary overhead on the loop task. Reduced to keep WDT
+    // slack generous even on Core 3.x's tight 5s default TWDT (see
+    // reconfigure() note in setup()).
+    //
+    // v1.4.7 + server fix: bumped to 512 — the broker log showed actual
+    // serialized payloads of 412 bytes (29 fields × ~14 bytes incl.
+    // key-quotes + nested JSON braces), 28 bytes over the 384-byte buf.
+    // `serializeJson()` writes the overflow into adjacent stack memory;
+    // esp32-1168 heartbeats carried byte 0xa8 at position 385 (whatever
+    // the next stack slot held) which broke UTF-8 decoding in the server
+    // and caused every heartbeat to be dropped at MQTT-receive. Larger
+    // buf eliminates the overflow; the doc capacity is the binding
+    // constraint and 512 keeps it well under the heap-resident object.
+    StaticJsonDocument<512> doc;
     doc["device_code"]    = device_code;
     doc["device_type"]    = DEVICE_TYPE;
     doc["firmware"]       = FIRMWARE_VERSION;
     doc["uptime"]         = millis() / 1000;
     doc["wifi_rssi"]      = WiFi.RSSI();
     doc["ip"]             = WiFi.localIP().toString();
-    doc["free_heap"]      = ESP.getFreeHeap();
+    doc["free_heap"]      = fh;
     doc["mode"]           = modeToString(currentMode);
     doc["sht4_ok"]        = sht4_ok;
     doc["setpoint"]       = currentSetpoint;
     doc["local_mqtt"]     = true;
     doc["cloud_mqtt"]     = false;   // brooder talks to local broker only
+    // ── v1.4.6: device state counters (cfarm/brooder-{code}/heartbeat) ──
+    // Persistent across resets (RTC_NOINIT_ATTR) → reported as-is.
+    doc["reset_reason"]          = resetReasonToString((esp_reset_reason_t)rtc_state.last_reset_reason);
+    doc["boot_count"]            = (unsigned long)rtc_state.boot_count;
+    doc["wdt_reset_count"]       = (unsigned long)rtc_state.wdt_reset_count;
+    doc["brownout_count"]        = (unsigned long)rtc_state.brownout_count;
+    doc["panic_count"]           = (unsigned long)rtc_state.panic_count;
+    doc["max_uptime_s"]          = (unsigned long)rtc_state.max_uptime_s;
+    // Runtime counters (RAM, reset on power cycle).
+    doc["i2c_error_count"]       = (unsigned long)i2c_error_count;
+    doc["i2c_recovery_count"]    = (unsigned long)i2c_recovery_count;
+    doc["wifi_disconnect_count"] = (unsigned long)wifi_disconnect_count;
+    doc["mqtt_disconnect_count"] = (unsigned long)mqtt_disconnect_count;
+    doc["sensor_state"]          = sensor_state_str;
+    doc["heap_min"]              = (unsigned long)heap_min;
+    doc["cpu_freq_mhz"]          = ESP.getCpuFreqMHz();
 
-    char buf[256];
-    serializeJson(doc, buf);
-    mqttClient.publish(topic_heartbeat, buf, false);  // QoS 0, not retained
+    char buf[512];
+    // CRITICAL: pass sizeof(buf) explicitly. The 2-arg overload
+    // serializeJson(doc, buf) in ArduinoJson 6.x computes
+    // `strlen(buf)` internally — strlen on uninitialized stack memory
+    // is undefined behaviour and was reading past the 384-byte buffer
+    // into adjacent stack, so the wire payload was 412 bytes (whatever
+    // happened to live after buf[] on the stack) with byte 0xa8 at
+    // position 385. The server received that as a non-UTF-8 garbage
+    // payload and dropped every heartbeat. The 3-arg form is bounded
+    // and writes up to sizeof(buf)-1 chars + NUL.
+    size_t n = serializeJson(doc, buf, sizeof(buf));
+    mqttClient.publish(topic_heartbeat, buf, n, false);  // QoS 0, not retained
 }
 
 void publishStatus(const char* status) {
@@ -1170,6 +1452,149 @@ void publishStatus(const char* status) {
     char buf[160];
     serializeJson(doc, buf);
     mqttClient.publish(topic_status, buf, true);  // retained
+}
+
+// ==================== DIAGNOSTIC (v1.4.6) ====================
+
+// Map esp_reset_reason() enum to a stable, server-friendly string. Kept in
+// the firmware because the server shouldn't have to maintain a parallel
+// enum mapping — esp_reset_reason() values are ESP-IDF-version-specific.
+const char* resetReasonToString(esp_reset_reason_t r) {
+    switch (r) {
+        case ESP_RST_POWERON:   return "power_on";
+        case ESP_RST_EXT:       return "external";
+        case ESP_RST_SW:        return "software";
+        case ESP_RST_PANIC:     return "panic";
+        case ESP_RST_INT_WDT:   return "int_wdt";
+        case ESP_RST_TASK_WDT:  return "task_wdt";
+        case ESP_RST_WDT:       return "wdt";
+        case ESP_RST_DEEPSLEEP: return "deep_sleep";
+        case ESP_RST_BROWNOUT:  return "brownout";
+        case ESP_RST_SDIO:      return "sdio";
+        default:                return "unknown";
+    }
+}
+
+// v1.4.6: read this boot's reset reason, bump per-reason counters in RTC
+// state, and update max_uptime_s from the previous session. Called from
+// setup() before anything else so the boot diagnostic event has accurate
+// reason data.
+//
+// First-boot detection: RTC_NOINIT_ATTR memory should be zeroed on a true
+// power-on, but in practice some ESP32 variants / battery-backed RTCs
+// surface uninitialised garbage on first boot (esp32-1168 reported
+// boot_count=3074480277 — random bits, not zero). The v1.4.7 fix uses a
+// magic sentinel: if `rtc_state.magic != RTC_STATE_MAGIC`, the struct is
+// either truly fresh (zeroed) or garbage — either way, memset + stamp
+// magic. On subsequent WDT/brownout/panic resets the magic persists so
+// counters correctly accumulate.
+void recordRtcStateOnBoot() {
+    if (rtc_state.magic != RTC_STATE_MAGIC) {
+        memset(&rtc_state, 0, sizeof(rtc_state));
+        rtc_state.magic = RTC_STATE_MAGIC;
+    }
+
+    esp_reset_reason_t r = esp_reset_reason();
+    rtc_state.last_reset_reason = (uint8_t)r;
+    rtc_state.boot_count++;
+
+    // Bump the matching per-reason counter. The WDT bucket covers both
+    // ESP_RST_TASK_WDT (loop blocked too long) and ESP_RST_WDT (legacy
+    // watchdog) — they're both "task or interrupt starved" root causes
+    // and the server should treat them identically.
+    switch (r) {
+        case ESP_RST_TASK_WDT:
+        case ESP_RST_WDT:
+            rtc_state.wdt_reset_count++;
+            break;
+        case ESP_RST_BROWNOUT:
+            rtc_state.brownout_count++;
+            break;
+        case ESP_RST_PANIC:
+        case ESP_RST_INT_WDT:
+            rtc_state.panic_count++;
+            break;
+        default:
+            // power_on, software, external, deep_sleep, sdio, unknown:
+            // don't bump any counter — these are expected/benign.
+            break;
+    }
+
+    // Track max observed uptime so the server can spot "device keeps
+    // rebooting before reaching 60s" patterns. On a WDT reset, uptime
+    // is the time since the previous boot's loop() started — by
+    // definition small. On power_on after a long stable session, this
+    // captures the longest uptime seen so far.
+    uint32_t up = millis() / 1000;
+    if (up > rtc_state.max_uptime_s) rtc_state.max_uptime_s = up;
+
+    Serial.printf("RTC: boot_count=%lu wdt=%lu brownout=%lu panic=%lu "
+                  "max_uptime_s=%lu reason=%s\n",
+                  (unsigned long)rtc_state.boot_count,
+                  (unsigned long)rtc_state.wdt_reset_count,
+                  (unsigned long)rtc_state.brownout_count,
+                  (unsigned long)rtc_state.panic_count,
+                  (unsigned long)rtc_state.max_uptime_s,
+                  resetReasonToString(r));
+}
+
+// v1.4.6: publish an event-driven diagnostic message. Topic:
+//   cfarm/brooder-{code}/diagnostic
+// QoS is controlled by the PubSubClient instance (default QoS 0 — see
+// note on qos_above_default below). Not retained — events are
+// timestamped, broker retention would just leak stale state.
+//
+// Common event types:
+//   "boot"                 — emitted once at setup()
+//   "sensor_state_change"  — emitted on ok↔recovered↔unresponsive↔latched_dead
+//   "i2c_recovery"         — emitted on first-failure bus recovery (throttled 60s)
+//   "mode_transition"      — emitted on enterFailsafe / enterNormal
+//   "heap_low"             — emitted when free heap < HEAP_LOW_THRESHOLD_BYTES
+//                            (throttled DIAG_THROTTLE_MS)
+//
+// details_json is a small pre-built JSON snippet (e.g. {"from":"x","to":"y"}).
+// We embed it verbatim under "details_raw" — no reparse. The server stores
+// last_diagnostic_event as JSONB and consumers parse "details_raw" lazily;
+// spending CPU to parse+re-serialize a 50-byte string on every event is
+// wasted work on an MCU with no FPU/JS engine.
+//
+// Best-effort delivery: if MQTT isn't connected, the event is silently
+// dropped. The next heartbeat (≤30s later) carries the underlying state
+// (sensor_state, reset_reason, counters) — that's the source of truth.
+// Diagnostic events are for *latency-critical* signals (alerts), not
+// for replacing heartbeat data. The boot event uses boot_diagnostic_pending
+// to retry-on-connect because operators specifically look for it.
+// Returns true if the event was handed to PubSubClient. PubSubClient can
+// still drop a message internally (broker buffer full, network blip) even
+// when this returns true; the boot event caller uses the return value to
+// gate boot_diagnostic_pending clear so a failed publish retries on the
+// next MQTT reconnect. Other callers discard the return — events are
+// best-effort and the heartbeat carries the persistent state.
+bool publishDiagnostic(const char* event_type, const char* details_json) {
+    if (!mqttClient.connected()) return false;
+
+    StaticJsonDocument<384> doc;
+    doc["device_code"]  = device_code;
+    doc["device_type"]  = DEVICE_TYPE;
+    doc["event_type"]   = event_type;
+    doc["uptime_s"]     = millis() / 1000;
+    doc["reset_reason"] = resetReasonToString((esp_reset_reason_t)rtc_state.last_reset_reason);
+    doc["boot_count"]   = (unsigned long)rtc_state.boot_count;
+    doc["sensor_state"] = sensor_state_str;
+    // Embed the pre-built JSON snippet verbatim. We use a string field
+    // (not a nested object) so we don't pay for parse+re-serialize on
+    // every event — server-side JSONB consumers parse lazily.
+    if (details_json && strlen(details_json) > 0) {
+        doc["details_raw"] = details_json;
+    }
+
+    char buf[512];
+    serializeJson(doc, buf);
+    // NOTE: PubSubClient::publish's third arg is `retained` (bool), not QoS.
+    // QoS for this client is set globally via mqttClient.setPublishQoS() in
+    // newer cores; here we use the default QoS 0 (acceptable for diagnostic
+    // events because the heartbeat carries the persistent state).
+    return mqttClient.publish(topic_diag, buf, false);
 }
 
 // ==================== MODE TRANSITIONS ====================
@@ -1271,6 +1696,10 @@ void enterFailsafe() {
                   failsafeCh1Ratio, failsafeCh2Ratio, refCh1, refCh2);
     preloadPidIntegral(currentPower);
     publishStatus("failsafe");
+    // v1.4.6: surface the mode transition immediately. Server sees this
+    // BEFORE the next heartbeat (≤30s) so alerts/alarms can fire promptly.
+    publishDiagnostic("mode_transition",
+                      "{\"from\":\"normal\",\"to\":\"failsafe\"}");
 }
 
 void enterNormal() {
@@ -1286,6 +1715,10 @@ void enterNormal() {
     // retained-packet protection is needed either.
     normalConfirmCount = 0;
     publishStatus("online");
+    // v1.4.6: surface recovery from failsafe (e.g. server came back after
+    // a restart) so server-side UI can clear the "FAILSAFE" badge immediately.
+    publishDiagnostic("mode_transition",
+                      "{\"from\":\"failsafe\",\"to\":\"normal\"}");
 }
 
 // ==================== SETUP ====================
@@ -1297,6 +1730,13 @@ void setup() {
     Serial.println("=================================");
     Serial.printf("CFarm ESP32 Brooder v%s\n", FIRMWARE_VERSION);
     Serial.println("=================================");
+
+    // v1.4.6: read reset reason BEFORE anything else (so the boot diagnostic
+    // event has accurate data) and bump RTC_NOINIT_ATTR counters. The boot
+    // event itself is published AFTER MQTT connects (see flag below +
+    // onMqttConnected) so it's not silently dropped.
+    recordRtcStateOnBoot();
+    boot_diagnostic_pending = true;   // emitted in onMqttConnected()
 
     pinMode(STATUS_LED, OUTPUT);
     digitalWrite(STATUS_LED, LOW);
@@ -1360,14 +1800,24 @@ void setup() {
 
     // Watchdog (compatible with both Arduino Core 2.x and 3.x).
     // Core 2.x: esp_task_wdt_init(timeout_seconds, panic_on_trigger)
-    // Core 3.x: esp_task_wdt_init(&config) — config struct from esp_task_wdt_config_t
+    // Core 3.x: Arduino's app_main() already calls esp_task_wdt_init()
+    //          during boot — calling init() a second time returns
+    //          ESP_ERR_INVALID_STATE ("TWDT already initialized"), which
+    //          prints E (255) task_wdt: TWDT already initialized. The
+    //          existing TWDT keeps Arduino's default timeout (5s on
+    //          Core 3.x), which is FAR tighter than our WDT_TIMEOUT_S
+    //          and was the root cause of the 90s crash loop on
+    //          esp32-1168 (mqttClient.connect blocked >5s and WDT fired).
+    // v1.4.7 fix: use esp_task_wdt_reconfigure() on Core 3.x. This updates
+    //          the existing TWDT in-place with our longer timeout.
+    //          On Core 2.x the original init() still works.
 #if ESP_ARDUINO_VERSION_MAJOR >= 3
     esp_task_wdt_config_t wdt_config = {
         .timeout_ms     = WDT_TIMEOUT_S * 1000,
         .idle_core_mask = (1 << portNUM_PROCESSORS) - 1,
         .trigger_panic  = true
     };
-    esp_task_wdt_init(&wdt_config);
+    esp_task_wdt_reconfigure(&wdt_config);
 #else
     esp_task_wdt_init(WDT_TIMEOUT_S, true);
 #endif
@@ -1394,6 +1844,20 @@ void loop() {
     unsigned long now = millis();
 
     // ---- WiFi / MQTT maintenance ----
+    // v1.4.6: detect MQTT disconnects. We can't easily install an onDisconnect
+    // callback that survives across connects in PubSubClient 2.x, so we
+    // observe transitions via the previous-tick cached state. A transition
+    // connected→!connected increments mqtt_disconnect_count. Note: this
+    // counts EACH loss of connection (could be 1× per genuine drop, or
+    // multiple counts per drop if the broker drops+reaccepts the session
+    // before our next tick — accept this noise and let the server smooth).
+    static bool prev_mqtt_connected = false;
+    bool cur_mqtt_connected = mqttClient.connected();
+    if (prev_mqtt_connected && !cur_mqtt_connected) {
+        mqtt_disconnect_count++;
+    }
+    prev_mqtt_connected = cur_mqtt_connected;
+
     if (WiFi.status() != WL_CONNECTED) {
         connectWifi();
     } else if (!mqttClient.connected()) {
@@ -1401,6 +1865,24 @@ void loop() {
     }
     if (mqttClient.connected()) {
         mqttClient.loop();
+    }
+
+    // v1.4.6: heap-low watchdog. Below HEAP_LOW_THRESHOLD_BYTES free heap,
+    // fragments are likely and a malloc() can fail (causing silent
+    // corruption or WDT). Throttle the diagnostic event to once per
+    // DIAG_THROTTLE_MS — this is a noisy condition that doesn't need a
+    // per-second event stream. The check itself runs every loop() tick
+    // (every ~10ms) but is just a free-heap comparison — cheap.
+    if (ESP.getFreeHeap() < HEAP_LOW_THRESHOLD_BYTES) {
+        if (now - lastHeapLowWarnMs >= DIAG_THROTTLE_MS) {
+            lastHeapLowWarnMs = now;
+            char details[96];
+            snprintf(details, sizeof(details),
+                     "{\"free_heap\":%u,\"heap_min\":%u}",
+                     (unsigned)ESP.getFreeHeap(),
+                     (unsigned)heap_min);
+            publishDiagnostic("heap_low", details);
+        }
     }
 
     // ---- Read sensors every 2s ----

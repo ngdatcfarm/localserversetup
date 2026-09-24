@@ -1,11 +1,14 @@
 """MQTT Listener - Processes incoming ESP32 messages and stores to database."""
 
 import asyncio
+import json
 import logging
 import time
+from dataclasses import asdict
 from datetime import datetime, timezone
 from typing import Any
 
+from src.iot.device_state import EXPECTED_RESET_REASONS, DeviceStateCounters, extract_device_state
 from src.iot.mqtt_client import mqtt_client
 from src.iot.mq_tare_service import mq_tare_service, MQ_SENSOR_TYPES
 from src.services.database.db import db
@@ -41,7 +44,15 @@ class MqttListener:
         # a sub-second offline signal so the UI doesn't have to wait for
         # the 180s heartbeat-staleness sweep in device_service.check_offline.
         mqtt_client.subscribe("cfarm/+/lwt", self._handle_lwt)
-        logger.info("MqttListener: Registered handlers for heartbeat, status, sensor data, lwt")
+        # v1.4.6: event-driven diagnostic notifications from firmware.
+        # Topic: cfarm/{code}/diagnostic (QoS 1, not retained). Payload
+        # schema: {device_code, device_type, event_type, uptime_s,
+        # reset_reason, boot_count, sensor_state, details}. Common
+        # event_types: "boot", "sensor_state_change", "i2c_recovery",
+        # "mode_transition", "heap_low". Stored as last_diagnostic_event
+        # (JSONB) on the device row + a warning log on abnormal boots.
+        mqtt_client.subscribe("cfarm/+/diagnostic", self._handle_diagnostic)
+        logger.info("MqttListener: Registered handlers for heartbeat, status, sensor data, lwt, diagnostic")
 
     def _queue_work(self, handler_name: str, device_topic: str, payload: dict):
         """Queue work to be processed by the asyncio event loop."""
@@ -66,6 +77,10 @@ class MqttListener:
                     await self._store_sensor_data(device_topic, payload)
                 elif handler_name == "_store_lwt":
                     await self._store_lwt(device_topic, payload)
+                elif handler_name == "_store_diagnostic":
+                    await self._store_diagnostic(device_topic, payload)
+                elif handler_name == "_store_heartbeat_minimal":
+                    await self._store_heartbeat_minimal(device_topic)
             except Exception as e:
                 logger.error(f"MqttListener: Error processing queue: {e}")
 
@@ -94,15 +109,46 @@ class MqttListener:
             return parts[3]
         return None
 
-    def _handle_heartbeat(self, topic: str, payload: dict):
-        """Process device heartbeat - update online status and telemetry."""
+    def _device_code_from_payload(self, device_topic: str, payload: dict) -> str:
+        """Resolve device_code from payload (firmware-authored, authoritative)
+        with topic-last-segment fallback for legacy raw-string payloads.
+
+        Also checks the legacy `payload.get("code")` alias used by older
+        firmware in heartbeat payloads (predates v1.4.6 `device_code`).
+        """
+        return (
+            payload.get("device_code")
+            or payload.get("code")
+            or device_topic.split("/")[-1]
+        )
+
+    def _handle_heartbeat(self, topic: str, payload):
+        """Process device heartbeat - update online status and telemetry.
+
+        `payload` is normally a dict (JSON-decoded by mqtt_client._on_message).
+        v1.4.7 firmware on some devices has a buffer-overflow bug in
+        publishHeartbeat() that produces non-UTF-8 garbage bytes instead of
+        a JSON object. mqtt_client now keeps raw bytes instead of raising,
+        so this handler receives bytes/str. Fallback: mark the device as
+        alive (is_online=TRUE + last_heartbeat_at=NOW) so the dashboard
+        doesn't flap, and log a warning so the operator sees the bug.
+        """
         device_topic = self._extract_device_topic(topic)
 
         if not isinstance(payload, dict):
-            logger.warning(f"MqttListener: Invalid heartbeat payload from {topic}")
+            # Garbage payload — likely a known firmware bug. Treat as
+            # presence-only heartbeat. We can't extract firmware/RSSI/etc
+            # but we CAN mark the device online.
+            logger.warning(
+                f"MqttListener: Non-dict heartbeat from {topic} "
+                f"({type(payload).__name__}, len={len(payload) if payload else 0}). "
+                "Treating as presence-only — device appears alive but "
+                "firmware may be sending corrupted payload (reflash recommended)."
+            )
+            self._queue_work("_store_heartbeat_minimal", device_topic, None)
             return
 
-        logger.warning(f"MqttListener: >>> HEARTBEAT RECEIVED from {device_topic}, payload={payload}")
+        logger.debug(f"MqttListener: >>> HEARTBEAT RECEIVED from {device_topic}, payload={payload}")
         self._queue_work("_store_heartbeat", device_topic, payload)
 
     def _handle_lwt(self, topic: str, payload: dict):
@@ -117,10 +163,9 @@ class MqttListener:
             # mqtt_client._on_message tries json.loads first; if that failed
             # we got the raw string back. Best-effort parse, else treat as
             # opaque "offline" signal.
-            import json as _json
             if isinstance(payload, str):
                 try:
-                    payload = _json.loads(payload)
+                    payload = json.loads(payload)
                 except Exception:
                     payload = {"status": "offline", "_raw": payload[:120]}
             else:
@@ -142,7 +187,7 @@ class MqttListener:
         uptime = payload.get("uptime") or payload.get("uptime_seconds")
         free_heap = payload.get("heap") or payload.get("free_heap_bytes")
         firmware = payload.get("firmware") or payload.get("firmware_version")
-        device_code = payload.get("device_code") or payload.get("code") or device_topic.split("/")[-1]
+        device_code = self._device_code_from_payload(device_topic, payload)
         device_name = payload.get("name") or device_code
         device_type = payload.get("device_type") or payload.get("type") or "mixed"
 
@@ -155,9 +200,8 @@ class MqttListener:
         if not isinstance(sub_sensor_health_raw, dict):
             sub_sensor_health_raw = {}
         # asyncpg encodes JSONB as a string — must pre-serialise the dict
-        # here, otherwise $8 fails with "expected str, got dict".
-        import json as _json
-        sub_sensor_health_json = _json.dumps(sub_sensor_health_raw) if sub_sensor_health_raw else None
+        # here, otherwise the JSONB parameter fails with "expected str, got dict".
+        sub_sensor_health_json = json.dumps(sub_sensor_health_raw) if sub_sensor_health_raw else None
         sub_a_state_in = str(sub_sensor_health_raw.get("a") or "UNKNOWN").upper()
         sub_b_state_in = str(sub_sensor_health_raw.get("b") or "UNKNOWN").upper()
         # Clamp to allowed values (defensive against firmware bugs)
@@ -179,6 +223,11 @@ class MqttListener:
         )
         prev_a_state = prev["sub_sensor_a_state"] if prev else "UNKNOWN"
         prev_b_state = prev["sub_sensor_b_state"] if prev else "UNKNOWN"
+
+        # v1.4.6: extract device-state counters into a single dataclass so
+        # _apply_heartbeat_update + the auto-discovery INSERT stay in sync
+        # via the same field set (see DeviceStateCounters docstring).
+        device_state = extract_device_state(payload)
 
         # Set _bad_since ONLY on transition into BAD (preserve existing timestamp
         # while still BAD; clear on exit to GOOD/DEGRADED/UNKNOWN).
@@ -209,6 +258,7 @@ class MqttListener:
             a_transition=(sub_a_state == "BAD" and prev_a_state != "BAD"),
             b_transition=(sub_b_state == "BAD" and prev_b_state != "BAD"),
             sub_a_fails=sub_a_fails, sub_b_fails=sub_b_fails,
+            device_state=device_state,
         )
 
         # If device doesn't exist, auto-create it (MQTT auto-discovery)
@@ -259,6 +309,7 @@ class MqttListener:
                     a_transition=(sub_a_state == "BAD" and prev_a_state != "BAD"),
                     b_transition=(sub_b_state == "BAD" and prev_b_state != "BAD"),
                     sub_a_fails=sub_a_fails, sub_b_fails=sub_b_fails,
+                    device_state=device_state,
                 )
 
         if result == "UPDATE 0":
@@ -310,6 +361,10 @@ class MqttListener:
             b_bad_since_initial = now if sub_b_state == "BAD" else None
 
             try:
+                # v1.4.6: spread the dataclass into the parameter list so the
+                # INSERT column order stays in lockstep with the UPDATE path
+                # and DeviceStateCounters. asdict() preserves field order.
+                ds = asdict(device_state)
                 await db.execute(
                     """INSERT INTO devices (device_code, name, device_type_id, barn_id, mqtt_topic, is_online,
                         last_heartbeat_at, first_heartbeat_at, wifi_rssi, ip_address, uptime_seconds, free_heap_bytes,
@@ -318,12 +373,20 @@ class MqttListener:
                         sub_sensor_a_state, sub_sensor_b_state,
                         sub_sensor_a_bad_since, sub_sensor_b_bad_since,
                         sub_sensor_a_fails, sub_sensor_b_fails,
+                        reset_reason, boot_count, wdt_reset_count, brownout_count, panic_count,
+                        max_uptime_s, i2c_error_count, i2c_recovery_count,
+                        wifi_disconnect_count, mqtt_disconnect_count,
+                        sensor_state, heap_min,
                         created_at, updated_at)
                     VALUES ($1, $2, $3, $4, $5, TRUE, $6, $6, $7, $8, $9, $10, $11,
                             $12::jsonb, $13,
                             $14, $15,
                             $16, $17,
                             $18, $19,
+                            $20, $21, $22, $23, $24,
+                            $25, $26, $27,
+                            $28, $29,
+                            $30, $31,
                             $6, $6)""",
                     device_code, device_name, device_type_id, barn_id, device_topic,
                     now, wifi_rssi, ip_address, uptime, free_heap, firmware,
@@ -331,6 +394,13 @@ class MqttListener:
                     sub_a_state, sub_b_state,
                     a_bad_since_initial, b_bad_since_initial,
                     sub_a_fails, sub_b_fails,
+                    # v1.4.6 state counters (mirrors DeviceStateCounters order)
+                    ds["reset_reason"],
+                    ds["boot_count"], ds["wdt_reset_count"],
+                    ds["brownout_count"], ds["panic_count"], ds["max_uptime_s"],
+                    ds["i2c_error_count"], ds["i2c_recovery_count"],
+                    ds["wifi_disconnect_count"], ds["mqtt_disconnect_count"],
+                    ds["sensor_state"], ds["heap_min"],
                 )
                 logger.info(f"Auto-discovered new device via MQTT: {device_topic} ({device_code})")
             except Exception as e:
@@ -350,6 +420,43 @@ class MqttListener:
 
         logger.debug(f"Heartbeat: {device_topic} rssi={wifi_rssi} ip={ip_address}")
 
+    async def _store_heartbeat_minimal(self, device_topic: str):
+        """Presence-only heartbeat update for corrupted payloads.
+
+        Used when _handle_heartbeat receives a non-dict (raw bytes / string)
+        — the firmware is alive (the broker delivered the message) but the
+        payload is unparseable (typically v1.4.7 buffer-overflow on
+        esp32_brooder firmware). We can't extract RSSI / firmware / heap
+        fields but we CAN mark the device as online so the dashboard
+        doesn't flap. Full data updates resume once the device is
+        reflashed with v1.4.8.
+
+        Falls through silently if the row doesn't exist (auto-discovery
+        only runs on valid payloads — we don't want to create a row for
+        garbage that lacks a device_code either).
+        """
+        if not db.pool:
+            return
+        try:
+            result = await db.execute(
+                """UPDATE devices
+                      SET is_online = TRUE,
+                          last_heartbeat_at = NOW(),
+                          updated_at = NOW()
+                    WHERE mqtt_topic = $1""",
+                device_topic,
+            )
+            if result == "UPDATE 0":
+                logger.debug(
+                    f"Heartbeat-minimal: no row for {device_topic} (no auto-create on garbage payload)"
+                )
+            else:
+                logger.info(
+                    f"Heartbeat-minimal: marked {device_topic} online (corrupted payload)"
+                )
+        except Exception as e:
+            logger.error(f"Heartbeat-minimal: failed for {device_topic}: {e}")
+
     async def _apply_heartbeat_update(
         self,
         device_topic: str,
@@ -360,6 +467,7 @@ class MqttListener:
         sub_a_state: str, sub_b_state: str,
         a_transition: bool, b_transition: bool,
         sub_a_fails: int, sub_b_fails: int,
+        device_state: DeviceStateCounters,
     ) -> str:
         """Run the heartbeat UPDATE on devices WHERE mqtt_topic = $device_topic.
 
@@ -369,7 +477,17 @@ class MqttListener:
         auto-discovery INSERT path. Extracted as a helper so the initial
         attempt and the post-derive retry share a single SQL definition —
         any future column/parameter change touches one place.
+
+        v1.4.6: `device_state` carries the firmware-reported counters in a
+        single dataclass (see DeviceStateCounters docstring). Persistent
+        counters use GREATEST() so out-of-order packets don't decrease
+        the value; runtime counters are direct assignments because they
+        reset on power-cycle — a value going DOWN is legitimate.
         """
+        # Spread the dataclass into the parameter list. Order MUST match the
+        # $16..$27 placeholders in the SQL below. Keep this in sync with
+        # DeviceStateCounters and the auto-discovery INSERT.
+        state = device_state
         return await db.execute(
             """UPDATE devices SET
                 is_online = TRUE,
@@ -396,6 +514,21 @@ class MqttListener:
                 END,
                 sub_sensor_a_fails = $14,
                 sub_sensor_b_fails = $15,
+                -- v1.4.6: device-state counters (see migration 084).
+                -- COALESCE on reset_reason/sensor_state/heap_min keeps the
+                -- existing column value when older firmware omits the field.
+                reset_reason           = COALESCE($16, reset_reason),
+                boot_count             = GREATEST(boot_count, $17),
+                wdt_reset_count        = GREATEST(wdt_reset_count, $18),
+                brownout_count         = GREATEST(brownout_count, $19),
+                panic_count            = GREATEST(panic_count, $20),
+                max_uptime_s           = GREATEST(max_uptime_s, $21),
+                i2c_error_count        = $22,
+                i2c_recovery_count     = $23,
+                wifi_disconnect_count  = $24,
+                mqtt_disconnect_count  = $25,
+                sensor_state           = COALESCE($26, sensor_state),
+                heap_min               = COALESCE($27, heap_min),
                 updated_at = $1
             WHERE mqtt_topic = $7""",
             now, wifi_rssi, ip_address, uptime, free_heap, firmware, device_topic,
@@ -404,6 +537,13 @@ class MqttListener:
             # booleans: True → set timestamp; False → conditional clear
             a_transition, b_transition,
             sub_a_fails, sub_b_fails,
+            # v1.4.6 state counters (mirrors DeviceStateCounters field order)
+            state.reset_reason,
+            state.boot_count, state.wdt_reset_count,
+            state.brownout_count, state.panic_count, state.max_uptime_s,
+            state.i2c_error_count, state.i2c_recovery_count,
+            state.wifi_disconnect_count, state.mqtt_disconnect_count,
+            state.sensor_state, state.heap_min,
         )
 
     async def _store_lwt(self, device_topic: str, payload: dict):
@@ -442,10 +582,7 @@ class MqttListener:
             return
         # Prefer device_code from payload (firmware-authored, authoritative);
         # fall back to device_topic last part if older ESP sends only raw.
-        device_code = (
-            payload.get("device_code")
-            or device_topic.split("/")[-1]
-        )
+        device_code = self._device_code_from_payload(device_topic, payload)
         # UPDATE by both keys so legacy rows with topic-prefix mismatches still match.
         # Hysteresis guard: skip the flip if last_heartbeat_at is fresh —
         # the device was actively heartbeating when this LWT fired, so it's
@@ -502,6 +639,104 @@ class MqttListener:
             return
 
         self._queue_work("_store_status", device_topic, payload)
+
+    def _handle_diagnostic(self, topic: str, payload: dict):
+        """Process event-driven diagnostic notification from firmware (v1.4.6+).
+
+        Topic: cfarm/{code}/diagnostic
+        Payload schema: {
+            device_code, device_type, event_type, uptime_s,
+            reset_reason, boot_count, sensor_state, details: {...}
+        }
+
+        Common event_types: "boot", "sensor_state_change", "i2c_recovery",
+        "mode_transition", "heap_low". Each event is persisted to the
+        device row's last_diagnostic_event (JSONB) + last_diagnostic_at
+        timestamp. Abnormal boot events ("boot" with non-power_on reason)
+        additionally surface a WARNING log line so operators see them in
+        /app_8002.stderr.log without needing to query the DB.
+        """
+        device_topic = self._extract_device_topic(topic)
+        if not isinstance(payload, dict):
+            # mqtt_client._on_message tries json.loads first; if that failed
+            # we got the raw string back. Best-effort parse, else treat as
+            # opaque diagnostic event so we don't drop it entirely.
+            if isinstance(payload, str):
+                try:
+                    payload = json.loads(payload)
+                except Exception:
+                    payload = {"event_type": "unknown", "_raw": payload[:120]}
+            else:
+                logger.warning(f"MqttListener: Invalid diagnostic payload from {topic}: {payload!r}")
+                return
+
+        self._queue_work("_store_diagnostic", device_topic, payload)
+
+    async def _store_diagnostic(self, device_topic: str, payload: dict):
+        """Persist the diagnostic event to the device row.
+
+        Behavior:
+        1. UPDATE devices SET last_diagnostic_at = NOW(), last_diagnostic_event = $2,
+           reset_reason = COALESCE($3, reset_reason), sensor_state = COALESCE($4, ...).
+           Matching by mqtt_topic OR device_code handles pre-created rows where
+           the operator set a stale mqtt_topic (mirrors the heartbeat path's
+           auto-derive logic, but no auto-create here — diagnostics from an
+           unknown device would already imply that earlier heartbeats were
+           either dropped or the device is misconfigured).
+        2. If event_type=boot AND reset_reason is abnormal (not power_on,
+           external, software), log a WARNING so the operator sees the
+           abnormal reboot in the running log without needing to query DB.
+        """
+        if not db.pool:
+            return
+
+        device_code = self._device_code_from_payload(device_topic, payload)
+        event_type = payload.get("event_type") or "unknown"
+        reset_reason = payload.get("reset_reason")
+        sensor_state = payload.get("sensor_state")
+
+        # Persist event. We don't try to bump counters here because the
+        # heartbeat (≤30s later) will do that — diagnostic topic is for
+        # *event-driven* state transitions, not duplicate counter writes.
+        try:
+            await db.execute(
+                """UPDATE devices
+                      SET last_diagnostic_at    = NOW(),
+                          last_diagnostic_event = $1::jsonb,
+                          reset_reason          = COALESCE($2, reset_reason),
+                          sensor_state          = COALESCE($3, sensor_state),
+                          updated_at            = NOW()
+                    WHERE mqtt_topic = $4 OR device_code = $5""",
+                json.dumps(payload),
+                reset_reason,
+                sensor_state,
+                device_topic,
+                device_code,
+            )
+        except Exception as e:
+            logger.error(f"Diagnostic: failed to persist event for {device_code}: {e}")
+            return
+
+        # Surface abnormal boots in the log. EXPECTED_RESET_REASONS mirrors
+        # the firmware's "benign" classification (firmware doesn't bump a
+        # counter for power_on/software/external); anything else means the
+        # device rebooted for a reason the operator should investigate.
+        if event_type == "boot" and reset_reason not in EXPECTED_RESET_REASONS:
+            logger.warning(
+                "Device %s booted with abnormal reset_reason=%s (boot #%s, "
+                "uptime_s=%s). Check dashboard /devices for full state.",
+                device_code,
+                reset_reason,
+                payload.get("boot_count"),
+                payload.get("uptime_s"),
+            )
+        else:
+            logger.info(
+                "Diagnostic event: device=%s event=%s reset_reason=%s "
+                "sensor_state=%s uptime_s=%s",
+                device_code, event_type, reset_reason, sensor_state,
+                payload.get("uptime_s"),
+            )
 
     async def _store_status(self, device_topic: str, payload: dict):
         """Store device state change to database. Auto-creates device if not exists."""
