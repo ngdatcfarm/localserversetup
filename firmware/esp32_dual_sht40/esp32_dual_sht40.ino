@@ -125,7 +125,12 @@ const char* CLOUD_MQTT_PASS   = "Abc@@123";
 // v1.0.2: add MQTT Last-Will-and-Testament on cfarm/{code}/lwt so the
 //         server gets a sub-second offline signal instead of waiting
 //         180s for the heartbeat-staleness sweep.
-const char* FIRMWARE_VERSION = "1.0.2";
+// v1.0.3: setKeepAlive 60→90 + HEARTBEAT_INTERVAL_MS 60000→30000.
+//         Mirrors esp32_brooder v1.4.5 fix for the same root cause —
+//         a single dropped MQTT packet at keepalive=60 (broker timeout
+//         90s) fires LWT on an alive device. With 30s heartbeat, broker
+//         always sees traffic within 30s, well within the 135s budget.
+const char* FIRMWARE_VERSION = "1.0.3";
 const char* FIRMWARE_NAME    = "esp32_dual_sht40";
 
 // ======================================================
@@ -145,7 +150,10 @@ const char* FIRMWARE_NAME    = "esp32_dual_sht40";
 // ======================================================
 
 const unsigned long SENSOR_INTERVAL_MS    = 10000;   // 10s per sub-sensor
-const unsigned long HEARTBEAT_INTERVAL_MS  = 60000;   // 60s
+// v1.0.3: 60000 → 30000. See v1.0.3 header comment. Combined with
+// setKeepAlive(90) → broker timeout 135s, this absorbs 2 dropped MQTT
+// packets on marginal WiFi without firing LWT.
+const unsigned long HEARTBEAT_INTERVAL_MS  = 30000;   // 30s
 const unsigned long META_PUBLISH_MS       = 300000;  // 5min (retained)
 const unsigned long DELTA_PUBLISH_MS      = 20000;   // 20s — derived delta stream
 const unsigned long SHT40_HEATER_MS       = 1800000; // 30min — kick condensation
@@ -635,11 +643,18 @@ void setup() {
     // MQTT
     mqtt.setServer(MQTT_SERVER, MQTT_PORT);
     mqtt.setCallback(mqttCallback);
-    // keepalive 60s → broker timeout ~90s. Was 15s which caused LWT spam
-    // when telemetry jitter delayed PINGREQ, marking ESP offline every ~22s.
-    // Trade-off: offline detection latency ~90s (was ~22s); acceptable for
-    // sensors whose data freshness is the primary signal anyway.
-    mqtt.setKeepAlive(60);
+    // v1.0.3: keepalive 60s → 90s → broker timeout 135s. Combined with
+    // HEARTBEAT_INTERVAL_MS=30000 (see v1.0.3 timing block), broker
+    // always sees traffic every 30s, well within 135s. Pre-fix, a
+    // single dropped packet at keepalive=60 (broker timeout 90s) fired
+    // LWT every ~90s, flipping is_online on an alive device. Mirrors
+    // esp32_brooder v1.4.5 fix.
+    //
+    // Trade-off: offline detection latency ~135s (was ~90s); still well
+    // under the server's 180s check_offline sweep, so no degradation of
+    // alerting. Server-side _store_lwt hysteresis (30s) suppresses
+    // broker false-positives during the new larger window.
+    mqtt.setKeepAlive(90);
     mqtt.setSocketTimeout(3);
     mqtt.setBufferSize(512);
 
