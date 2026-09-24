@@ -418,9 +418,25 @@ class MqttListener:
         device_service.check_offline:
         - The UI / dashboards see a stale "online" badge for up to 3min on
           a true offline event otherwise.
-        - Some ESP32s ship with `setKeepAlive(15)` (per MQTT 3.1.1 spec,
-          broker timeout is 1.5× = ~22s) which means the LWT fires within
-          ~30s of a WiFi drop. Capturing it directly shortens the gap.
+        - ESP32s with `setKeepAlive(60)` (broker timeout = 90s) fire LWT
+          within ~30s of a WiFi drop. Capturing it directly shortens the
+          gap for alerts.
+
+        LWW (last-write-wins) hysteresis: ONLY flip is_online=FALSE when the
+        last_heartbeat_at is older than LWT_HYSTERESIS_SECONDS. Why:
+        - With keepalive=60s and heartbeats every 60s, broker timeout
+          (1.5 × 60 = 90s) fires after a single dropped heartbeat. ESP32
+          reconnects within ~10-15s and publishes a fresh heartbeat.
+          Naively trusting every LWT would flap is_online every ~90s even
+          though the device is alive. Live measurement on esp32-1168
+          showed LWTs at exactly 89-92s intervals.
+        - A real offline event still trips this guard: if the device is
+          truly gone, the next heartbeat never lands, check_offline (180s
+          sweep) catches it within ~3min anyway. The hysteresis just
+          suppresses false-positive flips from brief packet drops.
+        - The hysteresis window (30s) is below the firmware heartbeat
+          interval (60s pre-fix, 30s post-fix) so a single missed
+          heartbeat will cross the threshold and let a real LWT through.
         """
         if not db.pool:
             return
@@ -431,12 +447,18 @@ class MqttListener:
             or device_topic.split("/")[-1]
         )
         # UPDATE by both keys so legacy rows with topic-prefix mismatches still match.
+        # Hysteresis guard: skip the flip if last_heartbeat_at is fresh —
+        # the device was actively heartbeating when this LWT fired, so it's
+        # almost certainly a broker-side false positive (session timeout
+        # after a single dropped packet), not a real disconnect.
+        LWT_HYSTERESIS_SECONDS = 30
         result = await db.execute(
-            """UPDATE devices
+            f"""UPDATE devices
                   SET is_online = FALSE,
                       updated_at = NOW()
-                WHERE mqtt_topic = $1
-                   OR device_code = $2""",
+                WHERE (mqtt_topic = $1 OR device_code = $2)
+                  AND (last_heartbeat_at IS NULL
+                       OR last_heartbeat_at < NOW() - make_interval(secs => {LWT_HYSTERESIS_SECONDS}))""",
             device_topic, device_code,
         )
         # Drop cache so next sensor/heartbeat re-reads the row id cleanly.
@@ -444,16 +466,33 @@ class MqttListener:
         if result == "UPDATE 1":
             logger.info(
                 f"LWT: marked {device_code} OFFLINE (topic={device_topic}, "
-                f"payload={payload})"
+                f"hysteresis={LWT_HYSTERESIS_SECONDS}s, payload={payload})"
             )
         elif result == "UPDATE 0":
-            # Common during boot: LWT arrives before the first heartbeat has
-            # registered the device. NOT an error — device_service will
-            # create the row when the next heartbeat lands.
-            logger.debug(
-                f"LWT: no device matched topic={device_topic} code={device_code} "
-                f"(likely first-boot before first heartbeat)"
+            # Two valid reasons for UPDATE 0:
+            #  1. No matching device row (first-boot before first heartbeat).
+            #  2. Device is currently heartbeating — LWT ignored due to
+            #     hysteresis. Log at DEBUG (this is the common case under
+            #     flaky WiFi + keepalive=60s).
+            row = await db.fetchrow(
+                """SELECT last_heartbeat_at,
+                          EXTRACT(EPOCH FROM (NOW() - last_heartbeat_at))::int AS hb_ago_s
+                     FROM devices
+                    WHERE mqtt_topic = $1 OR device_code = $2
+                    LIMIT 1""",
+                device_topic, device_code,
             )
+            if row is None:
+                logger.debug(
+                    f"LWT: no device matched topic={device_topic} code={device_code} "
+                    f"(likely first-boot before first heartbeat)"
+                )
+            else:
+                logger.debug(
+                    f"LWT: IGNORED (heartbeat {row['hb_ago_s']}s ago < {LWT_HYSTERESIS_SECONDS}s "
+                    f"hysteresis) for {device_code} — broker-side false positive, "
+                    f"device is actively heartbeating"
+                )
 
     def _handle_status(self, topic: str, payload: dict):
         """Process device status update (relay state changes)."""
