@@ -21,6 +21,13 @@ class MqttListener:
         self._queue: asyncio.Queue[tuple[str, dict, dict]] = asyncio.Queue()
         self._started = False
         self._loop: asyncio.AbstractEventLoop | None = None
+        # Per-device throttle for the sensor-driven heartbeat fallback.
+        # Updated whenever _store_sensor_data bumps last_heartbeat_at, so
+        # we don't write on every single sensor packet (dual-SHT40 sends
+        # ~6/min). 30s window keeps the UPDATE out of the hypertable hot
+        # path while still refreshing the freshness timestamp frequently
+        # enough to stay ahead of the 180s staleness sweep.
+        self._last_heartbeat_bump: dict[str, float] = {}
 
     def start(self):
         """Register all MQTT topic handlers."""
@@ -28,7 +35,13 @@ class MqttListener:
         mqtt_client.subscribe("cfarm/+/status", self._handle_status)
         mqtt_client.subscribe("cfarm/+/data", self._handle_sensor_data)
         mqtt_client.subscribe("cfarm/+/sensor", self._handle_sensor_data)
-        logger.info("MqttListener: Registered handlers for heartbeat, status, sensor data")
+        mqtt_client.subscribe("cfarm/+/sensor/+", self._handle_sensor_data)  # sub-sensor variants (a/b)
+        # LWT — broker auto-publishes on cfarm/{code}/lwt when the device's
+        # MQTT session ends (WiFi drop, power loss, watchdog reset). Gives
+        # a sub-second offline signal so the UI doesn't have to wait for
+        # the 180s heartbeat-staleness sweep in device_service.check_offline.
+        mqtt_client.subscribe("cfarm/+/lwt", self._handle_lwt)
+        logger.info("MqttListener: Registered handlers for heartbeat, status, sensor data, lwt")
 
     def _queue_work(self, handler_name: str, device_topic: str, payload: dict):
         """Queue work to be processed by the asyncio event loop."""
@@ -51,6 +64,8 @@ class MqttListener:
                     await self._store_status(device_topic, payload)
                 elif handler_name == "_store_sensor_data":
                     await self._store_sensor_data(device_topic, payload)
+                elif handler_name == "_store_lwt":
+                    await self._store_lwt(device_topic, payload)
             except Exception as e:
                 logger.error(f"MqttListener: Error processing queue: {e}")
 
@@ -64,11 +79,20 @@ class MqttListener:
     def _extract_device_topic(self, topic: str) -> str:
         """Extract device topic from full MQTT topic.
         e.g. 'cfarm/barn1/heartbeat' -> 'cfarm/barn1'
+             'cfarm/barn1/sensor/a'  -> 'cfarm/barn1'   (sub-sensor dropped here)
         """
         parts = topic.split("/")
         if len(parts) >= 3:
             return "/".join(parts[:2])
         return topic
+
+    def _extract_sub_sensor(self, topic: str) -> str | None:
+        """Return sub-sensor code ('a'/'b') for `cfarm/{code}/sensor/{sub}`,
+        or None for legacy `cfarm/{code}/sensor` (defaults to 'a' downstream)."""
+        parts = topic.split("/")
+        if len(parts) == 4 and parts[0] == "cfarm" and parts[2] == "sensor":
+            return parts[3]
+        return None
 
     def _handle_heartbeat(self, topic: str, payload: dict):
         """Process device heartbeat - update online status and telemetry."""
@@ -80,6 +104,29 @@ class MqttListener:
 
         logger.warning(f"MqttListener: >>> HEARTBEAT RECEIVED from {device_topic}, payload={payload}")
         self._queue_work("_store_heartbeat", device_topic, payload)
+
+    def _handle_lwt(self, topic: str, payload: dict):
+        """Process LWT (Last-Will-and-Testament) — fired by the broker when
+        the device's MQTT session ends unexpectedly (WiFi drop, power loss,
+        watchdog reset). Payload is normally a JSON dict like
+        `{"status":"offline","device_code":"esp32-XXXX"}` but some legacy
+        firmware may publish a raw string, so coerce defensively.
+        """
+        device_topic = self._extract_device_topic(topic)
+        if not isinstance(payload, dict):
+            # mqtt_client._on_message tries json.loads first; if that failed
+            # we got the raw string back. Best-effort parse, else treat as
+            # opaque "offline" signal.
+            import json as _json
+            if isinstance(payload, str):
+                try:
+                    payload = _json.loads(payload)
+                except Exception:
+                    payload = {"status": "offline", "_raw": payload[:120]}
+            else:
+                logger.warning(f"MqttListener: Invalid LWT payload from {topic}: {payload!r}")
+                return
+        self._queue_work("_store_lwt", device_topic, payload)
 
     async def _store_heartbeat(self, device_topic: str, payload: dict):
         """Store heartbeat data to database. Auto-creates device if not exists (MQTT auto-discovery)."""
@@ -99,33 +146,147 @@ class MqttListener:
         device_name = payload.get("name") or device_code
         device_type = payload.get("device_type") or payload.get("type") or "mixed"
 
+        # ── Sub-sensor health (dual_sht40 firmware v1.0.0+) ──────────────
+        # The firmware publishes a sub-sensor health snapshot in every heartbeat
+        # so the server can flag degraded sub-sensors before they fail outright.
+        # We extract the fields, normalise the per-sub state, and manage
+        # _bad_since transitions (set on entry to BAD, clear on exit).
+        sub_sensor_health_raw = payload.get("sub_sensor_health") or {}
+        if not isinstance(sub_sensor_health_raw, dict):
+            sub_sensor_health_raw = {}
+        # asyncpg encodes JSONB as a string — must pre-serialise the dict
+        # here, otherwise $8 fails with "expected str, got dict".
+        import json as _json
+        sub_sensor_health_json = _json.dumps(sub_sensor_health_raw) if sub_sensor_health_raw else None
+        sub_a_state_in = str(sub_sensor_health_raw.get("a") or "UNKNOWN").upper()
+        sub_b_state_in = str(sub_sensor_health_raw.get("b") or "UNKNOWN").upper()
+        # Clamp to allowed values (defensive against firmware bugs)
+        allowed = {"UNKNOWN", "GOOD", "DEGRADED", "BAD"}
+        sub_a_state = sub_a_state_in if sub_a_state_in in allowed else "UNKNOWN"
+        sub_b_state = sub_b_state_in if sub_b_state_in in allowed else "UNKNOWN"
+        sub_present_bitmask = int(payload.get("sub_sensors_present") or 0)
+        sub_total_fails = payload.get("sub_sensor_total_fails") or {}
+        if not isinstance(sub_total_fails, dict):
+            sub_total_fails = {}
+        sub_a_fails = int(sub_total_fails.get("a") or 0)
+        sub_b_fails = int(sub_total_fails.get("b") or 0)
+
+        # Fetch previous state to manage BAD→non-BAD and non-BAD→BAD transitions.
+        prev = await db.fetchrow(
+            """SELECT sub_sensor_a_state, sub_sensor_b_state
+            FROM devices WHERE mqtt_topic = $1""",
+            device_topic,
+        )
+        prev_a_state = prev["sub_sensor_a_state"] if prev else "UNKNOWN"
+        prev_b_state = prev["sub_sensor_b_state"] if prev else "UNKNOWN"
+
+        # Set _bad_since ONLY on transition into BAD (preserve existing timestamp
+        # while still BAD; clear on exit to GOOD/DEGRADED/UNKNOWN).
+        # Use a sentinel string + COALESCE in SQL so we can keep the existing
+        # value when the device was already BAD and is still BAD.
+        if sub_a_state == "BAD" and prev_a_state != "BAD":
+            a_bad_since = now
+        elif sub_a_state != "BAD":
+            a_bad_since = None  # cleared; SQL will set NULL
+        else:
+            a_bad_since = None  # already BAD; sentinel → keep existing via COALESCE
+        if sub_b_state == "BAD" and prev_b_state != "BAD":
+            b_bad_since = now
+        elif sub_b_state != "BAD":
+            b_bad_since = None
+        else:
+            b_bad_since = None  # sentinel → keep existing via COALESCE
+
         # Try UPDATE first, then INSERT if no rows affected (upsert with auto-discovery)
-        result = await db.execute(
-            """UPDATE devices SET
-                is_online = TRUE,
-                last_heartbeat_at = $1,
-                first_heartbeat_at = COALESCE(first_heartbeat_at, $1),
-                wifi_rssi = COALESCE($2, wifi_rssi),
-                ip_address = COALESCE($3, ip_address),
-                uptime_seconds = COALESCE($4, uptime_seconds),
-                free_heap_bytes = COALESCE($5, free_heap_bytes),
-                firmware_version = COALESCE($6, firmware_version),
-                updated_at = $1
-            WHERE mqtt_topic = $7""",
-            now, wifi_rssi, ip_address, uptime, free_heap, firmware, device_topic,
+        result = await self._apply_heartbeat_update(
+            device_topic=device_topic,
+            now=now,
+            wifi_rssi=wifi_rssi, ip_address=ip_address,
+            uptime=uptime, free_heap=free_heap, firmware=firmware,
+            sub_sensor_health_json=sub_sensor_health_json,
+            sub_present_bitmask=sub_present_bitmask,
+            sub_a_state=sub_a_state, sub_b_state=sub_b_state,
+            a_transition=(sub_a_state == "BAD" and prev_a_state != "BAD"),
+            b_transition=(sub_b_state == "BAD" and prev_b_state != "BAD"),
+            sub_a_fails=sub_a_fails, sub_b_fails=sub_b_fails,
         )
 
         # If device doesn't exist, auto-create it (MQTT auto-discovery)
         if result == "UPDATE 0":
-            # Try to determine device type
+            # First, check if a row exists with the same device_code but a
+            # different (stale) mqtt_topic. This happens when an operator
+            # pre-creates a row before the firmware comes online and types
+            # the topic without the device-type prefix — e.g. they type
+            # `cfarm/esp32-2588/control` but the firmware publishes on
+            # `cfarm/brooder-esp32-2588/heartbeat`. The heartbeat UPDATE
+            # fails on mqtt_topic match, the INSERT fails on device_code
+            # UNIQUE, and the device silently never comes online.
+            #
+            # Fix: auto-derive the firmware-reported topic onto the
+            # pre-created row, then retry the heartbeat UPDATE.
+            existing = await db.fetchrow(
+                "SELECT id, mqtt_topic FROM devices WHERE device_code = $1 LIMIT 1",
+                device_code,
+            )
+            if existing and existing["mqtt_topic"] != device_topic:
+                old_topic = existing["mqtt_topic"]
+                logger.warning(
+                    f"Auto-deriving mqtt_topic for {device_code}: "
+                    f"'{old_topic}' -> '{device_topic}' (firmware-reported topic)"
+                )
+                await db.execute(
+                    "UPDATE devices SET mqtt_topic = $1, updated_at = NOW() WHERE id = $2",
+                    device_topic, existing["id"],
+                )
+                # Keep _device_cache consistent: handlers in this process
+                # (status/sensor) look up device_id by mqtt_topic. Without
+                # this swap, the first status/sensor message after the fix
+                # would still hit the stale entry and miss the row.
+                self._device_cache[device_topic] = existing["id"]
+                self._device_cache.pop(old_topic, None)
+                # Retry the heartbeat UPDATE — it should now match.
+                # Sub-sensor transition logic is best-effort on this retry
+                # (prev was fetched before the topic swap); the next 60s
+                # heartbeat will use the correct prev state.
+                result = await self._apply_heartbeat_update(
+                    device_topic=device_topic,
+                    now=now,
+                    wifi_rssi=wifi_rssi, ip_address=ip_address,
+                    uptime=uptime, free_heap=free_heap, firmware=firmware,
+                    sub_sensor_health_json=sub_sensor_health_json,
+                    sub_present_bitmask=sub_present_bitmask,
+                    sub_a_state=sub_a_state, sub_b_state=sub_b_state,
+                    a_transition=(sub_a_state == "BAD" and prev_a_state != "BAD"),
+                    b_transition=(sub_b_state == "BAD" and prev_b_state != "BAD"),
+                    sub_a_fails=sub_a_fails, sub_b_fails=sub_b_fails,
+                )
+
+        if result == "UPDATE 0":
+            # Try to determine device type. Legacy IDs (1-4) are hardcoded
+            # for fast-path on hot heartbeats. New types added via migration
+            # (e.g. dual_sht40 via 073) get a DB lookup by code — the actual
+            # id depends on what other types the operator has added.
             type_mapping = {
-                "relay": 1,      # Relay 4 Channel
+                "relay": 1,        # Relay 4 Channel
                 "relay_4ch": 1,
                 "relay_8ch": 2,
-                "sensor": 3,     # Sensor Only
-                "mixed": 4,       # Mixed Relay + Sensor
+                "sensor": 3,       # Sensor Only (1× SHT40 + 2× MQ)
+                "mixed": 4,        # Mixed Relay + Sensor
             }
-            device_type_id = type_mapping.get(device_type.lower() if isinstance(device_type, str) else "mixed", 4)
+            if isinstance(device_type, str):
+                key = device_type.lower()
+                mapped = type_mapping.get(key)
+                if mapped is not None:
+                    device_type_id = mapped
+                else:
+                    # Unknown code (e.g. dual_sht40) — look up by code.
+                    row = await db.fetchrow(
+                        "SELECT id FROM device_types WHERE code = $1 LIMIT 1",
+                        key,
+                    )
+                    device_type_id = row["id"] if row else 4  # mixed fallback
+            else:
+                device_type_id = 4
 
             # Extract barn_id from device_topic if possible (e.g., cfarm/barn1 -> barn1)
             barn_id = None
@@ -140,22 +301,159 @@ class MqttListener:
                     if barn_exists:
                         barn_id = potential_barn
 
+            # First-heartbeat for a brand-new dual_sht40 device: populate the
+            # sub-sensor health columns immediately rather than leaving the
+            # defaults (UNKNOWN/NULL/0). If a sub-sensor is already BAD at
+            # first contact, seed `_bad_since = now` so the > 1h alert rule
+            # has a non-NULL timestamp to compare against.
+            a_bad_since_initial = now if sub_a_state == "BAD" else None
+            b_bad_since_initial = now if sub_b_state == "BAD" else None
+
             try:
                 await db.execute(
                     """INSERT INTO devices (device_code, name, device_type_id, barn_id, mqtt_topic, is_online,
                         last_heartbeat_at, first_heartbeat_at, wifi_rssi, ip_address, uptime_seconds, free_heap_bytes,
-                        firmware_version, created_at, updated_at)
-                    VALUES ($1, $2, $3, $4, $5, TRUE, $6, $6, $7, $8, $9, $10, $11, $6, $6)""",
+                        firmware_version,
+                        sub_sensor_health, sub_sensors_present,
+                        sub_sensor_a_state, sub_sensor_b_state,
+                        sub_sensor_a_bad_since, sub_sensor_b_bad_since,
+                        sub_sensor_a_fails, sub_sensor_b_fails,
+                        created_at, updated_at)
+                    VALUES ($1, $2, $3, $4, $5, TRUE, $6, $6, $7, $8, $9, $10, $11,
+                            $12::jsonb, $13,
+                            $14, $15,
+                            $16, $17,
+                            $18, $19,
+                            $6, $6)""",
                     device_code, device_name, device_type_id, barn_id, device_topic,
                     now, wifi_rssi, ip_address, uptime, free_heap, firmware,
+                    sub_sensor_health_json, sub_present_bitmask,
+                    sub_a_state, sub_b_state,
+                    a_bad_since_initial, b_bad_since_initial,
+                    sub_a_fails, sub_b_fails,
                 )
                 logger.info(f"Auto-discovered new device via MQTT: {device_topic} ({device_code})")
             except Exception as e:
-                # Race condition - another request might have created it first
-                if "duplicate key" not in str(e).lower():
+                # Race condition - another request might have created it first.
+                # Most common cause: pre-created row has different mqtt_topic
+                # than what the firmware actually publishes on — UPDATE fails
+                # on mqtt_topic match, INSERT fails on device_code UNIQUE.
+                # Log a WARNING (not error) so the mismatch surfaces in logs.
+                if "duplicate key" in str(e).lower():
+                    logger.warning(
+                        f"Auto-create collision for {device_topic} "
+                        f"(device_code already exists with different mqtt_topic "
+                        f"— likely manual row creation): {e}"
+                    )
+                else:
                     logger.error(f"Failed to auto-create device {device_topic}: {e}")
 
         logger.debug(f"Heartbeat: {device_topic} rssi={wifi_rssi} ip={ip_address}")
+
+    async def _apply_heartbeat_update(
+        self,
+        device_topic: str,
+        now,
+        wifi_rssi, ip_address, uptime, free_heap, firmware,
+        sub_sensor_health_json,
+        sub_present_bitmask: int,
+        sub_a_state: str, sub_b_state: str,
+        a_transition: bool, b_transition: bool,
+        sub_a_fails: int, sub_b_fails: int,
+    ) -> str:
+        """Run the heartbeat UPDATE on devices WHERE mqtt_topic = $device_topic.
+
+        Returned string is the asyncpg result tag ("UPDATE N"). Callers
+        branch on "UPDATE 0" to detect unknown-topic devices and either
+        retry after auto-deriving mqtt_topic, or fall through to the
+        auto-discovery INSERT path. Extracted as a helper so the initial
+        attempt and the post-derive retry share a single SQL definition —
+        any future column/parameter change touches one place.
+        """
+        return await db.execute(
+            """UPDATE devices SET
+                is_online = TRUE,
+                last_heartbeat_at = $1,
+                first_heartbeat_at = COALESCE(first_heartbeat_at, $1),
+                wifi_rssi = COALESCE($2, wifi_rssi),
+                ip_address = COALESCE($3, ip_address),
+                uptime_seconds = COALESCE($4, uptime_seconds),
+                free_heap_bytes = COALESCE($5, free_heap_bytes),
+                firmware_version = COALESCE($6, firmware_version),
+                sub_sensor_health = $8::jsonb,
+                sub_sensors_present = $9,
+                sub_sensor_a_state = $10::character varying,
+                sub_sensor_b_state = $11::character varying,
+                sub_sensor_a_bad_since = CASE
+                    WHEN $12::boolean THEN $1
+                    WHEN NOT $12::boolean AND $10::text != 'BAD' THEN NULL
+                    ELSE sub_sensor_a_bad_since
+                END,
+                sub_sensor_b_bad_since = CASE
+                    WHEN $13::boolean THEN $1
+                    WHEN NOT $13::boolean AND $11::text != 'BAD' THEN NULL
+                    ELSE sub_sensor_b_bad_since
+                END,
+                sub_sensor_a_fails = $14,
+                sub_sensor_b_fails = $15,
+                updated_at = $1
+            WHERE mqtt_topic = $7""",
+            now, wifi_rssi, ip_address, uptime, free_heap, firmware, device_topic,
+            sub_sensor_health_json, sub_present_bitmask,
+            sub_a_state, sub_b_state,
+            # booleans: True → set timestamp; False → conditional clear
+            a_transition, b_transition,
+            sub_a_fails, sub_b_fails,
+        )
+
+    async def _store_lwt(self, device_topic: str, payload: dict):
+        """Mark the device OFFLINE on LWT receipt.
+
+        The broker auto-publishes the will payload when the ESP's MQTT
+        session ends unexpectedly (WiFi drop, power loss, watchdog reset).
+        Topic is `cfarm/{code}/lwt` and payload is normally
+        `{"status":"offline","device_code":"esp32-XXXX"}`.
+
+        Why we act here instead of waiting for the 180s heartbeat sweep in
+        device_service.check_offline:
+        - The UI / dashboards see a stale "online" badge for up to 3min on
+          a true offline event otherwise.
+        - Some ESP32s ship with `setKeepAlive(15)` (per MQTT 3.1.1 spec,
+          broker timeout is 1.5× = ~22s) which means the LWT fires within
+          ~30s of a WiFi drop. Capturing it directly shortens the gap.
+        """
+        if not db.pool:
+            return
+        # Prefer device_code from payload (firmware-authored, authoritative);
+        # fall back to device_topic last part if older ESP sends only raw.
+        device_code = (
+            payload.get("device_code")
+            or device_topic.split("/")[-1]
+        )
+        # UPDATE by both keys so legacy rows with topic-prefix mismatches still match.
+        result = await db.execute(
+            """UPDATE devices
+                  SET is_online = FALSE,
+                      updated_at = NOW()
+                WHERE mqtt_topic = $1
+                   OR device_code = $2""",
+            device_topic, device_code,
+        )
+        # Drop cache so next sensor/heartbeat re-reads the row id cleanly.
+        self._device_cache.pop(device_topic, None)
+        if result == "UPDATE 1":
+            logger.info(
+                f"LWT: marked {device_code} OFFLINE (topic={device_topic}, "
+                f"payload={payload})"
+            )
+        elif result == "UPDATE 0":
+            # Common during boot: LWT arrives before the first heartbeat has
+            # registered the device. NOT an error — device_service will
+            # create the row when the next heartbeat lands.
+            logger.debug(
+                f"LWT: no device matched topic={device_topic} code={device_code} "
+                f"(likely first-boot before first heartbeat)"
+            )
 
     def _handle_status(self, topic: str, payload: dict):
         """Process device status update (relay state changes)."""
@@ -219,9 +517,14 @@ class MqttListener:
     def _handle_sensor_data(self, topic: str, payload: dict):
         """Process sensor data (temperature, humidity, etc.)."""
         device_topic = self._extract_device_topic(topic)
+        sub_sensor = self._extract_sub_sensor(topic)
 
         if not isinstance(payload, dict):
             return
+
+        # Stash sub-sensor in payload (underscore-prefixed = metadata, not a sensor key).
+        if sub_sensor:
+            payload["_sub_sensor"] = sub_sensor
 
         self._queue_work("_store_sensor_data", device_topic, payload)
 
@@ -248,10 +551,40 @@ class MqttListener:
             if not device_id:
                 return
 
+        # ── Heartbeat fallback ───────────────────────────────────────────
+        # Some ESP32 firmwares ship telemetry more often than heartbeats
+        # (e.g. dual-SHT40 sends /sensor every 10s but /heartbeat only every
+        # 60s). If the heartbeat is dropped (queue contention, network
+        # blip), the 180s staleness sweep in device_service.check_offline
+        # would flip is_online=FALSE while the device is still happily
+        # reporting temperatures.
+        #
+        # Bump last_heartbeat_at here as a fallback freshness signal,
+        # throttled to 30s per device so the extra UPDATE doesn't add to
+        # the hypertable write contention.
+        last_bump = self._last_heartbeat_bump.get(device_topic, 0.0)
+        if (now.timestamp() - last_bump) >= 30.0:
+            self._last_heartbeat_bump[device_topic] = now.timestamp()
+            try:
+                await db.execute(
+                    "UPDATE devices SET last_heartbeat_at = $1, "
+                    "                       updated_at = $1 "
+                    "                  WHERE id = $2",
+                    now, device_id,
+                )
+            except Exception as e:
+                # Non-fatal — the next /heartbeat will repair this.
+                logger.debug(f"sensor-fallback heartbeat bump failed for "
+                             f"{device_topic}: {e}")
+
         # Get barn_id for this device
         barn_id = await db.fetchval(
             "SELECT barn_id FROM devices WHERE id = $1", device_id
         )
+
+        # Sub-sensor identity (a/b for dual-SHT40 nodes). Default 'a' for
+        # legacy single-sensor devices and unknown topics.
+        sub_sensor = payload.get("_sub_sensor") or "a"
 
         # Support multiple sensor readings in one message
         # Format: {"temperature": 28.5, "humidity": 65.2}
@@ -265,6 +598,7 @@ class MqttListener:
                     now, device_id, stype,
                     sval, s.get("unit", ""),
                     barn_id, payload.get("cycle_id"),
+                    sub_sensor,
                 )
                 await self._maybe_handle_mq_tare(device_id, stype, sval, now)
         else:
@@ -288,17 +622,38 @@ class MqttListener:
                         await self._insert_sensor_reading(
                             now, device_id, key, value, unit,
                             barn_id, payload.get("cycle_id"),
+                            sub_sensor,
                         )
                         await self._maybe_handle_mq_tare(device_id, key, value, now)
 
     async def _insert_sensor_reading(
-        self, time, device_id, sensor_type, value, unit, barn_id, cycle_id
+        self, time, device_id, sensor_type, value, unit, barn_id, cycle_id,
+        sub_sensor: str = "a",
     ):
-        """Insert a single sensor reading."""
+        """Insert a single sensor reading.
+
+        Dual-writes to:
+          - sensor_data   (hypertable; full time-series — sub_sensor NOT stored here,
+                          would force re-partitioning. Whichever sub-sensor wrote
+                          last is what's in the history.)
+          - sensor_latest (snapshot; one row per (device_id, sensor_type, sub_sensor))
+        """
+        # 1. Full time-series (no sub_sensor column on hypertable).
         await db.execute(
             """INSERT INTO sensor_data (time, device_id, sensor_type, value, unit, barn_id, cycle_id)
             VALUES ($1, $2, $3, $4, $5, $6, $7)""",
             time, device_id, sensor_type, float(value), unit, barn_id, cycle_id,
+        )
+
+        # 2. Snapshot — keep separate rows per sub_sensor so the join
+        #    in brooder_service.py (`sl.sub_sensor = bzs.sub_sensor`) works.
+        await db.execute(
+            """INSERT INTO sensor_latest (device_id, sensor_type, sub_sensor, value, unit, time, barn_id)
+            VALUES ($1, $2, $3, $4, $5, $6, $7)
+            ON CONFLICT (device_id, sensor_type, sub_sensor)
+            DO UPDATE SET value = EXCLUDED.value, unit = EXCLUDED.unit,
+                          time = EXCLUDED.time, barn_id = EXCLUDED.barn_id""",
+            device_id, sensor_type, sub_sensor, float(value), unit, time, barn_id,
         )
 
     async def _get_device_id(self, device_topic: str) -> int | None:
