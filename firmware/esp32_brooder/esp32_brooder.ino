@@ -117,7 +117,7 @@ const char* MQTT_USER     = "cfarm_device";
 const char* MQTT_PASS     = "cfarm_device_2026";
 
 const char* DEVICE_TYPE     = "brooder";
-const char* FIRMWARE_VERSION = "1.4.4";
+const char* FIRMWARE_VERSION = "1.4.5";
 const char* FIRMWARE_NAME    = "esp32_brooder";
 
 // ─── DEVICE CODE ───
@@ -160,7 +160,14 @@ const char* DEVICE_CODE = "";
 // ==================== TIMING ====================
 
 const unsigned long TELEMETRY_INTERVAL_MS   = 5000;    // Publish telemetry every 5s
-const unsigned long HEARTBEAT_INTERVAL_MS   = 60000;   // Publish heartbeat every 60s (for Devices dashboard)
+// v1.4.5: 60000 → 30000. Keepalive=90 (broker timeout=135s) but heartbeat
+// must be well under that to absorb occasional MQTT packet drops on
+// marginal WiFi (esp32-1168 sees RSSI -76 to -85 dBm). Pre-fix, a single
+// dropped heartbeat at keepalive=60 (broker timeout=90s) fired LWT every
+// ~89-92s and flipped is_online despite an alive device. With 30s
+// heartbeat, broker always sees traffic within 30s, well within the 135s
+// budget — even two consecutive dropped heartbeats leave 75s margin.
+const unsigned long HEARTBEAT_INTERVAL_MS   = 30000;   // Publish heartbeat every 30s
 const unsigned long SENSOR_READ_INTERVAL_MS = 2000;    // Read SHT40 every 2s
 const uint8_t       SHT4_FAIL_THRESHOLD     = 5;       // v1.4.2 (fw bug 4): consecutive I2C failures before latching sht4_ok=false. At 2s cadence = 10s of sustained failure. One transient blip no longer latches the Tier-3 failsafe clamp.
 const unsigned long FAILSAFE_TIMEOUT_MS     = 60000;   // v1.4.1: 15s → 60s. With server KEEPALIVE=4s and DB jitter, 15s was too tight — single 16s publish gap tripped failsafe and snapped heater 100→0, killing zone stability. 60s absorbs ≥14 missed packets; legitimate server outage still triggers failsafe but transient stalls don't.
@@ -1336,10 +1343,19 @@ void setup() {
     // ESP was actually online. Bumped to 60s (broker timeout ≈90s) so a few
     // delayed cycles of telemetry/heartbeat don't trip LWT.
     //
-    // Trade-off: actual disconnect detection now takes ~90s instead of ~22s.
-    // Acceptable for brooder (heater control loop has its own watchdog via
-    // server → ESP /power heartbeat) and offline alert has its own poll loop.
-    mqttClient.setKeepAlive(60);
+    // v1.4.5: 60 → 90. Broker timeout = 1.5 × keepalive = 135s. Combined
+    // with HEARTBEAT_INTERVAL_MS=30000 (above), broker sees traffic every
+    // 30s — well within the 135s budget. Even two consecutive dropped
+    // heartbeats (60s of silence) leave 75s of margin. Pre-fix, the 60s
+    // keepalive was too tight: broker timeout (90s) was barely above
+    // heartbeat interval, so a single dropped packet fired LWT every
+    // ~90s and flipped is_online on an alive device.
+    //
+    // Trade-off: real offline detection now takes ~135s instead of ~90s.
+    // Acceptable — server-side _store_lwt hysteresis (30s) suppresses
+    // broker false-positives, and the 180s check_offline sweep still
+    // catches real disconnects well under 3 minutes.
+    mqttClient.setKeepAlive(90);
     mqttClient.setSocketTimeout(3);
 
     // Watchdog (compatible with both Arduino Core 2.x and 3.x).
