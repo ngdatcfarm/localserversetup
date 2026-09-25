@@ -928,8 +928,19 @@ async def list_zones():
                 "last_zone_temp_at":  (z.last_zone_temp_at.isoformat()
                                        if z.last_zone_temp_at else None),
                 "zone_sensors_count": z.zone_sensors_count,
-                "pid_source":         z.pid_source,
-                "last_power_total_pct": z.last_power_total_pct,
+                # Zone.pid_source was removed in heater-first refactor (Sept 21)
+                # — Zone is no longer a control unit, so the field is now per-
+                # heater (see BrooderNode.pid_source / Members table column).
+                # Use getattr so HEAD still tolerates zones loaded from older
+                # processes that may have the legacy attribute.
+                "pid_source":         getattr(z, 'pid_source', None),
+                # Zone.last_power_total_pct also removed in heater-first
+                # refactor — per-heater power lives on the Heater objects.
+                # Sum them on demand as a fallback when Zone hasn't been
+                # updated yet.
+                "last_power_total_pct": (getattr(z, 'last_power_total_pct', None)
+                                          or sum(h.last_power_pct or 0
+                                                 for h in z.heaters.values())),
                 "member_count":       len(z.member_device_codes),
                 "heater_count":       len([h for h in z.heaters.values() if h.enabled]),
                 "last_seen_seconds":  _max_member_last_seen(z),
@@ -955,8 +966,13 @@ async def get_zone(zone_id: int):
         row["last_zone_temp_at"]  = (z.last_zone_temp_at.isoformat()
                                        if z.last_zone_temp_at else None)
         row["zone_sensors_count"] = z.zone_sensors_count
-        row["pid_source"]         = z.pid_source
-        row["last_power_total_pct"] = z.last_power_total_pct
+        # See list_zones() — Zone.pid_source removed in heater-first refactor;
+        # Zone is no longer a control unit, pid_source lives per-heater now.
+        row["pid_source"]         = getattr(z, 'pid_source', None)
+        # Sum per-heater power when Zone hasn't tracked aggregate itself.
+        row["last_power_total_pct"] = (getattr(z, 'last_power_total_pct', None)
+                                       or sum(h.last_power_pct or 0
+                                              for h in z.heaters.values()))
     # Barn name for display
     if row.get("barn_id"):
         barn = await db.fetchrow(
