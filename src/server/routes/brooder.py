@@ -1070,11 +1070,26 @@ async def list_zone_heaters(zone_id: int):
     try:
         rows = await db.fetch(
             """
-            SELECT id, zone_id, device_code, channel, label, max_power_w,
-                   enabled, is_active, created_at, updated_at
-            FROM brooder_heaters
-            WHERE zone_id = $1 AND is_active = TRUE
-            ORDER BY device_code, channel
+            SELECT id, h.zone_id, h.device_code, h.channel, h.label, h.max_power_w,
+                   h.enabled, h.is_active, h.created_at, h.updated_at,
+                   -- "Server's reason" — latest audit row per heater. NULL
+                   -- when no history yet (brand-new heater). LEFT JOIN LATERAL
+                   -- uses idx_bph_heater_time(heater_id, created_at DESC).
+                   hist.source      AS last_reason_source,
+                   hist.note        AS last_reason_note,
+                   hist.setpoint_c  AS last_reason_setpoint_c,
+                   hist.pid_input_c AS last_reason_pid_input_c,
+                   hist.created_at  AS last_reason_at
+            FROM brooder_heaters h
+            LEFT JOIN LATERAL (
+                SELECT source, note, setpoint_c, pid_input_c, created_at
+                FROM brooder_power_history
+                WHERE heater_id = h.id
+                ORDER BY created_at DESC
+                LIMIT 1
+            ) hist ON TRUE
+            WHERE h.zone_id = $1 AND h.is_active = TRUE
+            ORDER BY h.device_code, h.channel
             """,
             zone_id,
         )
@@ -1087,7 +1102,7 @@ async def list_zone_heaters(zone_id: int):
     out = []
     for r in rows:
         d = dict(r)
-        for ts in ("created_at", "updated_at"):
+        for ts in ("created_at", "updated_at", "last_reason_at"):
             if d.get(ts):
                 d[ts] = d[ts].isoformat()
         h = live.get(d["id"])

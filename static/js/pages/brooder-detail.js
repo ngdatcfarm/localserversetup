@@ -701,6 +701,56 @@ export default {
             if (Number.isNaN(t)) return null;
             return Math.max(0, Math.floor((Date.now() - t) / 1000));
         }
+        // Build tooltip text for a Heater row. Uses server-provided
+        // "last_reason_*" fields from brooder_power_history first (the
+        // authoritative server-side explanation), then layers in
+        // client-side heuristics for cases the server didn't audit
+        // (heater disabled, no history yet, etc.).
+        function heaterReason(h) {
+            const lines = [];
+            const src = h.last_reason_source;
+            const sp  = h.last_reason_setpoint_c;
+            const inp = h.last_reason_pid_input_c;
+            // Tier-1: server's authoritative reason
+            if (src === 'pid' && sp != null && inp != null) {
+                if (inp >= sp) {
+                    lines.push('Server PID: temp '
+                               + inp.toFixed(1) + '°C đạt setpoint '
+                               + sp.toFixed(1) + '°C → output 0% (đang đủ ấm).');
+                } else {
+                    const gap = (sp - inp).toFixed(1);
+                    lines.push('Server PID: temp ' + inp.toFixed(1)
+                               + '°C còn thấp hơn setpoint '
+                               + sp.toFixed(1) + '°C ' + gap + '°C → đang cấp '
+                               + (h.last_power_pct || 0) + '% để bù.');
+                }
+            } else if (src === 'setpoint_change' || src === 'heater_setpoint_change') {
+                lines.push('Server vừa đổi setpoint do operator');
+                if (h.last_reason_note) lines.push(h.last_reason_note);
+            } else if (src === 'mode_change') {
+                lines.push('Server: ESP đổi chế độ');
+                if (h.last_reason_note) lines.push(h.last_reason_note);
+            } else if (src === 'manual_override') {
+                lines.push('Server: manual override đang active');
+            }
+            // Tier-2: client-side heuristics (fill gaps the server didn't cover)
+            if (!h.enabled) {
+                lines.push('Heater bị tắt trong DB (enabled=false)');
+            }
+            if (h.last_published_at == null) {
+                lines.push('Server chưa gửi lệnh power cho heater này');
+            } else {
+                const ageSec = heaterFreshnessSeconds(h.last_published_at);
+                if (ageSec != null && ageSec > 300) {
+                    lines.push('Lệnh power cuối ' + formatLastSeen(ageSec)
+                               + ' — ESP có thể đang mất kết nối');
+                }
+            }
+            if (!lines.length) {
+                lines.push('PID đang chạy bình thường, chưa có audit row để giải trình chi tiết');
+            }
+            return lines.join('\n');
+        }
 
         // ── Template ──────────────────────────────────────────
         return {
@@ -721,7 +771,7 @@ export default {
             CHART_W, CHART_H, CHART_PAD, tempChart, powerChart, tempTicks,
             onlineHeaterCount,
             formatLastSeen, lastSeenClass,
-            heaterFreshnessSeconds,
+            heaterFreshnessSeconds, heaterReason,
             syncManualFormToZone,
             reloadAll, saveOverride, clearOverride, saveFallbackDelta,
             openHeaterNew, openHeaterEdit, saveHeater, deleteHeater,
@@ -1022,10 +1072,15 @@ export default {
                                             {{ h.last_power_pct || 0 }}%
                                         </span>
                                     </div>
-                                    <div v-if="h.last_published_at"
-                                         class="cf-text-muted text-xs mt-0.5"
-                                         :title="'Lệnh power gửi lúc ' + h.last_published_at">
-                                        {{ formatLastSeen(heaterFreshnessSeconds(h.last_published_at)) }}
+                                    <div class="cf-text-muted text-xs mt-0.5"
+                                         style="cursor:help; border-bottom:1px dotted #cbd5e1;"
+                                         :title="heaterReason(h)">
+                                        <template v-if="h.last_published_at">
+                                            {{ formatLastSeen(heaterFreshnessSeconds(h.last_published_at)) }}
+                                        </template>
+                                        <template v-else>
+                                            chưa có lệnh
+                                        </template>
                                     </div>
                                 </td>
                                 <td class="text-right">
