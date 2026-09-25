@@ -61,12 +61,27 @@ export default {
         });
         const heaterEditSaving = ref(false);
 
+        // Phase C — per-heater override modal (setpoint + delta). Distinct
+        // from the existing zone-level manual override / fallback-delta cards
+        // (which remain for backward-compat fan-out shims).
+        const heaterOverrideOpen = ref(false);
+        const heaterOverrideTarget = ref(null);  // heater being edited
+        const heaterOverrideForm = reactive({
+            manual_setpoint: 33.0,
+            fallback_delta_c: 0.0,
+            note: '',
+        });
+        const heaterOverrideSaving = ref(false);
+        const sensorAssignBusy = ref(false);
+
         // Sensor add form
         const zsAddOpen = ref(false);
         const zsAddSensor = ref('');
+        const zsAddSubSensor = ref('a');
         const zsAddWeight = ref(1.0);
         const zsAddLabel = ref('');
         const zsCandidates = ref([]);
+        const zsAvailableSubs = ref([]);
         const zsSaving = ref(false);
         const availableCandidates = computed(() => {
             const attached = new Set(sensors.value.map(s => s.sensor_device_code));
@@ -77,6 +92,35 @@ export default {
         const TEMP_MAX = 36.0;
         const DELTA_MIN = -5.0;
         const DELTA_MAX = 5.0;
+
+        // Day-age quick-pick chips — mirrors SETPOINT_TABLE in
+        // src/iot/brooder_service.py:50-57. Click a chip to lock the zone
+        // setpoint to the recommended temperature for that age band; ESPs
+        // receive the value via the retained MQTT /setpoint topic and the
+        // audit row is auto-tagged with the band name.
+        const dayAgePresets = [
+            { label: '1-3 ngày',   value: 33.5, note: 'preset 1-3 ngày tuổi' },
+            { label: '4-7 ngày',   value: 32.0, note: 'preset 4-7 ngày tuổi' },
+            { label: '8-14 ngày',  value: 29.5, note: 'preset 8-14 ngày tuổi' },
+            { label: '15-21 ngày', value: 27.0, note: 'preset 15-21 ngày tuổi' },
+            { label: '22-28 ngày', value: 25.0, note: 'preset 22-28 ngày tuổi' },
+            { label: '29+ ngày',   value: 22.0, note: 'preset 29+ ngày (ngừng úm)' },
+        ];
+        async function applyPreset(preset) {
+            // One-click apply: enable override, set value, save with the
+            // preset's auto-tagged audit note. Skipped if a save is in flight
+            // or the value falls outside the slider range (shouldn't happen —
+            // every preset in dayAgePresets is in [22.0, 33.5] ⊂ [TEMP_MIN, TEMP_MAX]).
+            if (!zone.value || submittingOverride.value) return;
+            if (preset.value < TEMP_MIN || preset.value > TEMP_MAX) {
+                showToast(`Setpoint ${preset.value}°C ngoài khoảng ${TEMP_MIN}-${TEMP_MAX}°C`, 'error');
+                return;
+            }
+            manualTemp.value = preset.value;
+            manualEnabled.value = true;
+            manualNote.value = preset.note;
+            await saveOverride();
+        }
 
         // ── Polling (every 5s) ────────────────────────────────
         let pollTimer = null;
@@ -305,6 +349,13 @@ export default {
         }
 
         // ── Heater CRUD ───────────────────────────────────────
+        // Anchor-scroll helper: jumps to the Members section so users can add
+        // ESP32 first when the "Thêm heater" button is disabled.
+        function scrollToMembersSection() {
+            const el = document.getElementById('brooder-members-section');
+            if (el) el.scrollIntoView({ behavior: 'smooth', block: 'start' });
+        }
+
         function openHeaterNew() {
             heaterEditTarget.value = null;
             heaterEditForm.device_code = members.value[0]?.device_code || '';
@@ -384,14 +435,116 @@ export default {
             }
         }
 
+        // ── Heater per-channel override (Phase C) ────────────────
+        // Each heater runs its own PID with its own setpoint. The modal
+        // edits BOTH the manual setpoint override AND the Tier-2 fallback
+        // delta in one place — they're paired concerns for one heater.
+        function openHeaterOverride(h) {
+            heaterOverrideTarget.value = h;
+            heaterOverrideForm.manual_setpoint = h.manual_setpoint ?? h.effective_setpoint ?? 33.0;
+            heaterOverrideForm.fallback_delta_c = h.fallback_delta_c ?? 0.0;
+            heaterOverrideForm.note = '';
+            heaterOverrideOpen.value = true;
+        }
+        async function saveHeaterOverride() {
+            const h = heaterOverrideTarget.value;
+            if (!h) return;
+            const sp = Number(heaterOverrideForm.manual_setpoint);
+            const delta = Number(heaterOverrideForm.fallback_delta_c);
+            if (sp < TEMP_MIN || sp > TEMP_MAX) {
+                showToast(`Setpoint phải trong khoảng ${TEMP_MIN}-${TEMP_MAX}°C`, 'error');
+                return;
+            }
+            if (delta < DELTA_MIN || delta > DELTA_MAX) {
+                showToast(`Delta phải trong khoảng ${DELTA_MIN} → ${DELTA_MAX}°C`, 'error');
+                return;
+            }
+            try {
+                heaterOverrideSaving.value = true;
+                // Setpoint first (null = clear override), then delta.
+                await API.brooder.zones.heaters.setSetpoint(
+                    h.id, sp, heaterOverrideForm.note || null,
+                );
+                await API.brooder.zones.heaters.setFallbackDelta(h.id, delta);
+                showToast(`Đã lưu override cho ${h.device_code} ch${h.channel}`, 'success');
+                heaterOverrideOpen.value = false;
+                await fetchAll();
+            } catch (e) {
+                showToast(`Lỗi: ${e.message}`, 'error');
+            } finally {
+                heaterOverrideSaving.value = false;
+            }
+        }
+        async function clearHeaterOverride(h) {
+            try {
+                heaterOverrideSaving.value = true;
+                await API.brooder.zones.heaters.setSetpoint(h.id, null, 'clear');
+                showToast(`Đã xoá manual setpoint cho ${h.device_code} ch${h.channel}`, 'success');
+                await fetchAll();
+            } catch (e) {
+                showToast(`Lỗi: ${e.message}`, 'error');
+            } finally {
+                heaterOverrideSaving.value = false;
+            }
+        }
+
+        // ── Sensor → heater assignment (Phase C) ────────────────
+        // heaterId === null detaches (sensor becomes zone-level pool only).
+        // heaterId === undefined / '' leaves unchanged (no-op).
+        async function assignSensorToHeater(sensorId, heaterId) {
+            if (heaterId === undefined || heaterId === '') return;
+            try {
+                sensorAssignBusy.value = true;
+                await API.brooder.zones.assignSensorToHeater(sensorId, heaterId);
+                const action = heaterId === null ? 'gỡ' : 'gán';
+                showToast(`Đã ${action} sensor ↔ heater`, 'success');
+                await fetchAll();
+            } catch (e) {
+                showToast(`Lỗi: ${e.message}`, 'error');
+            } finally {
+                sensorAssignBusy.value = false;
+            }
+        }
+
         // ── Sensor add/remove ─────────────────────────────────
         async function openSensorAdd() {
             zsAddOpen.value = true;
             zsAddSensor.value = '';
+            zsAddSubSensor.value = 'a';
             zsAddWeight.value = 1.0;
             zsAddLabel.value = '';
+            zsAvailableSubs.value = [];
             await loadCandidates();
         }
+        // Watch the selected device — fetch its sub-sensor list when the
+        // operator picks a multi-sub-sensor device (e.g. esp32_dual_sht40).
+        async function fetchAvailableSubs(code) {
+            if (!code) {
+                zsAvailableSubs.value = [];
+                zsAddSubSensor.value = 'a';
+                return;
+            }
+            try {
+                const res = await API.brooder.zones.sensors.listSubSensors(code);
+                const subs = res.sub_sensors || [];
+                zsAvailableSubs.value = subs;
+                // Default selection: 'a' if present, else first
+                const tempSubs = subs.filter(s => s.sensor_type === 'temperature');
+                if (tempSubs.length) {
+                    zsAddSubSensor.value = tempSubs[0].sub_sensor;
+                } else {
+                    zsAddSubSensor.value = 'a';
+                }
+            } catch (e) {
+                // Non-fatal — single-sub-sensor devices just won't show picker.
+                console.warn('listSubSensors failed:', e);
+                zsAvailableSubs.value = [];
+                zsAddSubSensor.value = 'a';
+            }
+        }
+        watch(zsAddSensor, (newCode) => {
+            fetchAvailableSubs(newCode);
+        });
         async function addSensor() {
             if (!zsAddSensor.value) {
                 showToast('Chọn sensor trước', 'error');
@@ -401,6 +554,7 @@ export default {
                 zsSaving.value = true;
                 await API.brooder.zones.sensors.add(zoneId.value, {
                     sensor_device_code: zsAddSensor.value,
+                    sub_sensor: zsAddSubSensor.value,
                     weight: Number(zsAddWeight.value),
                     label: zsAddLabel.value || null,
                 });
@@ -537,6 +691,16 @@ export default {
             if (seconds < 900)   return 'cf-badge-yellow';  // 2-15 min
             return 'cf-badge-red';                          // >15 min
         }
+        // Convert ISO timestamp → seconds since now (null if invalid/missing).
+        // Used by Heaters row to show "cập nhật X giây trước" under the
+        // power % bar — tells the operator if the value is still fresh
+        // (e.g. <30s = ESP just acked) or stale (>5 min = WiFi flap).
+        function heaterFreshnessSeconds(iso) {
+            if (!iso) return null;
+            const t = new Date(iso).getTime();
+            if (Number.isNaN(t)) return null;
+            return Math.max(0, Math.floor((Date.now() - t) / 1000));
+        }
 
         // ── Template ──────────────────────────────────────────
         return {
@@ -546,18 +710,25 @@ export default {
             manualEnabled, manualTemp, manualNote, submittingOverride,
             fallbackDelta, savingDelta,
             heaterEditOpen, heaterEditTarget, heaterEditForm, heaterEditSaving,
-            zsAddOpen, zsAddSensor, zsAddWeight, zsAddLabel,
-            zsCandidates, zsSaving, availableCandidates,
+            heaterOverrideOpen, heaterOverrideTarget, heaterOverrideForm, heaterOverrideSaving,
+            sensorAssignBusy,
+            zsAddOpen, zsAddSensor, zsAddSubSensor, zsAddWeight, zsAddLabel,
+            zsCandidates, zsAvailableSubs, zsSaving, availableCandidates,
             memberAddCode, memberAdding,
             backToBrooder,
             TEMP_MIN, TEMP_MAX, DELTA_MIN, DELTA_MAX,
+            dayAgePresets, applyPreset,
             CHART_W, CHART_H, CHART_PAD, tempChart, powerChart, tempTicks,
             onlineHeaterCount,
             formatLastSeen, lastSeenClass,
+            heaterFreshnessSeconds,
             syncManualFormToZone,
             reloadAll, saveOverride, clearOverride, saveFallbackDelta,
             openHeaterNew, openHeaterEdit, saveHeater, deleteHeater,
             quickAssignHeaterChannel,
+            openHeaterOverride, saveHeaterOverride, clearHeaterOverride,
+            assignSensorToHeater,
+            scrollToMembersSection,
             addMember, removeMember,
             openSensorAdd, addSensor, removeSensor, updateSensorWeight,
             fmtNum, fmtDate,
@@ -723,7 +894,7 @@ export default {
             </div>
 
             <!-- 3. Members section (ESP32 brooders in this zone) -->
-            <div class="card mt-4">
+            <div id="brooder-members-section" class="card mt-4">
                 <div class="flex items-start justify-between gap-3 mb-3">
                     <div>
                         <div class="card-title">ESP32 brooder trong zone</div>
@@ -740,6 +911,7 @@ export default {
                                 <th>ESP32</th>
                                 <th>Mode</th>
                                 <th>SHT40 (T_min)</th>
+                                <th>PID nguồn</th>
                                 <th class="text-center">Online</th>
                                 <th></th>
                             </tr>
@@ -762,6 +934,16 @@ export default {
                                     <span v-if="m.last_hum_avg != null" class="cf-text-muted text-xs ml-1">
                                         H {{ fmtNum(m.last_hum_avg, 0) }}%
                                     </span>
+                                </td>
+                                <td>
+                                    <span v-if="m.pid_source" class="cf-badge"
+                                          :class="m.pid_source === 'local+delta' ? 'cf-badge-green'
+                                                : m.pid_source === 'local' ? 'cf-badge-yellow'
+                                                : 'cf-badge-gray'"
+                                          :title="'PID input source ESP32 báo cáo: ' + m.pid_source">
+                                        {{ m.pid_source }}
+                                    </span>
+                                    <span v-else class="cf-text-muted">&mdash;</span>
                                 </td>
                                 <td class="text-center">
                                     <span :class="['cf-badge', lastSeenClass(m.last_seen_seconds)]"
@@ -792,12 +974,20 @@ export default {
                     <div>
                         <div class="card-title">Heaters trong zone</div>
                         <div class="cf-text-muted text-sm mt-1">
-                            Mỗi heater = 1 ESP32 + 1 channel (ch1 hoặc ch2) + công suất tối đa (W).
-                            Server split PID output theo tỷ lệ max-power (heater_i % = pid × w_i / Σw).
+                            <b>Heater</b> = 1 đầu ra vật lý trên ESP32
+                            (<code>ch1</code> hoặc <code>ch2</code> = 1 bóng sưởi / chảo nhiệt).
+                            Mỗi ESP32 có tối đa 2 heater (DAC1 + DAC2).
+                            Zone controller chia PID output theo tỷ lệ
+                            <code>max-power</code> của từng heater
+                            (<code>heater_i&nbsp;% = pid &times; w_i / &Sigma;w</code>).
                         </div>
                     </div>
                     <button class="cf-btn-primary cf-btn-sm flex-shrink-0"
-                            :disabled="!members.length" @click="openHeaterNew">
+                            :disabled="!members.length"
+                            :title="!members.length
+                                    ? 'Cần thêm ESP32 vào zone trước (xem panel phía dưới)'
+                                    : 'Gán 1 channel ESP32 làm heater'"
+                            @click="openHeaterNew">
                         + Thêm heater
                     </button>
                 </div>
@@ -810,6 +1000,8 @@ export default {
                                 <th>Nhãn</th>
                                 <th class="text-right">Max (W)</th>
                                 <th class="text-right">Hiện tại (%)</th>
+                                <th class="text-right">Setpoint</th>
+                                <th class="text-right">Delta</th>
                                 <th class="text-center">Bật</th>
                                 <th></th>
                             </tr>
@@ -830,6 +1022,22 @@ export default {
                                             {{ h.last_power_pct || 0 }}%
                                         </span>
                                     </div>
+                                    <div v-if="h.last_published_at"
+                                         class="cf-text-muted text-xs mt-0.5"
+                                         :title="'Lệnh power gửi lúc ' + h.last_published_at">
+                                        {{ formatLastSeen(heaterFreshnessSeconds(h.last_published_at)) }}
+                                    </div>
+                                </td>
+                                <td class="text-right">
+                                    <span :class="h.manual_setpoint != null ? 'cf-badge cf-badge-yellow' : 'cf-text-muted'">
+                                        {{ fmtNum(h.effective_setpoint ?? h.manual_setpoint, 1) }}&deg;C
+                                        <template v-if="h.manual_setpoint != null">&nbsp;Manual</template>
+                                    </span>
+                                </td>
+                                <td class="text-right">
+                                    <span :class="h.fallback_delta_c ? 'cf-badge' : 'cf-text-muted'">
+                                        {{ (h.fallback_delta_c || 0) >= 0 ? '+' : '' }}{{ fmtNum(h.fallback_delta_c || 0, 1) }}&deg;C
+                                    </span>
                                 </td>
                                 <td class="text-center">
                                     <span :class="h.enabled ? 'cf-badge cf-badge-green' : 'cf-badge cf-badge-gray'">
@@ -837,6 +1045,8 @@ export default {
                                     </span>
                                 </td>
                                 <td>
+                                    <button class="cf-btn cf-btn-ghost cf-btn-xs mr-1"
+                                            @click="openHeaterOverride(h)">Override</button>
                                     <button class="cf-btn cf-btn-ghost cf-btn-xs mr-1"
                                             @click="openHeaterEdit(h)">Sửa</button>
                                     <button class="cf-btn cf-btn-ghost cf-btn-xs"
@@ -846,8 +1056,23 @@ export default {
                         </tbody>
                     </table>
                 </div>
+                <div v-else-if="!members.length" class="cf-brooder-heater-empty-pre">
+                    <div class="cf-brooder-heater-empty-pre-title">
+                        ⚠ Chưa có ESP32 trong zone — không thể tạo heater
+                    </div>
+                    <div class="cf-text-muted text-sm mt-1 mb-3">
+                        Heater phải gắn với <b>1 channel của 1 ESP32</b>.
+                        Bước 1: cuộn xuống panel <b>"ESP32 brooder trong trại nhưng chưa thuộc zone"</b>
+                        và bấm <b>+ Thêm</b> bên cạnh ESP32 muốn gán vào zone này.
+                    </div>
+                    <button class="cf-btn-secondary cf-btn-sm"
+                            @click="scrollToMembersSection">
+                        ↓ Đi tới panel ESP32
+                    </button>
+                </div>
                 <div v-else class="cf-empty-inline">
-                    Chưa có heater nào. Bấm <b>+ Thêm heater</b>.
+                    Có {{ members.length }} ESP32 trong zone nhưng chưa gán heater.
+                    Bấm <b>+ Thêm heater</b> hoặc dùng panel <b>"Channel ESP32 chưa gán"</b> phía dưới.
                 </div>
 
                 <!-- 7. Available heater channels -->
@@ -888,7 +1113,9 @@ export default {
                         <thead>
                             <tr>
                                 <th>Sensor</th>
+                                <th class="text-center">Sub</th>
                                 <th class="text-center">Weight</th>
+                                <th>Heater</th>
                                 <th class="text-right">Nhiệt</th>
                                 <th>Cập nhật</th>
                                 <th>Ghi chú</th>
@@ -902,6 +1129,11 @@ export default {
                                     <span v-if="s.sensor_name" class="cf-text-muted">&middot; {{ s.sensor_name }}</span>
                                 </td>
                                 <td class="text-center">
+                                    <span v-if="s.sub_sensor"
+                                          class="cf-badge cf-badge-blue">{{ (s.sub_sensor || 'a').toUpperCase() }}</span>
+                                    <span v-else class="cf-text-muted">&mdash;</span>
+                                </td>
+                                <td class="text-center">
                                     <input type="number" step="0.1" min="0" max="10"
                                            :value="s.weight" :disabled="zsSaving"
                                            class="cf-input"
@@ -909,6 +1141,21 @@ export default {
                                            @change="(e) => updateSensorWeight(
                                                s.sensor_device_code,
                                                e.target.value)">
+                                </td>
+                                <td>
+                                    <select class="cf-input"
+                                            style="padding:0.25rem 0.5rem; min-width:9rem;"
+                                            :value="s.heater_id ?? ''"
+                                            :disabled="sensorAssignBusy"
+                                            @change="(e) => {
+                                                const v = e.target.value;
+                                                assignSensorToHeater(s.id, v === '' ? '' : Number(v));
+                                            }">
+                                        <option value="">— zone only —</option>
+                                        <option v-for="h in heaters" :key="h.id" :value="h.id">
+                                            {{ h.device_code }} ch{{ h.channel }}{{ h.label ? ' (' + h.label + ')' : '' }}
+                                        </option>
+                                    </select>
                                 </td>
                                 <td class="text-right">
                                     <span v-if="s.last_value != null">{{ fmtNum(s.last_value, 1) }}&deg;C</span>
@@ -943,6 +1190,26 @@ export default {
                                 {{ c.device_code }}<template v-if="c.name"> · {{ c.name }}</template>
                             </option>
                         </select>
+                    </div>
+                    <!-- Sub-sensor picker (shown only for multi-SHT40 devices) -->
+                    <div v-if="zsAvailableSubs.filter(s => s.sensor_type === 'temperature').length > 1"
+                         class="cf-form-group mt-2">
+                        <label class="cf-label">Sub-sensor (cảm biến con)</label>
+                        <div class="flex gap-2 flex-wrap">
+                            <label v-for="sub in zsAvailableSubs.filter(s => s.sensor_type === 'temperature')"
+                                   :key="sub.sub_sensor"
+                                   class="cf-badge cf-badge-blue"
+                                   style="cursor:pointer; padding:0.4rem 0.7rem;">
+                                <input type="radio" v-model="zsAddSubSensor"
+                                       :value="sub.sub_sensor"
+                                       style="margin-right:0.3rem;">
+                                {{ (sub.sub_sensor || 'a').toUpperCase() }}
+                                <span class="cf-text-muted text-xs ml-1"
+                                      style="font-weight:400;">
+                                    ({{ sub.value != null ? sub.value.toFixed(1) : '—' }}&deg;C)
+                                </span>
+                            </label>
+                        </div>
                     </div>
                     <div class="grid grid-cols-2 gap-3 mt-2">
                         <div class="cf-form-group">
@@ -1007,6 +1274,26 @@ export default {
                             {{ manualEnabled ? 'Đang khoá setpoint thủ công' : 'Đang theo bảng ngày tuổi' }}
                         </span>
                     </div>
+
+                    <!-- Day-age preset chips: one-click apply of the
+                         SETPOINT_TABLE values from brooder_service.py. -->
+                    <div class="mb-4">
+                        <div class="text-xs text-gray-500 mb-2">Setpoint nhanh theo ngày tuổi:</div>
+                        <div class="flex flex-wrap gap-2">
+                            <button v-for="p in dayAgePresets" :key="p.label"
+                                    class="cf-preset-chip px-2.5 py-1 text-xs rounded-md
+                                           bg-blue-50 hover:bg-blue-100 border border-blue-200
+                                           text-blue-800 transition
+                                           disabled:opacity-50 disabled:cursor-not-allowed"
+                                    :disabled="submittingOverride"
+                                    :title="'Setpoint ' + p.value + '°C — ' + p.note"
+                                    @click="applyPreset(p)">
+                                <span class="font-medium">{{ p.label }}:</span>
+                                <span class="font-bold ml-1">{{ p.value }}&deg;C</span>
+                            </button>
+                        </div>
+                    </div>
+
                     <div v-if="manualEnabled" class="mb-4">
                         <div class="cf-brooder-slider-row">
                             <span class="text-xs text-gray-500">Setpoint:</span>
@@ -1184,6 +1471,72 @@ export default {
                                 :disabled="heaterEditSaving" @click="saveHeater">
                             <span v-if="heaterEditSaving">&#9203;</span>
                             {{ heaterEditTarget ? 'Lưu thay đổi' : 'Tạo heater' }}
+                        </button>
+                    </div>
+                </div>
+            </div>
+
+            <!-- Heater per-channel override modal (Phase C — heater-first PID) -->
+            <div v-if="heaterOverrideOpen" class="cf-modal-backdrop"
+                 @click.self="heaterOverrideOpen = false">
+                <div class="cf-modal">
+                    <div class="cf-modal-header">
+                        <div class="cf-modal-title">
+                            Override heater
+                            <span v-if="heaterOverrideTarget" class="cf-text-muted text-sm font-normal ml-2">
+                                {{ heaterOverrideTarget.device_code }} ch{{ heaterOverrideTarget.channel }}
+                            </span>
+                        </div>
+                        <button class="cf-btn cf-btn-ghost cf-btn-sm"
+                                @click="heaterOverrideOpen = false">&#10005;</button>
+                    </div>
+                    <div class="cf-modal-body">
+                        <div class="cf-text-muted text-sm mb-3">
+                            PID riêng cho heater này. Setpoint = manual override (để trống bằng cách xoá = auto theo cascade).
+                            Delta = bias Tier-2 khi không có zone sensor tươi.
+                        </div>
+                        <div class="cf-form-group">
+                            <label class="cf-label">Manual setpoint (&deg;C)</label>
+                            <div class="cf-brooder-slider-row">
+                                <input type="range" :min="TEMP_MIN" :max="TEMP_MAX" step="0.1"
+                                       v-model.number="heaterOverrideForm.manual_setpoint"
+                                       class="cf-brooder-slider">
+                                <span class="cf-brooder-slider-value">
+                                    {{ heaterOverrideForm.manual_setpoint.toFixed(1) }}&deg;C
+                                </span>
+                            </div>
+                        </div>
+                        <div class="cf-form-group">
+                            <label class="cf-label">Fallback delta (&deg;C)</label>
+                            <div class="cf-brooder-slider-row">
+                                <input type="range" :min="DELTA_MIN" :max="DELTA_MAX" step="0.1"
+                                       v-model.number="heaterOverrideForm.fallback_delta_c"
+                                       class="cf-brooder-slider">
+                                <span class="cf-brooder-slider-value">
+                                    {{ heaterOverrideForm.fallback_delta_c >= 0 ? '+' : '' }}{{ heaterOverrideForm.fallback_delta_c.toFixed(1) }}&deg;C
+                                </span>
+                            </div>
+                        </div>
+                        <div class="cf-form-group">
+                            <label class="cf-label">Ghi chú (audit)</label>
+                            <input type="text" v-model="heaterOverrideForm.note" class="cf-input"
+                                   placeholder="VD: úm gà con ngày 3, chảo này nóng hơn">
+                        </div>
+                    </div>
+                    <div class="cf-modal-footer">
+                        <button v-if="heaterOverrideTarget && heaterOverrideTarget.manual_setpoint != null"
+                                class="cf-btn cf-btn-ghost cf-btn-sm"
+                                :disabled="heaterOverrideSaving"
+                                @click="clearHeaterOverride(heaterOverrideTarget)">
+                            Xoá manual
+                        </button>
+                        <button class="cf-btn cf-btn-ghost cf-btn-sm"
+                                :disabled="heaterOverrideSaving"
+                                @click="heaterOverrideOpen = false">Huỷ</button>
+                        <button class="cf-btn-primary cf-btn-sm"
+                                :disabled="heaterOverrideSaving"
+                                @click="saveHeaterOverride">
+                            <span v-if="heaterOverrideSaving">&#9203;</span> Lưu override
                         </button>
                     </div>
                 </div>
